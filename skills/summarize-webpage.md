@@ -1,8 +1,8 @@
 ---
 name: summarize-webpage
 version: 1
-preferred_model: gemini/gemini-2.0-flash
-fallback_model: claude-haiku-4-5-20251001
+preferred_model: claude-haiku-4-5-20251001
+fallback_model: gemini/gemini-2.0-flash
 success_rate: null
 total_runs: 0
 last_optimized: null
