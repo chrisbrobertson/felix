@@ -28,11 +28,15 @@ echo ""
 # ── 1. Prerequisites ──────────────────────────────────────────────────────────
 echo "Checking prerequisites..."
 
-# Prefer venv Python if already installed and valid (idempotent re-runs)
+# SYS_PYTHON: used to create/recreate the venv — must never point inside the venv
+# (the venv binary can't recreate itself after rm -rf).
+SYS_PYTHON="$(command -v python3.13 || command -v python3.12 || command -v python3.11 || command -v python3 || true)"
+
+# For all other operations prefer the venv Python (idempotent re-runs)
 if [ -x "$VENV/bin/python3" ]; then
     PYTHON="$VENV/bin/python3"
 else
-    PYTHON="$(command -v python3 || true)"
+    PYTHON="$SYS_PYTHON"
 fi
 
 _upgrade_python() {
@@ -43,9 +47,10 @@ _upgrade_python() {
         if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
             info "Running: brew install python@3.13"
             brew install python@3.13
-            PYTHON="$(command -v python3.13 \
-                     || brew --prefix python@3.13 2>/dev/null | xargs -I{} echo {}/bin/python3.13 \
-                     || command -v python3)"
+            SYS_PYTHON="$(command -v python3.13 \
+                         || brew --prefix python@3.13 2>/dev/null | xargs -I{} echo {}/bin/python3.13 \
+                         || command -v python3)"
+            PYTHON="$SYS_PYTHON"
             ok "Python upgraded via Homebrew"
         else
             die "Python 3.11+ is required. Install it and re-run."
@@ -60,18 +65,18 @@ _upgrade_python() {
     fi
 }
 
-if [ -z "$PYTHON" ]; then
+if [ -z "$SYS_PYTHON" ]; then
     printf "${YELLOW}  !${NC}  python3 not found.\n"
     _upgrade_python
 fi
 
-PY_MAJOR="$("$PYTHON" -c 'import sys; print(sys.version_info.major)')"
-PY_MINOR="$("$PYTHON" -c 'import sys; print(sys.version_info.minor)')"
+PY_MAJOR="$("$SYS_PYTHON" -c 'import sys; print(sys.version_info.major)')"
+PY_MINOR="$("$SYS_PYTHON" -c 'import sys; print(sys.version_info.minor)')"
 if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 11 ]; }; then
     printf "${YELLOW}  !${NC}  Python 3.11+ required, found $PY_MAJOR.$PY_MINOR.\n"
     _upgrade_python
-    PY_MAJOR="$("$PYTHON" -c 'import sys; print(sys.version_info.major)')"
-    PY_MINOR="$("$PYTHON" -c 'import sys; print(sys.version_info.minor)')"
+    PY_MAJOR="$("$SYS_PYTHON" -c 'import sys; print(sys.version_info.major)')"
+    PY_MINOR="$("$SYS_PYTHON" -c 'import sys; print(sys.version_info.minor)')"
     { [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 11 ]; }; } && \
         die "Still on Python $PY_MAJOR.$PY_MINOR after upgrade attempt. Fix manually and re-run."
 fi
@@ -234,16 +239,19 @@ if [ -f "$VENV/bin/python3" ]; then
     elif [ "$VENV_MAJOR" != "$PY_MAJOR" ] || [ "$VENV_MINOR" != "$PY_MINOR" ]; then
         info "Recreating venv (was $VENV_MAJOR.$VENV_MINOR → $PY_MAJOR.$PY_MINOR)"
         rm -rf "$VENV"
-        "$PYTHON" -m venv --copies "$VENV"
+        "$SYS_PYTHON" -m venv --copies "$VENV"
+        PYTHON="$VENV/bin/python3"
         ok "Venv recreated at $VENV  (Python $PY_MAJOR.$PY_MINOR)"
     else
         info "Recreating venv with --copies (needed for Full Disk Access)"
         rm -rf "$VENV"
-        "$PYTHON" -m venv --copies "$VENV"
+        "$SYS_PYTHON" -m venv --copies "$VENV"
+        PYTHON="$VENV/bin/python3"
         ok "Venv recreated at $VENV  (Python $PY_MAJOR.$PY_MINOR)"
     fi
 else
-    "$PYTHON" -m venv --copies "$VENV"
+    "$SYS_PYTHON" -m venv --copies "$VENV"
+    PYTHON="$VENV/bin/python3"
     ok "Venv created at $VENV  (Python $PY_MAJOR.$PY_MINOR)"
 fi
 
