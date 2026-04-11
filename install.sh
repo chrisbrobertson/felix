@@ -238,13 +238,13 @@ if [ -f "$VENV/bin/python3" ]; then
         skip "$VENV  (Python $VENV_MAJOR.$VENV_MINOR)"
     elif [ "$VENV_MAJOR" != "$PY_MAJOR" ] || [ "$VENV_MINOR" != "$PY_MINOR" ]; then
         info "Recreating venv (was $VENV_MAJOR.$VENV_MINOR → $PY_MAJOR.$PY_MINOR)"
-        rm -rf "$VENV"
+        rm -rf "$VENV" "$DEPLOY_DIR/.requirements-hash"
         "$SYS_PYTHON" -m venv --copies "$VENV"
         PYTHON="$VENV/bin/python3"
         ok "Venv recreated at $VENV  (Python $PY_MAJOR.$PY_MINOR)"
     else
         info "Recreating venv with --copies (needed for Full Disk Access)"
-        rm -rf "$VENV"
+        rm -rf "$VENV" "$DEPLOY_DIR/.requirements-hash"
         "$SYS_PYTHON" -m venv --copies "$VENV"
         PYTHON="$VENV/bin/python3"
         ok "Venv recreated at $VENV  (Python $PY_MAJOR.$PY_MINOR)"

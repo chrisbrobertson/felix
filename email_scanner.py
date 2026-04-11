@@ -282,19 +282,24 @@ class EnvelopeIndexSource(MailDataSource):
 class AppleScriptSource(MailDataSource):
     """Fallback when Envelope Index is unavailable (no FDA)."""
 
-    def _run_osascript(self, script: str) -> str:
+    def _run_osascript(self, script: str, timeout: int = 30) -> str:
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 ["osascript", "-e", script],
-                capture_output=True, text=True, timeout=30,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
-            if result.returncode != 0:
-                log.debug("osascript error: %s", result.stderr.strip())
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                # Do NOT call proc.wait() — osascript may not die if blocked
+                # in a GUI syscall with Mail.app, causing an indefinite hang.
+                log.warning("AppleScript timed out after %ds", timeout)
                 return ""
-            return result.stdout.strip()
-        except subprocess.TimeoutExpired:
-            log.warning("AppleScript timed out after 30s")
-            return ""
+            if proc.returncode != 0:
+                log.debug("osascript error: %s", stderr.strip())
+                return ""
+            return stdout.strip()
         except Exception as e:
             log.debug("osascript failed: %s", e)
             return ""
@@ -312,9 +317,9 @@ class AppleScriptSource(MailDataSource):
             for mb in sorted(excluded_mailboxes)[:8]  # AppleScript has string length limits
         ) or "true"
 
-        # Date formatted as ISO 8601 inside AppleScript to avoid locale-dependent
-        # string parsing on the Python side. No content/snippet fetch — it requires
-        # do shell script which is slow and can exceed the 30s timeout on large mailboxes.
+        # Only scan Inbox and Sent — scanning all mailboxes across 30+ days
+        # easily exceeds the 30s osascript timeout on large accounts.
+        # Date formatted as ISO 8601 to avoid locale-dependent parsing.
         script = f'''
 if application "Mail" is not running then return ""
 tell application "Mail"
@@ -323,7 +328,7 @@ tell application "Mail"
     repeat with acct in accounts
         repeat with mb in mailboxes of acct
             set mbName to name of mb
-            if {exclude_check} then
+            if (mbName is "INBOX" or mbName is "Inbox" or mbName is "Sent" or mbName is "Sent Messages") and {exclude_check} then
                 set msgs to (messages of mb whose date received >= cutoff)
                 repeat with m in msgs
                     set d to date received of m
@@ -405,7 +410,12 @@ end tell
         if not self._is_mail_running():
             log.warning("Mail.app is not running — skipping AppleScript scan")
             return [], 0
-        raw = self._fetch_messages_raw(since, excluded_mailboxes)
+        # AppleScript iterates every message in every mailbox — scanning 30 days
+        # across all folders times out on large mailboxes. Cap to 7 days and
+        # Inbox/Sent only. The SQLite path (with FDA) does the full scan.
+        as_cutoff = max(since, datetime.now() - timedelta(days=7))
+        log.debug("AppleScript scan: cutoff %s", as_cutoff.strftime("%Y-%m-%d"))
+        raw = self._fetch_messages_raw(as_cutoff, excluded_mailboxes)
         return self._parse_raw(raw, excluded_mailboxes)
 
     def get_threads_updated_since(self, since: datetime, high_water_rowid: int, excluded_mailboxes: set):
