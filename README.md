@@ -27,7 +27,19 @@ A daemon runs four async loops:
 
 ---
 
-## First-time setup
+## Quick install
+
+```bash
+./install.sh
+```
+
+The installer is idempotent — safe to run again after a key rotation, repo move, or on a second machine. It skips any step already completed (existing config, existing skill files with execution history, etc.) and reloads the launchd agent if it was already running.
+
+---
+
+## Manual setup
+
+If you prefer to set up steps individually:
 
 ### 1. Create the iCloud directory structure
 
