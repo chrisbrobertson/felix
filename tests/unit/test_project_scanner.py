@@ -111,18 +111,43 @@ def test_detect_languages_multi(tmp_path):
 def test_detect_languages_skips_venv(tmp_path):
     repo = tmp_path / "project"
     repo.mkdir()
-    (repo / "main.py").write_text("")
+    (repo / "main.go").write_text("")
     venv = repo / "venv"
     venv.mkdir()
-    (venv / "fake.py").write_text("")  # should not be counted
-    (venv / "fake2.py").write_text("")
-    (venv / "fake3.py").write_text("")
+    for i in range(20):
+        (venv / f"fake{i}.py").write_text("")  # would dominate if counted
 
     scanner = ProjectScanner()
     langs = scanner._detect_languages(repo)
-    # python should appear (from main.py), but venv files must not inflate count
-    # The key test: venv dir is excluded from traversal (top-level scan skips SKIP_DIRS)
-    assert "python" in langs
+    # venv Python files must not appear; only main.go should register
+    assert langs == ["go"]
+
+
+def test_detect_languages_skips_dot_venv(tmp_path):
+    repo = tmp_path / "project"
+    repo.mkdir()
+    (repo / "main.go").write_text("")
+    dotvenv = repo / ".venv"
+    dotvenv.mkdir()
+    for i in range(20):
+        (dotvenv / f"fake{i}.py").write_text("")
+
+    scanner = ProjectScanner()
+    langs = scanner._detect_languages(repo)
+    assert langs == ["go"]
+
+
+def test_detect_languages_recurses_into_src(tmp_path):
+    repo = tmp_path / "project"
+    repo.mkdir()
+    src = repo / "src"
+    src.mkdir()
+    for i in range(5):
+        (src / f"mod{i}.ts").write_text("")
+
+    scanner = ProjectScanner()
+    langs = scanner._detect_languages(repo)
+    assert "typescript" in langs
 
 
 def test_detect_languages_returns_top_3(tmp_path):

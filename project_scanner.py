@@ -28,16 +28,23 @@ EXTENSION_MAP = {
     ".rs": "rust",
     ".rb": "ruby",
     ".java": "java",
-    ".kt": "java",
+    ".kt": "kotlin",
     ".cs": "csharp",
     ".sh": "shell",
     ".bash": "shell",
-    ".yaml": "config",
-    ".yml": "config",
-    ".json": "config",
+    ".swift": "swift",
+    ".c": "c",
+    ".cpp": "cpp",
+    ".h": "c",
+    ".hpp": "cpp",
 }
 
-SKIP_DIRS = {"node_modules", ".git", "venv", "__pycache__", ".tox", "dist", "build", ".next"}
+SKIP_DIRS = {
+    "node_modules", ".git", "venv", ".venv", "env", "__pycache__",
+    ".tox", "dist", "build", ".build", ".next", "target", "vendor",
+    ".gradle", ".idea", ".vscode", "coverage", ".coverage",
+    "*.egg-info",
+}
 
 
 class ProjectScanner:
@@ -170,29 +177,50 @@ class ProjectScanner:
             "readme_mtime": readme_mtime,
         }
 
-    def _detect_languages(self, path: Path) -> list:
+    def _detect_languages(self, path: Path, _depth: int = 0) -> list:
+        if _depth > 4:
+            return []
         counts: dict = {}
-        search_dirs = [path]
-        for sub in ("src", "lib", "app"):
-            candidate = path / sub
-            if candidate.is_dir():
-                search_dirs.append(candidate)
-
-        for d in search_dirs:
-            try:
-                entries = list(d.iterdir())
-            except PermissionError:
+        try:
+            entries = list(path.iterdir())
+        except PermissionError:
+            return []
+        for entry in entries:
+            if entry.is_symlink():
                 continue
-            for entry in entries:
-                if entry.is_dir() and entry.name in SKIP_DIRS:
+            if entry.is_dir():
+                if entry.name in SKIP_DIRS or entry.name.startswith("."):
                     continue
-                if entry.is_file():
-                    lang = EXTENSION_MAP.get(entry.suffix.lower())
-                    if lang:
-                        counts[lang] = counts.get(lang, 0) + 1
-
+                for lang, n in self._count_languages(entry, _depth + 1).items():
+                    counts[lang] = counts.get(lang, 0) + n
+            elif entry.is_file():
+                lang = EXTENSION_MAP.get(entry.suffix.lower())
+                if lang:
+                    counts[lang] = counts.get(lang, 0) + 1
         sorted_langs = sorted(counts, key=lambda l: counts[l], reverse=True)
         return sorted_langs[:3]
+
+    def _count_languages(self, path: Path, depth: int) -> dict:
+        if depth > 4:
+            return {}
+        counts: dict = {}
+        try:
+            entries = list(path.iterdir())
+        except PermissionError:
+            return {}
+        for entry in entries:
+            if entry.is_symlink():
+                continue
+            if entry.is_dir():
+                if entry.name in SKIP_DIRS or entry.name.startswith("."):
+                    continue
+                for lang, n in self._count_languages(entry, depth + 1).items():
+                    counts[lang] = counts.get(lang, 0) + n
+            elif entry.is_file():
+                lang = EXTENSION_MAP.get(entry.suffix.lower())
+                if lang:
+                    counts[lang] = counts.get(lang, 0) + 1
+        return counts
 
     def _find_related(self, name: str, languages: list, remote_url: str, all_projects: list) -> list:
         def org_from_url(url: str) -> str:
