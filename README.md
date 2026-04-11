@@ -37,6 +37,26 @@ The installer is idempotent — safe to run again after a key rotation, repo mov
 
 ---
 
+## What gets installed where
+
+```
+~/secondbrain/          deploy dir — venv, logs, runtime state
+├── venv/               isolated Python environment (no system pollution)
+├── logs/               out.log, error.log
+├── seen-urls           processed URL list
+├── errors.log          LLM API errors
+└── execution-log.jsonl watcher skill execution history
+
+~/Library/Mobile Documents/com~apple~CloudDocs/second-brain/
+├── memories/           one .md file per captured webpage
+├── skills/             prompt templates with execution history
+├── inbox/              raw captures pending processing
+├── index.md            LLM-maintained rolling summary
+└── config.yaml         daemon role, thresholds, API routing
+```
+
+---
+
 ## Manual setup
 
 If you prefer to set up steps individually:
@@ -114,10 +134,17 @@ router_settings:
 EOF
 ```
 
-### 7. Install dependencies
+### 7. Create the virtual environment and install dependencies
 
 ```bash
-pip install -r requirements.txt
+python3 -m venv ~/secondbrain/venv
+mkdir -p ~/secondbrain/logs
+
+# Full node
+~/secondbrain/venv/bin/pip install -r requirements.txt
+
+# Watcher node (leaner — no Telegram)
+~/secondbrain/venv/bin/pip install litellm httpx beautifulsoup4 lxml pyyaml
 ```
 
 ### 8. Set API keys
@@ -138,7 +165,7 @@ Then reload: `source ~/.zshrc`
 ### Manual (dev / first run)
 
 ```bash
-python3 daemon.py
+~/secondbrain/venv/bin/python3 daemon.py
 ```
 
 You should see log output like:
@@ -197,8 +224,8 @@ pip install litellm httpx beautifulsoup4 lxml pyyaml
 
 Check the daemon log for errors:
 ```bash
-tail -f /tmp/second-brain.log
-tail -f /tmp/second-brain.error.log
+tail -f ~/secondbrain/logs/out.log
+tail -f ~/secondbrain/logs/error.log
 ```
 
 ---

@@ -123,15 +123,34 @@ Config lives at `~/.litellm/config.yaml`. API keys come from env vars (`GEMINI_A
 - **Max memory file size:** ~2KB. Summarize harder if content is longer.
 - **Telegram 4096-char limit:** Chat handler must chunk responses.
 
+## Deploy directory
+
+All runtime state lives in `~/secondbrain/` — separate from the repo and from the iCloud brain data:
+
+```
+~/secondbrain/
+├── venv/              # Python virtual environment (created by install.sh)
+├── logs/              # out.log, error.log (written by launchd)
+├── seen-urls          # flat file of processed URLs (browser watcher)
+├── errors.log         # LLM API errors
+└── execution-log.jsonl  # watcher-node skill execution log
+```
+
+`SECOND_BRAIN_DIR` env var overrides the deploy dir location (defaults to `~/secondbrain`). The launchd plist sets this explicitly so the daemon always finds its runtime files.
+
 ## Running the Daemon
 
 ```bash
-# Direct (dev/testing)
-python3 daemon.py
+# Direct (dev/testing — uses venv Python)
+~/secondbrain/venv/bin/python3 daemon.py
 
 # Via launchd (production)
 launchctl load ~/Library/LaunchAgents/com.chrisrobertson.secondbrain.plist
 launchctl unload ~/Library/LaunchAgents/com.chrisrobertson.secondbrain.plist
+
+# Logs
+tail -f ~/secondbrain/logs/out.log
+tail -f ~/secondbrain/logs/error.log
 ```
 
 ## Dependencies

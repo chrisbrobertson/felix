@@ -4,6 +4,8 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEPLOY_DIR="$HOME/secondbrain"
+VENV="$DEPLOY_DIR/venv"
 BRAIN_DIR="$HOME/Library/Mobile Documents/com~apple~CloudDocs/second-brain"
 PLIST_NAME="com.chrisrobertson.secondbrain"
 PLIST_DEST="$HOME/Library/LaunchAgents/$PLIST_NAME.plist"
@@ -35,7 +37,6 @@ _upgrade_python() {
         if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
             info "Running: brew install python@3.13"
             brew install python@3.13
-            # Prefer the versioned binary brew just installed
             PYTHON="$(command -v python3.13 \
                      || brew --prefix python@3.13 2>/dev/null | xargs -I{} echo {}/bin/python3.13 \
                      || command -v python3)"
@@ -54,7 +55,6 @@ _upgrade_python() {
 }
 
 if [ -z "$PYTHON" ]; then
-    echo ""
     printf "${YELLOW}  !${NC}  python3 not found.\n"
     _upgrade_python
 fi
@@ -64,7 +64,6 @@ PY_MINOR="$("$PYTHON" -c 'import sys; print(sys.version_info.minor)')"
 if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 11 ]; }; then
     printf "${YELLOW}  !${NC}  Python 3.11+ required, found $PY_MAJOR.$PY_MINOR.\n"
     _upgrade_python
-    # Re-check after upgrade
     PY_MAJOR="$("$PYTHON" -c 'import sys; print(sys.version_info.major)')"
     PY_MINOR="$("$PYTHON" -c 'import sys; print(sys.version_info.minor)')"
     { [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 11 ]; }; } && \
@@ -129,7 +128,46 @@ if [ "$ROLE" = "full" ]; then
     [ -z "$TELEGRAM_USER_ID" ] && die "Telegram user ID is required for the full role."
 fi
 
-# ── 5. iCloud directory structure ─────────────────────────────────────────────
+# ── 5. Deploy directory ───────────────────────────────────────────────────────
+echo ""
+echo "Setting up deploy directory..."
+
+mkdir -p "$DEPLOY_DIR/logs"
+ok "$DEPLOY_DIR"
+
+# ── 6. Python virtual environment ─────────────────────────────────────────────
+echo ""
+echo "Setting up Python virtual environment..."
+
+if [ -f "$VENV/bin/python3" ]; then
+    VENV_MAJOR="$("$VENV/bin/python3" -c 'import sys; print(sys.version_info.major)')"
+    VENV_MINOR="$("$VENV/bin/python3" -c 'import sys; print(sys.version_info.minor)')"
+    if [ "$VENV_MAJOR" = "$PY_MAJOR" ] && [ "$VENV_MINOR" = "$PY_MINOR" ]; then
+        skip "$VENV  (Python $VENV_MAJOR.$VENV_MINOR)"
+    else
+        info "Recreating venv (was $VENV_MAJOR.$VENV_MINOR → $PY_MAJOR.$PY_MINOR)"
+        rm -rf "$VENV"
+        "$PYTHON" -m venv "$VENV"
+        ok "Venv recreated at $VENV  (Python $PY_MAJOR.$PY_MINOR)"
+    fi
+else
+    "$PYTHON" -m venv "$VENV"
+    ok "Venv created at $VENV  (Python $PY_MAJOR.$PY_MINOR)"
+fi
+
+# ── 7. Python dependencies ────────────────────────────────────────────────────
+echo ""
+echo "Installing Python dependencies into venv..."
+"$VENV/bin/pip" install -q --upgrade pip
+if [ "$ROLE" = "watcher" ]; then
+    # python-telegram-bot not needed on watcher nodes — keep the venv lean
+    "$VENV/bin/pip" install -q litellm httpx beautifulsoup4 lxml pyyaml
+else
+    "$VENV/bin/pip" install -q -r "$REPO_DIR/requirements.txt"
+fi
+ok "Dependencies installed"
+
+# ── 8. iCloud directory structure ─────────────────────────────────────────────
 echo ""
 echo "Setting up iCloud directories..."
 for DIR in memories skills inbox; do
@@ -142,7 +180,7 @@ for DIR in memories skills inbox; do
     fi
 done
 
-# ── 6. config.yaml ────────────────────────────────────────────────────────────
+# ── 9. config.yaml ────────────────────────────────────────────────────────────
 echo ""
 echo "Writing config.yaml..."
 CONFIG_DEST="$BRAIN_DIR/config.yaml"
@@ -154,7 +192,7 @@ else
     ROLE="$ROLE" \
     TELEGRAM_TOKEN="$TELEGRAM_TOKEN" \
     TELEGRAM_USER_ID="$TELEGRAM_USER_ID" \
-    "$PYTHON" - "$CONFIG_DEST" << 'PYEOF'
+    "$VENV/bin/python3" - "$CONFIG_DEST" << 'PYEOF'
 import os, re, sys
 path = sys.argv[1]
 text = open(path).read()
@@ -168,7 +206,7 @@ PYEOF
     ok "Created $CONFIG_DEST"
 fi
 
-# ── 7. Skill files ────────────────────────────────────────────────────────────
+# ── 10. Skill files ───────────────────────────────────────────────────────────
 echo ""
 echo "Installing skill files..."
 for SKILL in "$REPO_DIR/skills/"*.md; do
@@ -181,7 +219,7 @@ for SKILL in "$REPO_DIR/skills/"*.md; do
     fi
 done
 
-# ── 8. LiteLLM config ─────────────────────────────────────────────────────────
+# ── 11. LiteLLM config ────────────────────────────────────────────────────────
 echo ""
 echo "Setting up LiteLLM config..."
 if [ -f "$LITELLM_CONFIG" ]; then
@@ -214,22 +252,11 @@ LITELLM_EOF
     ok "Created $LITELLM_CONFIG"
 fi
 
-# ── 9. Python dependencies ────────────────────────────────────────────────────
-echo ""
-echo "Installing Python dependencies..."
-if [ "$ROLE" = "watcher" ]; then
-    # python-telegram-bot not needed on watcher nodes
-    "$PYTHON" -m pip install -q litellm httpx beautifulsoup4 lxml pyyaml
-else
-    "$PYTHON" -m pip install -q -r "$REPO_DIR/requirements.txt"
-fi
-ok "Dependencies installed"
-
-# ── 10. launchd plist ─────────────────────────────────────────────────────────
+# ── 12. launchd plist ─────────────────────────────────────────────────────────
 echo ""
 echo "Configuring launchd agent..."
 
-# Always write — updates role/keys if re-running after a change
+# Always write — picks up role/key/path changes on re-run
 cat > "$PLIST_DEST" << PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -240,7 +267,7 @@ cat > "$PLIST_DEST" << PLIST_EOF
   <string>${PLIST_NAME}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${PYTHON}</string>
+    <string>${VENV}/bin/python3</string>
     <string>${REPO_DIR}/daemon.py</string>
   </array>
   <key>RunAtLoad</key>
@@ -248,13 +275,15 @@ cat > "$PLIST_DEST" << PLIST_EOF
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/tmp/second-brain.log</string>
+  <string>${DEPLOY_DIR}/logs/out.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/second-brain.error.log</string>
+  <string>${DEPLOY_DIR}/logs/error.log</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>SECOND_BRAIN_ROLE</key>
     <string>${ROLE}</string>
+    <key>SECOND_BRAIN_DIR</key>
+    <string>${DEPLOY_DIR}</string>
     <key>GEMINI_API_KEY</key>
     <string>${GEMINI_KEY}</string>
     <key>ANTHROPIC_API_KEY</key>
@@ -265,7 +294,7 @@ cat > "$PLIST_DEST" << PLIST_EOF
 PLIST_EOF
 ok "Wrote $PLIST_DEST"
 
-# ── 11. Load (or reload) the agent ────────────────────────────────────────────
+# ── 13. Load (or reload) the agent ────────────────────────────────────────────
 if launchctl list "$PLIST_NAME" &>/dev/null; then
     info "Reloading existing agent..."
     launchctl unload "$PLIST_DEST" 2>/dev/null || true
@@ -278,7 +307,7 @@ echo ""
 echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Setup complete"
 echo ""
-echo "  Logs     tail -f /tmp/second-brain.log"
+echo "  Logs     tail -f $DEPLOY_DIR/logs/out.log"
 echo "  Stop     launchctl unload \"$PLIST_DEST\""
 echo "  Restart  launchctl load   \"$PLIST_DEST\""
 echo ""

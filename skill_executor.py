@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 import yaml
 from datetime import datetime
@@ -9,10 +10,11 @@ from litellm import acompletion
 
 log = logging.getLogger("skill-executor")
 
-ERROR_LOG = Path.home() / ".second-brain-errors.log"
+DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
+ERROR_LOG = DEPLOY_DIR / "errors.log"
 # Watcher nodes write execution history here instead of the iCloud skill file.
 # The leader's optimizer can optionally ingest this on its daily pass (v0.2+).
-LOCAL_EXEC_LOG = Path.home() / ".second-brain-execution-log.jsonl"
+LOCAL_EXEC_LOG = DEPLOY_DIR / "execution-log.jsonl"
 
 SKILLS_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain/skills"
 

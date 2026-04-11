@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import shutil
 import sqlite3
 import yaml
@@ -14,9 +15,10 @@ from skill_executor import SkillExecutor
 
 log = logging.getLogger("browser-watcher")
 
+DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
 CHROME_HISTORY = Path.home() / "Library/Application Support/Google/Chrome/Default/History"
 FIREFOX_HISTORY = Path.home() / "Library/Application Support/Firefox/Profiles"
-SEEN_URLS_FILE = Path.home() / ".second-brain-seen-urls"
+SEEN_URLS_FILE = DEPLOY_DIR / "seen-urls"
 CONFIG_PATH = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain/config.yaml"
 
 
