@@ -213,13 +213,19 @@ launchctl unload ~/Library/LaunchAgents/com.chrisrobertson.secondbrain.plist
 
 The email scanner reads Apple Mail.app's Envelope Index database directly for fast, offline access. This requires **Full Disk Access** for the process running the daemon.
 
-Grant it once in **System Settings → Privacy & Security → Full Disk Access**. The installer will print the exact binary path to add — `~/secondbrain/venv/bin/python3` is a symlink and the FDA dialog won't accept it. Use the real binary path the installer shows, or find it yourself:
+Grant it once in **System Settings → Privacy & Security → Full Disk Access**. The installer opens System Settings and a Finder window at the right folder automatically — drag `Python.app` from that Finder window into the FDA list.
+
+The FDA dialog requires an `.app` bundle; raw binaries and symlinks show up as documents and can't be selected. Homebrew Python ships `Python.app` alongside the binary. To find the path manually:
 
 ```bash
-~/secondbrain/venv/bin/python3 -c "import os, sys; print(os.path.realpath(sys.executable))"
+~/secondbrain/venv/bin/python3 -c "
+import os, sys
+exe = os.path.realpath(sys.executable)
+ver = os.path.dirname(os.path.dirname(exe))
+app = os.path.join(ver, 'Resources', 'Python.app')
+print(app if os.path.isdir(app) else exe)
+"
 ```
-
-In the FDA dialog, click **+**, press **Cmd+Shift+G**, paste the path, and click **Open**.
 
 If Full Disk Access is not granted, the scanner falls back to AppleScript (requires Mail.app to be running, no conversation threading, slower). A warning is logged at each scan cycle until access is granted.
 

@@ -460,9 +460,17 @@ if [ "$ROLE" = "full" ]; then
     echo ""
     echo "Checking Full Disk Access for email scanner..."
 
-    # Resolve the real binary path — macOS FDA dialog rejects symlinks.
-    # venv/bin/python3 → python3.13 → /opt/homebrew/... → real binary
-    PYTHON_REAL="$("$VENV/bin/python3" -c "import os, sys; print(os.path.realpath(sys.executable))")"
+    # Resolve the FDA-compatible path.
+    # The FDA dialog requires an .app bundle — it rejects symlinks and raw
+    # binaries inside .framework directories (shows them as documents).
+    # Homebrew Python ships Python.app alongside the binary; use that if present.
+    PYTHON_REAL="$("$VENV/bin/python3" -c "
+import os, sys
+exe = os.path.realpath(sys.executable)
+framework_ver = os.path.dirname(os.path.dirname(exe))
+app = os.path.join(framework_ver, 'Resources', 'Python.app')
+print(app if os.path.isdir(app) else exe)
+")"
 
     FDA_OK=false
     if "$VENV/bin/python3" -c \
@@ -481,21 +489,21 @@ if [ "$ROLE" = "full" ]; then
         echo "  (slower, no conversation threading, requires Mail.app open)."
         echo ""
         echo "  To grant access:"
-        echo "    1. System Settings will open to Privacy & Security → Full Disk Access"
-        echo "    2. Click the + button and navigate to (or paste with Cmd+Shift+G):"
-        printf "       %s\n" "$PYTHON_REAL"
+        echo "    1. Open a Finder window and press Cmd+Shift+G, then paste:"
+        printf "       %s\n" "$(dirname "$PYTHON_REAL")"
+        echo "    2. Drag the file/app from Finder into the Full Disk Access list"
+        printf "       (drag: %s)\n" "$(basename "$PYTHON_REAL")"
         echo "    3. Re-run ./install.sh to verify"
         echo ""
         read -r -p "  Open System Settings → Full Disk Access now? [Y/n]: " OPEN_FDA
         OPEN_FDA="${OPEN_FDA:-Y}"
         if [[ "$OPEN_FDA" =~ ^[Yy]$ ]]; then
             open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+            open "$(dirname "$PYTHON_REAL")"
             echo ""
-            printf "${YELLOW}  →${NC}  In the Full Disk Access list click +, press Cmd+Shift+G,\n"
-            echo "     paste this path and click Open:"
-            printf "       %s\n" "$PYTHON_REAL"
-            echo ""
-            echo "     Then re-run ./install.sh to reload the daemon with access."
+            printf "${YELLOW}  →${NC}  A Finder window opened at the right folder.\n"
+            printf "       Drag '%s' into the Full Disk Access list,\n" "$(basename "$PYTHON_REAL")"
+            echo "       then re-run ./install.sh to reload the daemon with access."
         else
             info "Skipped — re-run ./install.sh after granting access to reload the daemon"
         fi
