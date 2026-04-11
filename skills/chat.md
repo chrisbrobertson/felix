@@ -1,7 +1,7 @@
 ---
 name: chat
 version: 1
-preferred_model: claude-sonnet-4-20250514
+preferred_model: claude-sonnet-4-6
 fallback_model: openai/nemotron-cascade-2
 success_rate: null
 total_runs: 0

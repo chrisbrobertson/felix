@@ -105,15 +105,23 @@ class TelegramChatHandler:
             await update.message.reply_text(text[i:i + TG_MAX_CHARS])
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_user.id != self.allowed_user_id:
+        user_id = update.effective_user.id
+        log.info(f"Message received from user_id={user_id}")
+
+        if user_id != self.allowed_user_id:
+            log.warning(f"Ignored message from unauthorised user_id={user_id} (allowed={self.allowed_user_id})")
             return
 
         query = update.message.text
+        log.info(f"Processing query: {query[:80]!r}")
+
         memory_context = self._load_context(query)
+        log.info(f"Context loaded: {len(memory_context)} chars")
 
         response = await self.executor.run({
             "memory_context": memory_context,
             "user_query": query
         })
 
+        log.info(f"Response: {len(response) if response else 0} chars")
         await self._send_reply(update, response)
