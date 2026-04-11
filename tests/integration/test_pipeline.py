@@ -4,6 +4,7 @@ Integration tests: URL entry → SkillExecutor → MemoryWriter → file on disk
 These tests use real file I/O against tmp directories and mock only the
 LLM API call (acompletion) and HTTP fetches.
 """
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -674,3 +675,327 @@ async def test_memories_list_search_view_delete_flow(infra, chat_handler_instanc
     assert not p1.exists()
     assert "Deleted" in u.message.reply_text.call_args[0][0]
     assert len(chat_handler_instance._last_results) == 0
+
+
+# ── Zoom Scanner integration ───────────────────────────────────────────────────
+
+async def test_zoom_scanner_writes_memory_for_meeting(tmp_path):
+    """ZoomScanner._run_scan → meeting-*.md written with correct frontmatter."""
+    import zoom_scanner as zs
+    from zoom_scanner import ZoomScanner
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "zoom-state.json"
+
+    VTT_CONTENT = (
+        "WEBVTT\n\n"
+        "1\n00:00:05.000 --> 00:00:10.500\n"
+        "Sarah Chen: Good morning everyone, let's get started.\n\n"
+        "2\n00:00:11.000 --> 00:00:18.750\n"
+        "Mike Peters: Thanks Sarah. I wanted to address the budget concerns.\n\n"
+        "3\n00:00:19.000 --> 00:00:25.000\n"
+        "Sarah Chen: Can you commit to having the revised numbers by Friday?\n\n"
+    )
+
+    RECORDINGS_RESPONSE = {
+        "meetings": [{
+            "uuid": "test-uuid-abc123",
+            "id": "12345678",
+            "topic": "Q4 Planning Review",
+            "start_time": "2026-04-11T10:00:00Z",
+            "duration": 45,
+            "recording_files": [{
+                "file_type": "TRANSCRIPT",
+                "status": "completed",
+                "download_url": "https://zoom.us/rec/download/test",
+            }],
+        }],
+        "next_page_token": None,
+    }
+
+    PARTICIPANTS_RESPONSE = {
+        "participants": [
+            {"name": "Sarah Chen", "user_email": "sarah.chen@acme.com"},
+            {"name": "Mike Peters", "user_email": "mike.peters@acme.com"},
+        ]
+    }
+
+    scanner = ZoomScanner(role="full")
+    scanner._token = "test-token"
+    scanner._token_expiry = 9999999999.0
+
+    import yaml as _yaml
+
+    config_content = {
+        "zoom_scanner": {
+            "interval_seconds": 300,
+            "initial_lookback_days": 30,
+        }
+    }
+
+    mock_llm_resp = MagicMock()
+    mock_llm_resp.choices[0].message.content = (
+        '{"summary": "Q4 planning with budget review.", '
+        '"tags": ["q4", "budget"], "key_decisions": ["Friday deadline confirmed"]}'
+    )
+
+    async def fake_api_get(client, path, params=None, _retry=0):
+        if "recordings" in path:
+            return RECORDINGS_RESPONSE
+        if "participants" in path:
+            return PARTICIPANTS_RESPONSE
+        return None
+
+    async def fake_download(url):
+        return VTT_CONTENT
+
+    with patch.object(zs, "MEMORIES_DIR", memories_dir), \
+         patch.object(zs, "STATE_FILE", state_file), \
+         patch.object(zs, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch.object(scanner, "_api_get", side_effect=fake_api_get), \
+         patch.object(scanner, "_download_transcript", side_effect=fake_download), \
+         patch("litellm.acompletion", new=AsyncMock(return_value=mock_llm_resp)):
+
+        (tmp_path / "config.yaml").write_text(_yaml.dump(config_content))
+        await scanner._run_scan()
+
+    mem_files = list(memories_dir.glob("meeting-*.md"))
+    assert len(mem_files) == 1, f"Expected 1 meeting memory, got {[f.name for f in mem_files]}"
+
+    text = mem_files[0].read_text()
+    import yaml as _yaml2
+    parts = text.split("---", 2)
+    fm = _yaml2.safe_load(parts[1])
+
+    assert fm["type"] == "meeting_transcript"
+    assert fm["source_title"] == "Q4 Planning Review"
+    assert fm["source_url"] == "zoom:test-uuid-abc123"
+    assert "sarah.chen@acme.com" in fm["participants"]
+    assert "## Transcript" in text
+    assert "Sarah Chen" in text
+
+    # UUID persisted to state file
+    state = json.loads(state_file.read_text())
+    assert "test-uuid-abc123" in state["processed_uuids"]
+
+
+async def test_zoom_scanner_skips_processed_uuid(tmp_path):
+    """ZoomScanner does not reprocess a meeting UUID already in state."""
+    import zoom_scanner as zs
+    from zoom_scanner import ZoomScanner
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "zoom-state.json"
+
+    # Pre-populate state with the UUID we'll see in the API response
+    state_file.write_text(json.dumps({
+        "processed_uuids": ["already-seen-uuid"],
+        "last_poll": "2026-04-11T10:00:00",
+    }))
+
+    RECORDINGS_RESPONSE = {
+        "meetings": [{
+            "uuid": "already-seen-uuid",
+            "id": "99999",
+            "topic": "Old Meeting",
+            "start_time": "2026-04-10T10:00:00Z",
+            "duration": 30,
+            "recording_files": [{
+                "file_type": "TRANSCRIPT",
+                "status": "completed",
+                "download_url": "https://zoom.us/rec/download/old",
+            }],
+        }],
+        "next_page_token": None,
+    }
+
+    scanner = ZoomScanner(role="full")
+    scanner._token = "test-token"
+    scanner._token_expiry = 9999999999.0
+
+    import yaml as _yaml
+
+    async def fake_api_get(client, path, params=None, _retry=0):
+        return RECORDINGS_RESPONSE
+
+    with patch.object(zs, "MEMORIES_DIR", memories_dir), \
+         patch.object(zs, "STATE_FILE", state_file), \
+         patch.object(zs, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch.object(scanner, "_api_get", side_effect=fake_api_get), \
+         patch.object(scanner, "_download_transcript", new=AsyncMock()) as mock_dl:
+
+        (tmp_path / "config.yaml").write_text(_yaml.dump({"zoom_scanner": {"interval_seconds": 300, "initial_lookback_days": 30}}))
+        await scanner._run_scan()
+
+    mock_dl.assert_not_called()
+    assert list(memories_dir.glob("meeting-*.md")) == []
+
+
+# ── Commitment Tracker integration ────────────────────────────────────────────
+
+async def test_commitment_tracker_extracts_from_meeting_memory(tmp_path):
+    """CommitmentTracker._run_scan → commitment-*.md written from meeting memory."""
+    import commitment_tracker as ct
+    from commitment_tracker import CommitmentTracker, _parse_frontmatter
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "ct-state.json"
+
+    # Write a meeting transcript memory
+    meeting_mem = memories_dir / "meeting-2026-04-11-q4-abc123.md"
+    meeting_mem.write_text(
+        "---\n"
+        "source_title: Q4 Planning Review\n"
+        "summary: Sarah committed to sending revised budget numbers by Friday.\n"
+        "tags: [q4, budget]\nlast_scanned: '2026-04-11T10:00:00'\n"
+        "source_url: zoom:test-uuid-abc123\ntype: meeting_transcript\n"
+        "participants: [sarah.chen@acme.com]\nspeakers: [Sarah Chen]\n"
+        "duration_minutes: 45\nmeeting_date: '2026-04-11T10:00:00'\n"
+        "zoom_meeting_id: '12345678'\n---\n\n"
+        "## Transcript\n"
+        "- 00:00:19 Sarah Chen: Can you commit to having the revised numbers by Friday?\n"
+        "- 00:00:25 Sarah Chen: Yes, I'll have the revised budget numbers to you by Friday.\n\n"
+        "## Summary\nSarah committed to sending revised budget numbers by Friday.\n"
+    )
+
+    mock_resp = MagicMock()
+    mock_resp.choices[0].message.content = json.dumps({
+        "commitments": [{
+            "type": "outbound",
+            "description": "Send revised budget numbers",
+            "owner": "Sarah Chen",
+            "owner_email": "sarah.chen@acme.com",
+            "recipient": "Chris",
+            "due_date": "2026-04-18",
+            "due_date_confidence": "explicit",
+            "confidence": 0.9,
+            "extracted_text": "Yes, I'll have the revised budget numbers to you by Friday.",
+        }]
+    })
+
+    tracker = CommitmentTracker(role="full")
+    import yaml as _yaml
+
+    with patch.object(ct, "MEMORIES_DIR", memories_dir), \
+         patch.object(ct, "STATE_FILE", state_file), \
+         patch.object(ct, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch("litellm.acompletion", new=AsyncMock(return_value=mock_resp)):
+
+        (tmp_path / "config.yaml").write_text(_yaml.dump({
+            "commitment_tracker": {
+                "interval_seconds": 300,
+                "min_confidence": 0.5,
+                "source_types": ["meeting_transcript"],
+            }
+        }))
+        await tracker._run_scan()
+
+    commitment_files = list(memories_dir.glob("commitment-*.md"))
+    assert len(commitment_files) == 1
+
+    import yaml as _yaml2
+    text = commitment_files[0].read_text()
+    parts = text.split("---", 2)
+    fm = _yaml2.safe_load(parts[1])
+
+    assert fm["type"] == "commitment"
+    assert fm["commitment_type"] == "outbound"
+    assert fm["owner"] == "Sarah Chen"
+    assert fm["status"] == "active"
+    assert fm["source_url"].startswith("commitment:")
+    assert fm["source_memory"] == "zoom:test-uuid-abc123"
+    assert "## Context" in text
+
+
+async def test_commitment_commands_complete_and_dismiss_flow(infra, chat_handler_instance):
+    """/commitments → /complete → /dismiss round trip via Telegram commands."""
+    import yaml as _yaml
+    import commitment_tracker as ct
+    from commitment_tracker import _parse_frontmatter, _stable_commitment_id, _slugify
+
+    m = infra["root"] / "memories"
+
+    # Write two active commitment files
+    def write_commitment(desc, commitment_type, due_date=None):
+        source_url = "zoom:abc"
+        stable_id = _stable_commitment_id(source_url, desc, "Alice")
+        slug = _slugify(desc)
+        p = m / f"commitment-{slug}-{stable_id}.md"
+        fm = {
+            "source_title": desc,
+            "summary": f"Alice committed to {desc.lower()}",
+            "tags": [],
+            "last_scanned": "2026-04-11T10:00:00",
+            "source_url": f"commitment:{stable_id}",
+            "type": "commitment",
+            "commitment_type": commitment_type,
+            "owner": "Alice",
+            "owner_email": "alice@acme.com",
+            "recipient": "Chris",
+            "due_date": due_date,
+            "due_date_confidence": "explicit" if due_date else "none",
+            "confidence": 0.9,
+            "status": "active",
+            "source_memory": source_url,
+            "extracted_text": "I will do it.",
+        }
+        p.write_text(f"---\n{_yaml.dump(fm, sort_keys=False)}---\n\n## Context\nTest.\n")
+        return p
+
+    p_outbound = write_commitment("Send the report", "outbound", "2026-04-18")
+    p_waiting = write_commitment("Waiting for vendor quote", "waiting_on")
+
+    u = MagicMock()
+    u.effective_user.id = 12345
+    u.message = AsyncMock()
+
+    # Step 1: /commitments lists both
+    ctx = MagicMock()
+    ctx.args = []
+    await chat_handler_instance.cmd_commitments(u, ctx)
+    reply = u.message.reply_text.call_args[0][0]
+    assert "Send the report" in reply
+    assert "Waiting for vendor quote" in reply
+    assert len(chat_handler_instance._last_commitment_set) == 2
+
+    # Find index of "Send the report" (sorted by due_date — it has one, so comes first)
+    sorted_titles = []
+    for f in chat_handler_instance._last_commitment_set:
+        fm = _parse_frontmatter(f.read_text())
+        sorted_titles.append(fm["source_title"])
+    report_idx = sorted_titles.index("Send the report") + 1
+
+    # Step 2: /complete N marks it completed
+    u.message.reset_mock()
+    ctx = MagicMock()
+    ctx.args = [str(report_idx)]
+
+    with patch.object(ct, "MEMORIES_DIR", m):
+        await chat_handler_instance.cmd_complete(u, ctx)
+
+    reply = u.message.reply_text.call_args[0][0]
+    assert "Marked complete" in reply or "✓" in reply
+    fm = _parse_frontmatter(p_outbound.read_text())
+    assert fm["status"] == "completed"
+
+    # Step 3: /commitments now shows only 1 (the waiting one)
+    u.message.reset_mock()
+    ctx = MagicMock()
+    ctx.args = []
+    await chat_handler_instance.cmd_commitments(u, ctx)
+    assert len(chat_handler_instance._last_commitment_set) == 1
+
+    # Step 4: /dismiss 1 marks the remaining one dismissed
+    u.message.reset_mock()
+    ctx = MagicMock()
+    ctx.args = ["1"]
+    with patch.object(ct, "MEMORIES_DIR", m):
+        await chat_handler_instance.cmd_dismiss(u, ctx)
+
+    reply = u.message.reply_text.call_args[0][0]
+    assert "Dismissed" in reply or "✗" in reply
+    fm = _parse_frontmatter(p_waiting.read_text())
+    assert fm["status"] == "dismissed"

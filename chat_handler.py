@@ -36,11 +36,16 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("search", self.cmd_search))
         self.app.add_handler(CommandHandler("memory", self.cmd_memory))
         self.app.add_handler(CommandHandler("delete", self.cmd_delete))
+        self.app.add_handler(CommandHandler("commitments", self.cmd_commitments))
+        self.app.add_handler(CommandHandler("complete", self.cmd_complete))
+        self.app.add_handler(CommandHandler("dismiss", self.cmd_dismiss))
         # Cache: path -> (mtime, header_text). Invalidated when mtime changes.
         # Avoids reading every file on every chat message.
         self._header_cache: dict = {}
         # Last /memories or /search result set — used by /memory <N> and /delete <N>.
         self._last_results: list = []
+        # Last /commitments result set — used by /complete <N> and /dismiss <N>.
+        self._last_commitment_set: list = []
 
     async def start(self):
         await self.app.initialize()
@@ -367,6 +372,129 @@ class TelegramChatHandler:
             pass
 
         await update.message.reply_text(f"Deleted: {title}")
+
+    # ── /commitments command ──────────────────────────────────────────────────
+
+    def _load_active_commitments(self, type_filter: str = None) -> list:
+        """Return (path, frontmatter) pairs for active commitment files."""
+        results = []
+        for f in sorted((BRAIN_DIR / "memories").glob("commitment-*.md")):
+            fm = self._parse_frontmatter(f)
+            if fm.get("type") != "commitment":
+                continue
+            if fm.get("status") != "active":
+                continue
+            if type_filter:
+                ct = fm.get("commitment_type", "")
+                wanted = "waiting_on" if type_filter.lower() == "waiting" else type_filter.lower()
+                if ct != wanted:
+                    continue
+            results.append((f, fm))
+
+        def _sort_key(item):
+            _, fm = item
+            due = fm.get("due_date")
+            # Nulls last: (0, date_str) for known dates, (1, "") for unknown
+            if due:
+                return (0, str(due))
+            return (1, "")
+
+        results.sort(key=_sort_key)
+        return results
+
+    async def cmd_commitments(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        type_filter = context.args[0] if context.args else None
+        items = self._load_active_commitments(type_filter)
+
+        if not items:
+            msg = (
+                f"No active {type_filter} commitments."
+                if type_filter
+                else "No active commitments."
+            )
+            await update.message.reply_text(msg)
+            self._last_commitment_set = []
+            return
+
+        self._last_commitment_set = [f for f, _ in items]
+        total = len(items)
+        lines = [f"Active commitments ({total} total):"]
+
+        for i, (_, fm) in enumerate(items[:20], 1):
+            ct = fm.get("commitment_type", "outbound")
+            desc = (fm.get("source_title") or fm.get("summary") or "")[:50]
+            owner = fm.get("owner", "")
+            due = fm.get("due_date")
+            due_str = f" — due {due}" if due else " — due unknown"
+            needs_review = "needs-review" in (fm.get("tags") or [])
+            flag = " \u26a0\ufe0f" if needs_review else ""
+            lines.append(f"{i}. [{ct}] {desc} — {owner}{due_str}{flag}")
+
+        if total > 20:
+            lines.append(f"... and {total - 20} more.")
+
+        lines.append("\nUse /complete N or /dismiss N to update status.")
+        await update.message.reply_text("\n".join(lines))
+
+    def _resolve_commitment_index(self, n: str):
+        """Convert 1-based index string to a Path from _last_commitment_set, or None."""
+        try:
+            idx = int(n) - 1
+        except (ValueError, TypeError):
+            return None
+        if 0 <= idx < len(self._last_commitment_set):
+            return self._last_commitment_set[idx]
+        return None
+
+    async def cmd_complete(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /complete N")
+            return
+
+        path = self._resolve_commitment_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /commitments first.")
+            return
+
+        from commitment_tracker import CommitmentTracker
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title") or "commitment"
+        owner = fm.get("owner", "")
+        label = f'"{title}"' + (f" ({owner})" if owner else "")
+
+        try:
+            CommitmentTracker().update_commitment_status(path, "completed")
+            await update.message.reply_text(f"\u2713 Marked complete: {label}")
+        except Exception as e:
+            await update.message.reply_text(f"Error updating commitment: {e}")
+
+    async def cmd_dismiss(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /dismiss N")
+            return
+
+        path = self._resolve_commitment_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /commitments first.")
+            return
+
+        from commitment_tracker import CommitmentTracker
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title") or "commitment"
+        owner = fm.get("owner", "")
+        label = f'"{title}"' + (f" ({owner})" if owner else "")
+
+        try:
+            CommitmentTracker().update_commitment_status(path, "dismissed")
+            await update.message.reply_text(f"\u2717 Dismissed: {label}")
+        except Exception as e:
+            await update.message.reply_text(f"Error updating commitment: {e}")
 
     async def _send_reply(self, update: Update, text: str):
         """Chunk response into ≤4096-char messages to respect Telegram's hard limit."""

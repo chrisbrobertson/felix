@@ -20,6 +20,10 @@ memory_writer.py       # Atomic writes of memory markdown to iCloud
 chat_handler.py        # Telegram bot; keyword-relevance context loading
 index_builder.py       # Hourly index.md rebuild
 skill_optimizer.py     # Daily LLM-as-judge skill improvement (v0.1 is a stub)
+project_scanner.py     # Scans ~/repos for git repos, writes project-*.md memory files
+email_scanner.py       # Reads Apple Mail, writes email-thread-*.md memory files
+zoom_scanner.py        # Polls Zoom API, parses VTT transcripts, writes meeting-*.md files
+commitment_tracker.py  # Extracts commitments from meeting/email memories, /commitments cmd
 utils.py               # Shared helpers
 skills/                # Skill .md files (committed; deployed to iCloud skills/ dir)
 tests/
@@ -91,7 +95,7 @@ All live data lives outside the repo, in iCloud Drive:
 
 Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overrides `daemon.role` (use this per-machine so the override isn't synced via iCloud).
 
-## Architecture: Six Async Loops
+## Architecture: Eight Async Loops
 
 1. **Browser Watcher** (every 5 min) — reads Chrome/Firefox SQLite DBs, filters by dwell time and skip-domain list, fetches page content, runs `summarize-webpage` skill, writes memory file.
 
@@ -105,9 +109,13 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 6. **Email Scanner** (every 5 min) — reads Apple Mail.app data (SQLite Envelope Index primary, AppleScript fallback), writes one `email-thread-{slug}-{conv-id}.md` per conversation thread. Skips write when `message_count` and `last_message` unchanged. `type: email_thread` in frontmatter. Requires Full Disk Access for SQLite path. State (high-water ROWID) persisted in `DEPLOY_DIR/email-scanner-state.json`.
 
+7. **Zoom Scanner** (every 5 min, `full` role only) — polls Zoom Cloud Recordings API via Server-to-Server OAuth (M2M), downloads VTT transcripts, parses speaker-attributed segments, generates LLM summary, writes `meeting-{date}-{slug}-{id}.md` per meeting. `type: meeting_transcript` in frontmatter. Deduplication via `DEPLOY_DIR/zoom-scanner-state.json`. Requires `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET` env vars; exits gracefully if missing.
+
+8. **Commitment Tracker** (every 5 min, `full` role only) — scans `meeting_transcript` and `email_thread` memory files for new/changed content (mtime-based), calls LLM to extract commitments and waiting-on items, writes one `commitment-{slug}-{id}.md` per item. Confidence ≥0.7 → auto-active; 0.5–0.69 → `needs-review` tag; <0.5 → discarded. Exposes `/commitments`, `/complete N`, `/dismiss N` Telegram commands. State persisted in `DEPLOY_DIR/commitment-scanner-state.json`.
+
 ## Two Deployment Roles
 
-- **`full`** — all six loops. Runs on always-on machine (Mac Studio/Mini). Needs `ANTHROPIC_API_KEY` + `GEMINI_API_KEY`.
+- **`full`** — all eight loops. Runs on always-on machine (Mac Studio/Mini). Needs `ANTHROPIC_API_KEY` + `GEMINI_API_KEY`.
 - **`watcher`** — browser watcher only. Runs on MacBook. Needs only `GEMINI_API_KEY`. Full-node imports (`python-telegram-bot`, etc.) must be deferred inside the `role == "full"` block to avoid crashing on watcher nodes that don't have those packages installed.
 
 ## LLM Routing
@@ -135,11 +143,14 @@ All runtime state lives in `~/secondbrain/` — separate from the repo and from 
 
 ```
 ~/secondbrain/
-├── venv/              # Python virtual environment (created by install.sh)
-├── logs/              # out.log, error.log (written by launchd)
-├── seen-urls          # flat file of processed URLs (browser watcher)
-├── errors.log         # LLM API errors
-└── execution-log.jsonl  # watcher-node skill execution log
+├── venv/                           # Python virtual environment (created by install.sh)
+├── logs/                           # out.log, error.log (written by launchd)
+├── seen-urls                       # flat file of processed URLs (browser watcher)
+├── errors.log                      # LLM API errors
+├── execution-log.jsonl             # watcher-node skill execution log
+├── email-scanner-state.json        # high-water ROWID for email scanner
+├── zoom-scanner-state.json         # processed meeting UUIDs for zoom scanner
+└── commitment-scanner-state.json   # processed file mtimes for commitment tracker
 ```
 
 `SECOND_BRAIN_DIR` env var overrides the deploy dir location (defaults to `~/secondbrain`). The launchd plist sets this explicitly so the daemon always finds its runtime files.

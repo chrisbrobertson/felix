@@ -8,7 +8,7 @@ Automatically captures and summarizes everything you read on the web. Stores sum
 
 ## How it works
 
-A daemon runs five async loops:
+A daemon runs eight async loops:
 
 1. **Browser Watcher** — polls Chrome/Firefox history every 5 minutes, fetches pages you spent time on, summarizes them with Gemini Flash, writes a `.md` file to iCloud
 2. **Telegram Bot** — answers questions about what you've read by loading relevant memory files into context
@@ -16,6 +16,8 @@ A daemon runs five async loops:
 4. **Skill Optimizer** — nightly pass that rewrites underperforming prompt templates (v0.1 stub)
 5. **Project Scanner** — scans `~/repos/` and `~/repo/` every 5 minutes for git repositories, writes a living `project-{name}.md` memory file per repo with recent commits, languages, and related projects
 6. **Email Scanner** — reads Apple Mail.app data every 5 minutes, writes a living `email-thread-*.md` memory file per conversation thread. Requires Full Disk Access (see below).
+7. **Zoom Scanner** — polls Zoom Cloud Recordings every 5 minutes, downloads VTT transcripts, parses speaker-attributed segments, generates a summary, writes `meeting-*.md` memory files. Requires Zoom Server-to-Server OAuth credentials (see below).
+8. **Commitment Tracker** — scans meeting and email memory files every 5 minutes, uses LLM to extract commitments and waiting-on items, writes one `commitment-*.md` file per extracted item. Surface via `/commitments` in Telegram.
 
 ---
 
@@ -229,7 +231,7 @@ The system supports two roles. Set `SECOND_BRAIN_ROLE` in each machine's launchd
 
 | Role | What runs | API keys needed |
 |------|-----------|-----------------|
-| `full` | All six loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
+| `full` | All eight loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
 | `watcher` | Browser watcher only | `GEMINI_API_KEY` only |
 
 Run `full` on your always-on machine (Mac Studio / Mac Mini). Run `watcher` on your MacBook — it captures pages you read while traveling and syncs memories to iCloud automatically.
@@ -258,9 +260,42 @@ tail -f ~/secondbrain/logs/error.log
 
 ---
 
+## Zoom Scanner Setup
+
+The Zoom scanner requires a **Server-to-Server OAuth app** (also called an M2M app) in the Zoom Marketplace. This gives the daemon a long-lived credential that does not expire when a user logs out.
+
+1. Go to [marketplace.zoom.us](https://marketplace.zoom.us/) → Develop → Build App → **Server-to-Server OAuth**
+2. Add the following scopes:
+   - `recording:read:admin`
+   - `meeting:read:admin`
+   - `user:read:admin`
+3. Copy **Account ID**, **Client ID**, and **Client Secret**
+4. In Zoom account settings → **Recording → Cloud Recording**, enable transcription
+5. Run `./install.sh` — it prompts for the three credentials and writes them to the launchd plist as `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET`
+
+The scanner is skipped gracefully (one WARNING logged) if any credential is missing, so leaving them blank does not break the daemon.
+
+---
+
+## Commitment Tracker
+
+The commitment tracker reads memory files written by the email and Zoom scanners and extracts commitments using LLM. No extra setup is needed — it runs automatically on the `full` role once the source scanners have written memory files.
+
+**Confidence thresholds** (configurable via `commitment_tracker.min_confidence` in `config.yaml`):
+
+| Confidence | Outcome |
+|------------|---------|
+| ≥ 0.7 | Written as `active` |
+| 0.5 – 0.69 | Written with `needs-review` tag |
+| < 0.5 | Discarded |
+
+**Extending to new source types** — add a type string to `commitment_tracker.source_types` in `config.yaml`. No code change required.
+
+---
+
 ## Telegram Commands
 
-Send these slash commands to your bot to manage the domain skip filter:
+Send these slash commands to your bot:
 
 **Memory browsing:**
 
@@ -270,6 +305,16 @@ Send these slash commands to your bot to manage the domain skip filter:
 | `/search <query>` | Keyword search across all memories |
 | `/memory <N>` | View full details of memory at index N from last list/search |
 | `/delete <N>` | Delete memory at index N from last list/search |
+
+**Commitment tracker:**
+
+| Command | Effect |
+|---------|--------|
+| `/commitments [type]` | List active commitments. Optional type filter: `outbound`, `inbound`, `waiting` |
+| `/complete <N>` | Mark commitment N as completed |
+| `/dismiss <N>` | Mark commitment N as dismissed (false positive or no longer relevant) |
+
+Items with low confidence (0.5–0.69) are shown with a ⚠️ indicator.
 
 **Domain skip filter:**
 

@@ -72,3 +72,15 @@ email_scanner:
     - Archive
     - Deleted Messages
   full_rescan: false             # set true to force a full rescan next cycle
+
+zoom_scanner:
+  interval_seconds: 300          # poll every 5 minutes
+  initial_lookback_days: 30      # first run: how far back to look for recordings
+
+commitment_tracker:
+  interval_seconds: 300          # scan every 5 minutes
+  min_confidence: 0.5            # discard items below this threshold
+  source_types:                  # memory types to scan for commitments
+    - meeting_transcript
+    - email_thread
+    # - slack_thread             # uncomment when slack scanner is implemented

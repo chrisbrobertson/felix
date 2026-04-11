@@ -126,11 +126,17 @@ EXISTING_GEMINI_KEY=""
 EXISTING_ANTHROPIC_KEY=""
 EXISTING_TELEGRAM_TOKEN=""
 EXISTING_TELEGRAM_USER_ID=""
+EXISTING_ZOOM_ACCOUNT_ID=""
+EXISTING_ZOOM_CLIENT_ID=""
+EXISTING_ZOOM_CLIENT_SECRET=""
 
 if [ -f "$PLIST_DEST" ]; then
     EXISTING_ROLE="$(_plist_env_val SECOND_BRAIN_ROLE)"
     EXISTING_GEMINI_KEY="$(_plist_env_val GEMINI_API_KEY)"
     EXISTING_ANTHROPIC_KEY="$(_plist_env_val ANTHROPIC_API_KEY)"
+    EXISTING_ZOOM_ACCOUNT_ID="$(_plist_env_val ZOOM_ACCOUNT_ID)"
+    EXISTING_ZOOM_CLIENT_ID="$(_plist_env_val ZOOM_CLIENT_ID)"
+    EXISTING_ZOOM_CLIENT_SECRET="$(_plist_env_val ZOOM_CLIENT_SECRET)"
 fi
 
 CONFIG_DEST="$BRAIN_DIR/config.yaml"
@@ -194,7 +200,38 @@ if [ "$ROLE" = "full" ]; then
     fi
 fi
 
-# ── 4. Telegram (full role only) ──────────────────────────────────────────────
+# ── 4. Zoom credentials (full role only, optional) ────────────────────────────
+ZOOM_ACCOUNT_ID=""
+ZOOM_CLIENT_ID=""
+ZOOM_CLIENT_SECRET=""
+if [ "$ROLE" = "full" ]; then
+    if [ -n "$EXISTING_ZOOM_ACCOUNT_ID" ] && [ -n "$EXISTING_ZOOM_CLIENT_ID" ]; then
+        ok "Zoom credentials (from existing config)"
+        ZOOM_ACCOUNT_ID="$EXISTING_ZOOM_ACCOUNT_ID"
+        ZOOM_CLIENT_ID="$EXISTING_ZOOM_CLIENT_ID"
+        ZOOM_CLIENT_SECRET="$EXISTING_ZOOM_CLIENT_SECRET"
+    elif [ -n "${ZOOM_ACCOUNT_ID:-}" ] && [ -n "${ZOOM_CLIENT_ID:-}" ]; then
+        ok "Zoom credentials (from environment)"
+        ZOOM_CLIENT_SECRET="${ZOOM_CLIENT_SECRET:-}"
+    else
+        echo ""
+        echo "Zoom (optional — leave blank to skip Zoom transcript scanning)"
+        echo "────────────────────────────────────────────────────────────────"
+        echo "  Create a Server-to-Server OAuth app at https://marketplace.zoom.us/"
+        echo "  Required scopes: recording:read:admin, meeting:read:admin, user:read:admin"
+        echo ""
+        read -r -p "  Zoom Account ID (Enter to skip): " ZOOM_ACCOUNT_ID
+        if [ -n "$ZOOM_ACCOUNT_ID" ]; then
+            read -r -p "  Zoom Client ID: " ZOOM_CLIENT_ID
+            read -r -p "  Zoom Client Secret: " ZOOM_CLIENT_SECRET
+            ok "Zoom credentials configured"
+        else
+            skip "Zoom credentials skipped — transcript scanning disabled"
+        fi
+    fi
+fi
+
+# ── 4b. Telegram (full role only) ─────────────────────────────────────────────
 TELEGRAM_TOKEN=""
 TELEGRAM_USER_ID=""
 if [ "$ROLE" = "full" ]; then
@@ -289,6 +326,7 @@ DAEMON_FILES=(
     daemon.py
     browser_watcher.py
     chat_handler.py
+    commitment_tracker.py
     email_scanner.py
     index_builder.py
     memory_writer.py
@@ -296,6 +334,7 @@ DAEMON_FILES=(
     skill_executor.py
     skill_optimizer.py
     utils.py
+    zoom_scanner.py
 )
 
 deployed=0
@@ -435,6 +474,12 @@ cat > "$PLIST_TMP" << PLIST_EOF
     <string>${GEMINI_KEY}</string>
     <key>ANTHROPIC_API_KEY</key>
     <string>${ANTHROPIC_KEY}</string>
+    <key>ZOOM_ACCOUNT_ID</key>
+    <string>${ZOOM_ACCOUNT_ID}</string>
+    <key>ZOOM_CLIENT_ID</key>
+    <string>${ZOOM_CLIENT_ID}</string>
+    <key>ZOOM_CLIENT_SECRET</key>
+    <string>${ZOOM_CLIENT_SECRET}</string>
   </dict>
 </dict>
 </plist>
