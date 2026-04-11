@@ -339,6 +339,46 @@ fi
 launchctl load "$PLIST_DEST"
 ok "launchd agent loaded"
 
+# ── 16. Full Disk Access check (full role only) ───────────────────────────────
+if [ "$ROLE" = "full" ]; then
+    echo ""
+    echo "Checking Full Disk Access for email scanner..."
+
+    FDA_OK=false
+    if "$VENV/bin/python3" -c \
+        "import os, sys; os.listdir(os.path.expanduser('~/Library/Mail/')); sys.exit(0)" \
+        2>/dev/null; then
+        FDA_OK=true
+    fi
+
+    if [ "$FDA_OK" = "true" ]; then
+        ok "Full Disk Access granted — email scanner can read Mail.app data"
+    else
+        printf "${YELLOW}  !${NC}  Full Disk Access not granted.\n"
+        echo ""
+        echo "  The email scanner reads Apple Mail.app data via SQLite."
+        echo "  Without Full Disk Access it falls back to AppleScript"
+        echo "  (slower, no conversation threading, requires Mail.app open)."
+        echo ""
+        echo "  To grant access:"
+        echo "    1. System Settings will open to Privacy & Security → Full Disk Access"
+        echo "    2. Click the + button and add:"
+        printf "       %s\n" "$VENV/bin/python3"
+        echo "    3. Re-run ./install.sh to verify"
+        echo ""
+        read -r -p "  Open System Settings → Full Disk Access now? [Y/n]: " OPEN_FDA
+        OPEN_FDA="${OPEN_FDA:-Y}"
+        if [[ "$OPEN_FDA" =~ ^[Yy]$ ]]; then
+            open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+            echo ""
+            printf "${YELLOW}  →${NC}  Add %s in the Full Disk Access list,\n" "$VENV/bin/python3"
+            echo "     then re-run ./install.sh to reload the daemon with access."
+        else
+            info "Skipped — re-run ./install.sh after granting access to reload the daemon"
+        fi
+    fi
+fi
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

@@ -55,9 +55,11 @@ Every user-facing feature must have corresponding documentation in `README.md`. 
 
 `CLAUDE.md` is guidance for Claude Code only — it is not a substitute for user-facing docs. If you add or change something a human operator needs to know to set up or run the system, update `README.md`.
 
-## Committing
+## Committing and Deploying
 
 Commit automatically after each work item is completed — do not wait to be asked. A work item is a logical unit: a new feature, a bug fix, a test suite addition, a docs update. Do not batch unrelated changes into one commit.
+
+After committing, always deploy with `./install.sh`. Never copy files to `~/secondbrain/` by hand.
 
 Run `pytest` and confirm it passes before every commit. If tests fail, fix them — do not skip or comment them out.
 
@@ -141,6 +143,19 @@ All runtime state lives in `~/secondbrain/` — separate from the repo and from 
 ```
 
 `SECOND_BRAIN_DIR` env var overrides the deploy dir location (defaults to `~/secondbrain`). The launchd plist sets this explicitly so the daemon always finds its runtime files.
+
+## Deploying Code Changes
+
+**Always use the installer to deploy.** Never copy files to `~/secondbrain/` manually.
+
+```bash
+./install.sh
+```
+
+The installer is idempotent — it skips unchanged files, deploys only what changed,
+and reloads the daemon. Running it is the only correct way to push code from the
+repo to the live daemon. Direct `cp` bypasses the FDA check, plist update, and
+reload sequence.
 
 ## Running the Daemon
 
