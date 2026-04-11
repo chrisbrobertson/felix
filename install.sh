@@ -226,16 +226,24 @@ echo "Setting up Python virtual environment..."
 if [ -f "$VENV/bin/python3" ]; then
     VENV_MAJOR="$("$VENV/bin/python3" -c 'import sys; print(sys.version_info.major)')"
     VENV_MINOR="$("$VENV/bin/python3" -c 'import sys; print(sys.version_info.minor)')"
-    if [ "$VENV_MAJOR" = "$PY_MAJOR" ] && [ "$VENV_MINOR" = "$PY_MINOR" ]; then
+    # --copies is required so ~/secondbrain/venv/bin/python3 is a real executable
+    # that macOS FDA drag-and-drop accepts. Symlinks into .framework are rejected.
+    if [ "$VENV_MAJOR" = "$PY_MAJOR" ] && [ "$VENV_MINOR" = "$PY_MINOR" ] && \
+       [ ! -L "$VENV/bin/python3" ]; then
         skip "$VENV  (Python $VENV_MAJOR.$VENV_MINOR)"
-    else
+    elif [ "$VENV_MAJOR" != "$PY_MAJOR" ] || [ "$VENV_MINOR" != "$PY_MINOR" ]; then
         info "Recreating venv (was $VENV_MAJOR.$VENV_MINOR → $PY_MAJOR.$PY_MINOR)"
         rm -rf "$VENV"
-        "$PYTHON" -m venv "$VENV"
+        "$PYTHON" -m venv --copies "$VENV"
+        ok "Venv recreated at $VENV  (Python $PY_MAJOR.$PY_MINOR)"
+    else
+        info "Recreating venv with --copies (needed for Full Disk Access)"
+        rm -rf "$VENV"
+        "$PYTHON" -m venv --copies "$VENV"
         ok "Venv recreated at $VENV  (Python $PY_MAJOR.$PY_MINOR)"
     fi
 else
-    "$PYTHON" -m venv "$VENV"
+    "$PYTHON" -m venv --copies "$VENV"
     ok "Venv created at $VENV  (Python $PY_MAJOR.$PY_MINOR)"
 fi
 
@@ -460,15 +468,9 @@ if [ "$ROLE" = "full" ]; then
     echo ""
     echo "Checking Full Disk Access for email scanner..."
 
-    # Resolve the actual binary the daemon runs as.
-    # FDA is granted per-executable. Python.app (the bundle) and python3.13
-    # (the binary) are separate TCC entries — granting FDA to the .app does
-    # NOT cover the binary. The + button in the FDA dialog filters for app
-    # bundles, so we open a Finder window instead and instruct the user to
-    # drag the binary directly into the FDA list (drag bypasses the filter).
-    PYTHON_REAL="$("$VENV/bin/python3" -c "import os, sys; print(os.path.realpath(sys.executable))")"
-    PYTHON_DIR="$(dirname "$PYTHON_REAL")"
-    PYTHON_BIN="$(basename "$PYTHON_REAL")"
+    # The venv is created with --copies so python3 here is a real executable,
+    # not a symlink into a .framework bundle. macOS FDA accepts it via drag-and-drop.
+    FDA_BINARY="$VENV/bin/python3"
 
     FDA_OK=false
     if "$VENV/bin/python3" -c \
@@ -486,20 +488,19 @@ if [ "$ROLE" = "full" ]; then
         echo "  Without Full Disk Access it falls back to AppleScript"
         echo "  (slower, no conversation threading, requires Mail.app open)."
         echo ""
-        echo "  The FDA + button only shows app bundles. To add the Python binary:"
+        echo "  The FDA + button only shows app bundles. Grant access by drag:"
         echo "    1. System Settings will open to Privacy & Security → Full Disk Access"
-        echo "    2. A Finder window will open at:"
-        printf "       %s\n" "$PYTHON_DIR"
-        printf "    3. Drag '%s' from that Finder window into the FDA list\n" "$PYTHON_BIN"
+        echo "    2. A Finder window will open at the venv directory"
+        echo "    3. Drag 'python3' from the Finder window into the FDA list"
         echo "    4. Re-run ./install.sh to verify"
         echo ""
         read -r -p "  Open System Settings + Finder now? [Y/n]: " OPEN_FDA
         OPEN_FDA="${OPEN_FDA:-Y}"
         if [[ "$OPEN_FDA" =~ ^[Yy]$ ]]; then
             open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
-            open "$PYTHON_DIR"
+            open "$VENV/bin"
             echo ""
-            printf "${YELLOW}  →${NC}  Drag '%s' from the Finder window\n" "$PYTHON_BIN"
+            printf "${YELLOW}  →${NC}  Drag 'python3' from the Finder window\n"
             echo "       into the Full Disk Access list in System Settings,"
             echo "       then re-run ./install.sh to reload the daemon with access."
         else
