@@ -366,8 +366,8 @@ def test_load_state_returns_defaults_when_missing(tmp_path):
 def test_applescript_groups_by_subject():
     src = AppleScriptSource()
     raw = (
-        "RE: Budget Talk|||alice@a.com|||Friday, April 10, 2026 at 09:00:00 AM|||id1|||msg1\n"
-        "RE: Budget Talk|||bob@b.com|||Saturday, April 11, 2026 at 10:00:00 AM|||id2|||msg2\n"
+        "RE: Budget Talk|||alice@a.com|||2026-04-10T09:00:00|||id1|||\n"
+        "RE: Budget Talk|||bob@b.com|||2026-04-11T10:00:00|||id2|||\n"
     )
     threads, _ = src._parse_raw(raw, set())
     assert len(threads) == 1

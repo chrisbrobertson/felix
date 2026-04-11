@@ -476,44 +476,32 @@ if [ "$ROLE" = "full" ]; then
     echo ""
     echo "Checking Full Disk Access for email scanner..."
 
-    # The venv is created with --copies so python3 here is a real executable,
-    # not a symlink into a .framework bundle. macOS FDA accepts it via drag-and-drop.
-    FDA_BINARY="$VENV/bin/python3"
+    # NOTE: We cannot reliably test FDA from within the installer. A subprocess
+    # spawned by Terminal inherits Terminal's responsible-process chain, so it
+    # gets Terminal's FDA status — not the binary's own grant. The daemon (run
+    # by launchd) is the true test: it runs the binary directly and will have
+    # FDA if the binary was added to the list.
+    #
+    # Instead, check whether the Envelope Index is accessible from this process.
+    # If this terminal has FDA (e.g. Terminal.app is in the FDA list), we can
+    # confirm. If not, we show instructions and trust that launchd will have access.
 
-    FDA_OK=false
-    if "$VENV/bin/python3" -c \
-        "import os, sys; os.listdir(os.path.expanduser('~/Library/Mail/')); sys.exit(0)" \
-        2>/dev/null; then
-        FDA_OK=true
-    fi
+    ENVELOPE_INDEX="$(ls "$HOME/Library/Mail"/V*/Envelope\ Index 2>/dev/null | sort -V | tail -1)"
 
-    if [ "$FDA_OK" = "true" ]; then
-        ok "Full Disk Access granted — email scanner can read Mail.app data"
+    if [ -n "$ENVELOPE_INDEX" ] && [ -r "$ENVELOPE_INDEX" ]; then
+        ok "Envelope Index readable — Full Disk Access confirmed"
+    elif [ -n "$ENVELOPE_INDEX" ]; then
+        # Path exists but not readable from this terminal — may still work from launchd
+        printf "${YELLOW}  –${NC}  Envelope Index found but not readable from this terminal.\n"
+        echo "     If you already added python3 to Full Disk Access, the daemon"
+        echo "     (run by launchd) will have access — check the logs after restart:"
+        echo "       tail -f ~/secondbrain/logs/error.log | grep email"
+        echo "     If no FDA yet, grant it now:"
+        echo "       System Settings → Privacy & Security → Full Disk Access"
+        echo "       Drag $VENV/bin/python3 into the list"
     else
-        printf "${YELLOW}  !${NC}  Full Disk Access not granted.\n"
-        echo ""
-        echo "  The email scanner reads Apple Mail.app data via SQLite."
-        echo "  Without Full Disk Access it falls back to AppleScript"
-        echo "  (slower, no conversation threading, requires Mail.app open)."
-        echo ""
-        echo "  The FDA + button only shows app bundles. Grant access by drag:"
-        echo "    1. System Settings will open to Privacy & Security → Full Disk Access"
-        echo "    2. A Finder window will open at the venv directory"
-        echo "    3. Drag 'python3' from the Finder window into the FDA list"
-        echo "    4. Re-run ./install.sh to verify"
-        echo ""
-        read -r -p "  Open System Settings + Finder now? [Y/n]: " OPEN_FDA
-        OPEN_FDA="${OPEN_FDA:-Y}"
-        if [[ "$OPEN_FDA" =~ ^[Yy]$ ]]; then
-            open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
-            open "$VENV/bin"
-            echo ""
-            printf "${YELLOW}  →${NC}  Drag 'python3' from the Finder window\n"
-            echo "       into the Full Disk Access list in System Settings,"
-            echo "       then re-run ./install.sh to reload the daemon with access."
-        else
-            info "Skipped — re-run ./install.sh after granting access to reload the daemon"
-        fi
+        printf "${YELLOW}  –${NC}  No Envelope Index found — Mail.app may not be set up.\n"
+        echo "     The email scanner will use the AppleScript fallback (requires Mail.app open)."
     fi
 fi
 

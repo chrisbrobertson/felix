@@ -300,10 +300,9 @@ class AppleScriptSource(MailDataSource):
             return ""
 
     def _is_mail_running(self) -> bool:
-        out = self._run_osascript(
-            'tell application "System Events" to '
-            '(name of processes) contains "Mail"'
-        )
+        # Check without System Events — the daemon (launchd) lacks Automation
+        # permission for System Events, so that approach always returns false.
+        out = self._run_osascript('application "Mail" is running')
         return out.strip().lower() == "true"
 
     def _fetch_messages_raw(self, since: datetime, excluded_mailboxes: set) -> str:
@@ -313,7 +312,11 @@ class AppleScriptSource(MailDataSource):
             for mb in sorted(excluded_mailboxes)[:8]  # AppleScript has string length limits
         ) or "true"
 
+        # Date formatted as ISO 8601 inside AppleScript to avoid locale-dependent
+        # string parsing on the Python side. No content/snippet fetch — it requires
+        # do shell script which is slow and can exceed the 30s timeout on large mailboxes.
         script = f'''
+if application "Mail" is not running then return ""
 tell application "Mail"
     set cutoff to date "{since_str}"
     set output to ""
@@ -323,16 +326,16 @@ tell application "Mail"
             if {exclude_check} then
                 set msgs to (messages of mb whose date received >= cutoff)
                 repeat with m in msgs
-                    set mSubj to subject of m
-                    set mSender to sender of m
-                    set mDate to (date received of m) as string
-                    set mId to message id of m
-                    try
-                        set mSnippet to (do shell script "echo " & quoted form of (content of m) & " | head -c 200")
-                    on error
-                        set mSnippet to ""
-                    end try
-                    set output to output & mSubj & "|||" & mSender & "|||" & mDate & "|||" & mId & "|||" & mSnippet & "\\n"
+                    set d to date received of m
+                    set mYear to (year of d) as string
+                    set mMon to text -2 thru -1 of ("0" & ((month of d) as integer) as string)
+                    set mDay to text -2 thru -1 of ("0" & (day of d) as string)
+                    set t to time of d
+                    set mHour to text -2 thru -1 of ("0" & ((t div 3600) as string))
+                    set mMin to text -2 thru -1 of ("0" & (((t mod 3600) div 60) as string))
+                    set mSec to text -2 thru -1 of ("0" & ((t mod 60) as string))
+                    set mDate to mYear & "-" & mMon & "-" & mDay & "T" & mHour & ":" & mMin & ":" & mSec
+                    set output to output & (subject of m) & "|||" & (sender of m) & "|||" & mDate & "|||" & (message id of m) & "|||" & "\n"
                 end repeat
             end if
         end repeat
@@ -359,12 +362,9 @@ end tell
             conv_id = _subject_to_conv_id(normalized)
 
             try:
-                recv_dt = datetime.strptime(date_str, "%A, %B %d, %Y at %I:%M:%S %p")
+                recv_dt = datetime.strptime(date_str[:19], "%Y-%m-%dT%H:%M:%S")
             except ValueError:
-                try:
-                    recv_dt = datetime.strptime(date_str[:19], "%Y-%m-%dT%H:%M:%S")
-                except ValueError:
-                    recv_dt = datetime.now()
+                recv_dt = datetime.now()
 
             recv_str = recv_dt.strftime("%Y-%m-%dT%H:%M:%S")
             date_label = recv_dt.strftime("%Y-%m-%d")
