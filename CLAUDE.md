@@ -89,7 +89,7 @@ All live data lives outside the repo, in iCloud Drive:
 
 Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overrides `daemon.role` (use this per-machine so the override isn't synced via iCloud).
 
-## Architecture: Four Async Loops
+## Architecture: Five Async Loops
 
 1. **Browser Watcher** (every 5 min) — reads Chrome/Firefox SQLite DBs, filters by dwell time and skip-domain list, fetches page content, runs `summarize-webpage` skill, writes memory file.
 
@@ -99,9 +99,11 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 4. **Skill Optimizer** (3 AM daily) — scores recent executions using LLM-as-judge against source content, rewrites underperforming skill instructions, appends to evolution log.
 
+5. **Project Scanner** (every 5 min) — globs `~/repos/` and `~/repo/` for git repos, extracts metadata (remote URL, HEAD sha, recent commits, branches, languages), generates a 1-2 sentence LLM summary from README on first scan or README change, writes `project-{name}.md` memory file. Skips write when HEAD sha unchanged. `type: code_project` in frontmatter.
+
 ## Two Deployment Roles
 
-- **`full`** — all four loops. Runs on always-on machine (Mac Studio/Mini). Needs `ANTHROPIC_API_KEY` + `GEMINI_API_KEY`.
+- **`full`** — all five loops. Runs on always-on machine (Mac Studio/Mini). Needs `ANTHROPIC_API_KEY` + `GEMINI_API_KEY`.
 - **`watcher`** — browser watcher only. Runs on MacBook. Needs only `GEMINI_API_KEY`. Full-node imports (`python-telegram-bot`, etc.) must be deferred inside the `role == "full"` block to avoid crashing on watcher nodes that don't have those packages installed.
 
 ## LLM Routing

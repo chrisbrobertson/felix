@@ -308,6 +308,123 @@ async def test_purge_command_removes_correct_memories(infra, chat_handler_instan
     assert "Deleted 1" in reply
 
 
+async def test_scanner_writes_memory_for_git_repo(tmp_path):
+    """ProjectScanner scan → project-{name}.md written with correct frontmatter."""
+    import subprocess
+    import project_scanner as ps
+    from project_scanner import ProjectScanner
+
+    # Set up a minimal git repo with one commit
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    subprocess.run(["git", "init", str(repo)], capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@test.com"],
+                   capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], capture_output=True)
+    (repo / "README.md").write_text("# My Repo\n\nA test project for the scanner.\n")
+    (repo / "main.py").write_text("print('hello')\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "initial commit"],
+                   capture_output=True)
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_content = {
+        "project_scanner": {
+            "interval_seconds": 300,
+            "repo_dirs": [str(tmp_path)],
+            "skip_repos": [],
+        }
+    }
+
+    scanner = ProjectScanner(role="full")
+
+    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
+         patch.object(ps, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch("project_scanner.acompletion", new=AsyncMock(
+             return_value=MagicMock(
+                 choices=[MagicMock(message=MagicMock(
+                     content="SUMMARY: A test project.\nTAGS: python, testing"
+                 ))]
+             )
+         ), create=True):
+
+        import yaml as _yaml
+        (tmp_path / "config.yaml").write_text(_yaml.dump(config_content))
+
+        await scanner._run_scan()
+
+    mem = memories_dir / "project-myrepo.md"
+    assert mem.exists(), "Memory file was not created"
+
+    import yaml as _yaml
+    text = mem.read_text()
+    parts = text.split("---", 2)
+    fm = _yaml.safe_load(parts[1])
+
+    assert fm["source_title"] == "myrepo"
+    assert fm["type"] == "code_project"
+    assert "python" in fm["languages"]
+    assert fm["head_sha"] != ""
+    assert "## Recent Activity" in text
+
+
+async def test_scanner_skips_write_when_no_changes(tmp_path):
+    """Second scan with same HEAD sha must not modify the memory file."""
+    import subprocess
+    import project_scanner as ps
+    from project_scanner import ProjectScanner
+
+    repo = tmp_path / "stable"
+    repo.mkdir()
+    subprocess.run(["git", "init", str(repo)], capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@t.com"],
+                   capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "T"], capture_output=True)
+    (repo / "main.py").write_text("x = 1\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-m", "init"], capture_output=True)
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_content = {
+        "project_scanner": {
+            "interval_seconds": 300,
+            "repo_dirs": [str(tmp_path)],
+            "skip_repos": [],
+        }
+    }
+
+    scanner = ProjectScanner(role="full")
+
+    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
+         patch.object(ps, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch("project_scanner.acompletion", new=AsyncMock(
+             return_value=MagicMock(
+                 choices=[MagicMock(message=MagicMock(
+                     content="SUMMARY: Stable repo.\nTAGS: python"
+                 ))]
+             )
+         ), create=True):
+
+        import yaml as _yaml
+        (tmp_path / "config.yaml").write_text(_yaml.dump(config_content))
+
+        # First scan — writes the file
+        await scanner._run_scan()
+        mem = memories_dir / "project-stable.md"
+        assert mem.exists()
+        first_mtime = mem.stat().st_mtime
+
+        # Second scan — nothing changed, file must not be rewritten
+        await scanner._run_scan()
+        second_mtime = mem.stat().st_mtime
+
+    assert first_mtime == second_mtime, "Memory file was rewritten despite no git changes"
+
+
 async def test_purgeall_command_clears_all_skip_domain_memories(
     infra, chat_handler_instance
 ):

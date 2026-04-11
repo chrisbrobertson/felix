@@ -8,12 +8,13 @@ Automatically captures and summarizes everything you read on the web. Stores sum
 
 ## How it works
 
-A daemon runs four async loops:
+A daemon runs five async loops:
 
 1. **Browser Watcher** — polls Chrome/Firefox history every 5 minutes, fetches pages you spent time on, summarizes them with Gemini Flash, writes a `.md` file to iCloud
 2. **Telegram Bot** — answers questions about what you've read by loading relevant memory files into context
 3. **Index Builder** — rebuilds a rolling 400-word synthesis of all your memories every hour
 4. **Skill Optimizer** — nightly pass that rewrites underperforming prompt templates (v0.1 stub)
+5. **Project Scanner** — scans `~/repos/` and `~/repo/` every 5 minutes for git repositories, writes a living `project-{name}.md` memory file per repo with recent commits, languages, and related projects
 
 ---
 
@@ -213,7 +214,7 @@ The system supports two roles. Set `SECOND_BRAIN_ROLE` in each machine's launchd
 
 | Role | What runs | API keys needed |
 |------|-----------|-----------------|
-| `full` | All four loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
+| `full` | All five loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
 | `watcher` | Browser watcher only | `GEMINI_API_KEY` only |
 
 Run `full` on your always-on machine (Mac Studio / Mac Mini). Run `watcher` on your MacBook — it captures pages you read while traveling and syncs memories to iCloud automatically.

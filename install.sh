@@ -179,6 +179,7 @@ DAEMON_FILES=(
     chat_handler.py
     index_builder.py
     memory_writer.py
+    project_scanner.py
     skill_executor.py
     skill_optimizer.py
     utils.py
