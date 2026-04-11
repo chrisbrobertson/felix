@@ -81,6 +81,34 @@ async def test_frontmatter_fields_present(writer, memories_dir):
     assert "created" in fm
     assert "hostname" in fm
     assert "id" in fm
+    assert "summary" in fm
+
+
+async def test_frontmatter_source_fields_come_first(writer, memories_dir):
+    """source_title, source_url, summary must be the first 3 frontmatter fields."""
+    filename = await writer.write(SAMPLE_ENTRY, SAMPLE_BODY)
+    raw = (memories_dir / filename).read_text()
+    # Strip opening ---\n and grab first few lines
+    lines = raw.split("\n")
+    assert lines[0] == "---"
+    assert lines[1].startswith("source_title:")
+    assert lines[2].startswith("source_url:")
+    assert lines[3].startswith("summary:")
+
+
+async def test_summary_extracted_from_body(writer, memories_dir):
+    filename = await writer.write(SAMPLE_ENTRY, SAMPLE_BODY)
+    parts = (memories_dir / filename).read_text().split("---", 2)
+    fm = yaml.safe_load(parts[1])
+    assert "LiteLLM" in fm["summary"]
+
+
+async def test_summary_empty_when_no_summary_section(writer, memories_dir):
+    body = "## Key Points\n- No summary section here."
+    filename = await writer.write(SAMPLE_ENTRY, body)
+    parts = (memories_dir / filename).read_text().split("---", 2)
+    fm = yaml.safe_load(parts[1])
+    assert fm["summary"] == ""
 
 
 async def test_tags_extracted_from_body(writer, memories_dir):
