@@ -15,6 +15,7 @@ A daemon runs five async loops:
 3. **Index Builder** — rebuilds a rolling 400-word synthesis of all your memories every hour
 4. **Skill Optimizer** — nightly pass that rewrites underperforming prompt templates (v0.1 stub)
 5. **Project Scanner** — scans `~/repos/` and `~/repo/` every 5 minutes for git repositories, writes a living `project-{name}.md` memory file per repo with recent commits, languages, and related projects
+6. **Email Scanner** — reads Apple Mail.app data every 5 minutes, writes a living `email-thread-*.md` memory file per conversation thread. Requires Full Disk Access (see below).
 
 ---
 
@@ -208,13 +209,25 @@ launchctl unload ~/Library/LaunchAgents/com.chrisrobertson.secondbrain.plist
 
 ---
 
+## Email Scanner: Full Disk Access
+
+The email scanner reads Apple Mail.app's Envelope Index database directly for fast, offline access. This requires **Full Disk Access** for the process running the daemon.
+
+Grant it once in **System Settings → Privacy & Security → Full Disk Access** — add Terminal (or your Python binary at `~/secondbrain/venv/bin/python3`).
+
+If Full Disk Access is not granted, the scanner falls back to AppleScript (requires Mail.app to be running, no conversation threading, slower). A warning is logged at each scan cycle until access is granted.
+
+To force a full re-scan of all email threads (e.g. after granting FDA for the first time), set `full_rescan: true` in `$BRAIN/config.yaml` under `email_scanner:`. The flag is automatically cleared after the scan completes.
+
+---
+
 ## Multi-machine setup
 
 The system supports two roles. Set `SECOND_BRAIN_ROLE` in each machine's launchd plist — do not set it in `config.yaml` (that file syncs via iCloud and would apply to all machines).
 
 | Role | What runs | API keys needed |
 |------|-----------|-----------------|
-| `full` | All five loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
+| `full` | All six loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
 | `watcher` | Browser watcher only | `GEMINI_API_KEY` only |
 
 Run `full` on your always-on machine (Mac Studio / Mac Mini). Run `watcher` on your MacBook — it captures pages you read while traveling and syncs memories to iCloud automatically.

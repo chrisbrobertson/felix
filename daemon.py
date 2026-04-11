@@ -35,16 +35,19 @@ async def main():
         from skill_optimizer import SkillOptimizer
         from index_builder import IndexBuilder
         from project_scanner import ProjectScanner
+        from email_scanner import EmailScanner
         chat = TelegramChatHandler()
         optimizer = SkillOptimizer()
         indexer = IndexBuilder()
         scanner = ProjectScanner(role=role)
+        email_scanner = EmailScanner(role=role)
         await chat.start()
         tasks += [
             chat.poll_loop,
             optimizer.run_loop,
             indexer.run_loop,
             scanner.run_loop,
+            email_scanner.run_loop,
         ]
 
     stop_event = asyncio.Event()

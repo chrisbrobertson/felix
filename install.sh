@@ -177,6 +177,7 @@ DAEMON_FILES=(
     daemon.py
     browser_watcher.py
     chat_handler.py
+    email_scanner.py
     index_builder.py
     memory_writer.py
     project_scanner.py

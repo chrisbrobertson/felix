@@ -425,6 +425,172 @@ async def test_scanner_skips_write_when_no_changes(tmp_path):
     assert first_mtime == second_mtime, "Memory file was rewritten despite no git changes"
 
 
+async def test_email_scanner_writes_memory_for_thread(tmp_path):
+    """EmailScanner scan → email-thread-*.md written with correct frontmatter."""
+    import sqlite3 as _sqlite3
+    import email_scanner as es
+    from email_scanner import EmailScanner, EnvelopeIndexSource, CORE_DATA_EPOCH_OFFSET
+    from datetime import datetime as _dt
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    # Build a minimal Envelope Index SQLite database
+    db_path = tmp_path / "Envelope Index"
+    conn = _sqlite3.connect(str(db_path))
+    conn.executescript("""
+        CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
+        CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT, comment TEXT);
+        CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+        CREATE TABLE messages (
+            ROWID INTEGER PRIMARY KEY,
+            conversation_id INTEGER,
+            subject INTEGER,
+            date_received REAL,
+            date_sent REAL,
+            snippet TEXT,
+            read INTEGER DEFAULT 0,
+            flagged INTEGER DEFAULT 0,
+            deleted INTEGER DEFAULT 0,
+            sender INTEGER,
+            mailbox INTEGER
+        );
+    """)
+    # Insert two threads: 2 messages in thread 1001, 1 message in thread 1002
+    def ts(dt):
+        return (_dt(*dt) - _dt(1970, 1, 1)).total_seconds() - CORE_DATA_EPOCH_OFFSET
+
+    conn.execute("INSERT INTO subjects VALUES (1, 'API Migration Timeline')")
+    conn.execute("INSERT INTO subjects VALUES (2, 'Q3 Budget')")
+    conn.execute("INSERT INTO addresses VALUES (1, 'alice@acme.com', 'Alice')")
+    conn.execute("INSERT INTO addresses VALUES (2, 'bob@acme.com', 'Bob')")
+    conn.execute("INSERT INTO mailboxes VALUES (1, 'mailbox://user@host/INBOX')")
+    conn.execute("INSERT INTO messages VALUES (101, 1001, 1, ?, ?, 'Starting migration planning', 0, 0, 0, 1, 1)",
+                 (ts((2026, 4, 5, 8, 0, 0)),) * 2)
+    conn.execute("INSERT INTO messages VALUES (102, 1001, 1, ?, ?, 'May 15 cutover confirmed', 1, 0, 0, 2, 1)",
+                 (ts((2026, 4, 10, 9, 0, 0)),) * 2)
+    conn.execute("INSERT INTO messages VALUES (103, 1002, 2, ?, ?, 'Budget numbers attached', 0, 0, 0, 1, 1)",
+                 (ts((2026, 4, 8, 10, 0, 0)),) * 2)
+    conn.commit()
+    conn.close()
+
+    config_content = {
+        "email_scanner": {
+            "interval_seconds": 300,
+            "initial_lookback_days": 30,
+            "archive_after_days": 90,
+            "skip_mailboxes": ["Trash", "Junk"],
+            "full_rescan": False,
+        }
+    }
+
+    scanner = EmailScanner(role="full")
+
+    with patch.object(es, "MEMORIES_DIR", memories_dir), \
+         patch.object(es, "STATE_FILE", tmp_path / "state.json"), \
+         patch.object(es, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch.object(EnvelopeIndexSource, "_find_db_path", return_value=db_path), \
+         patch.object(EnvelopeIndexSource, "_copy_db", return_value=db_path), \
+         patch("email_scanner.acompletion", new=AsyncMock(
+             return_value=MagicMock(
+                 choices=[MagicMock(message=MagicMock(
+                     content="SUMMARY: Thread about API migration.\nTAGS: acme, api-migration"
+                 ))]
+             )
+         ), create=True):
+
+        import yaml as _yaml
+        (tmp_path / "config.yaml").write_text(_yaml.dump(config_content))
+
+        await scanner._run_scan()
+
+    mem_files = list(memories_dir.glob("email-thread-*.md"))
+    assert len(mem_files) == 2, f"Expected 2 memory files, got {[f.name for f in mem_files]}"
+
+    import yaml as _yaml
+    for mem in mem_files:
+        text = mem.read_text()
+        parts = text.split("---", 2)
+        fm = _yaml.safe_load(parts[1])
+        assert fm["type"] == "email_thread"
+        assert fm["conversation_id"] in (1001, 1002)
+        assert fm["message_count"] > 0
+        assert "## Messages" in text
+
+
+async def test_email_scanner_skips_write_when_no_new_messages(tmp_path):
+    """Second scan with same data must not modify memory files."""
+    import sqlite3 as _sqlite3
+    import email_scanner as es
+    from email_scanner import EmailScanner, EnvelopeIndexSource, CORE_DATA_EPOCH_OFFSET
+    from datetime import datetime as _dt
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    db_path = tmp_path / "Envelope Index"
+    conn = _sqlite3.connect(str(db_path))
+    conn.executescript("""
+        CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
+        CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT, comment TEXT);
+        CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+        CREATE TABLE messages (
+            ROWID INTEGER PRIMARY KEY, conversation_id INTEGER,
+            subject INTEGER, date_received REAL, date_sent REAL,
+            snippet TEXT, read INTEGER DEFAULT 0, flagged INTEGER DEFAULT 0,
+            deleted INTEGER DEFAULT 0, sender INTEGER, mailbox INTEGER
+        );
+    """)
+
+    def ts(dt):
+        return (_dt(*dt) - _dt(1970, 1, 1)).total_seconds() - CORE_DATA_EPOCH_OFFSET
+
+    conn.execute("INSERT INTO subjects VALUES (1, 'Status Update')")
+    conn.execute("INSERT INTO addresses VALUES (1, 'a@b.com', 'A')")
+    conn.execute("INSERT INTO mailboxes VALUES (1, 'mailbox://u@h/INBOX')")
+    conn.execute("INSERT INTO messages VALUES (10, 9001, 1, ?, ?, 'Hello', 0, 0, 0, 1, 1)",
+                 (ts((2026, 4, 10, 9, 0, 0)),) * 2)
+    conn.commit()
+    conn.close()
+
+    config_content = {
+        "email_scanner": {
+            "interval_seconds": 300, "initial_lookback_days": 30,
+            "archive_after_days": 90, "skip_mailboxes": [], "full_rescan": False,
+        }
+    }
+
+    scanner = EmailScanner(role="full")
+
+    with patch.object(es, "MEMORIES_DIR", memories_dir), \
+         patch.object(es, "STATE_FILE", tmp_path / "state.json"), \
+         patch.object(es, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch.object(EnvelopeIndexSource, "_find_db_path", return_value=db_path), \
+         patch.object(EnvelopeIndexSource, "_copy_db", return_value=db_path), \
+         patch("email_scanner.acompletion", new=AsyncMock(
+             return_value=MagicMock(
+                 choices=[MagicMock(message=MagicMock(
+                     content="SUMMARY: Status update.\nTAGS: status"
+                 ))]
+             )
+         ), create=True):
+
+        import yaml as _yaml
+        (tmp_path / "config.yaml").write_text(_yaml.dump(config_content))
+
+        # First scan — creates the file
+        await scanner._run_scan()
+        mem_files = list(memories_dir.glob("email-thread-*.md"))
+        assert len(mem_files) == 1
+        first_mtime = mem_files[0].stat().st_mtime
+
+        # Second scan — same high_water_rowid, no new messages — must not rewrite
+        await scanner._run_scan()
+        second_mtime = mem_files[0].stat().st_mtime
+
+    assert first_mtime == second_mtime, "Memory file was rewritten with no new messages"
+
+
 async def test_purgeall_command_clears_all_skip_domain_memories(
     infra, chat_handler_instance
 ):
