@@ -167,7 +167,42 @@ else
 fi
 ok "Dependencies installed"
 
-# ── 8. iCloud directory structure ─────────────────────────────────────────────
+# ── 8. Deploy source files ────────────────────────────────────────────────────
+echo ""
+echo "Deploying source files to $DEPLOY_DIR..."
+
+# Daemon source files — only the modules the daemon actually imports.
+# Tests, migration scripts, and repo tooling stay in the repo.
+DAEMON_FILES=(
+    daemon.py
+    browser_watcher.py
+    chat_handler.py
+    index_builder.py
+    memory_writer.py
+    skill_executor.py
+    skill_optimizer.py
+    utils.py
+)
+
+deployed=0
+for FILE in "${DAEMON_FILES[@]}"; do
+    SRC="$REPO_DIR/$FILE"
+    DST="$DEPLOY_DIR/$FILE"
+    if [ ! -f "$SRC" ]; then
+        skip "$FILE  (not found in repo — skipping)"
+        continue
+    fi
+    if [ -f "$DST" ] && cmp -s "$SRC" "$DST"; then
+        skip "$FILE  (unchanged)"
+    else
+        cp "$SRC" "$DST"
+        ok "$FILE"
+        deployed=$((deployed + 1))
+    fi
+done
+[ "$deployed" -eq 0 ] && info "All source files already up to date" || ok "$deployed file(s) deployed"
+
+# ── 10. iCloud directory structure ────────────────────────────────────────────
 echo ""
 echo "Setting up iCloud directories..."
 for DIR in memories skills inbox; do
@@ -180,7 +215,7 @@ for DIR in memories skills inbox; do
     fi
 done
 
-# ── 9. config.yaml ────────────────────────────────────────────────────────────
+# ── 11. config.yaml ───────────────────────────────────────────────────────────
 echo ""
 echo "Writing config.yaml..."
 CONFIG_DEST="$BRAIN_DIR/config.yaml"
@@ -206,7 +241,7 @@ PYEOF
     ok "Created $CONFIG_DEST"
 fi
 
-# ── 10. Skill files ───────────────────────────────────────────────────────────
+# ── 12. Skill files ───────────────────────────────────────────────────────────
 echo ""
 echo "Installing skill files..."
 for SKILL in "$REPO_DIR/skills/"*.md; do
@@ -219,7 +254,7 @@ for SKILL in "$REPO_DIR/skills/"*.md; do
     fi
 done
 
-# ── 11. LiteLLM config ────────────────────────────────────────────────────────
+# ── 13. LiteLLM config ────────────────────────────────────────────────────────
 echo ""
 echo "Setting up LiteLLM config..."
 if [ -f "$LITELLM_CONFIG" ]; then
@@ -252,7 +287,7 @@ LITELLM_EOF
     ok "Created $LITELLM_CONFIG"
 fi
 
-# ── 12. launchd plist ─────────────────────────────────────────────────────────
+# ── 14. launchd plist ─────────────────────────────────────────────────────────
 echo ""
 echo "Configuring launchd agent..."
 
@@ -268,7 +303,7 @@ cat > "$PLIST_DEST" << PLIST_EOF
   <key>ProgramArguments</key>
   <array>
     <string>${VENV}/bin/python3</string>
-    <string>${REPO_DIR}/daemon.py</string>
+    <string>${DEPLOY_DIR}/daemon.py</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -294,7 +329,7 @@ cat > "$PLIST_DEST" << PLIST_EOF
 PLIST_EOF
 ok "Wrote $PLIST_DEST"
 
-# ── 13. Load (or reload) the agent ────────────────────────────────────────────
+# ── 15. Load (or reload) the agent ────────────────────────────────────────────
 if launchctl list "$PLIST_NAME" &>/dev/null; then
     info "Reloading existing agent..."
     launchctl unload "$PLIST_DEST" 2>/dev/null || true

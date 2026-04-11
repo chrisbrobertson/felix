@@ -162,10 +162,22 @@ Then reload: `source ~/.zshrc`
 
 ## Running
 
+### Deploying code changes
+
+After pulling or editing source files, re-run the installer to push changes to
+the deploy directory and restart the daemon:
+
+```bash
+./install.sh
+```
+
+The installer is idempotent — it skips unchanged files and only copies what has
+changed. The daemon is reloaded automatically at the end.
+
 ### Manual (dev / first run)
 
 ```bash
-~/secondbrain/venv/bin/python3 daemon.py
+~/secondbrain/venv/bin/python3 ~/secondbrain/daemon.py
 ```
 
 You should see log output like:
