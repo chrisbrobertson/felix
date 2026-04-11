@@ -48,10 +48,16 @@ def handler(brain_dir):
 
 
 def write_memory(memories_dir: Path, slug: str, tags: list, title: str,
-                 body: str = "content", source_url: str = "") -> Path:
+                 body: str = "content", source_url: str = "",
+                 created: str = "2026-04-11T12:00:00",
+                 summary: str = "") -> Path:
     path = memories_dir / f"2026-04-11-{slug}.md"
     url_line = f"source_url: {source_url}\n" if source_url else ""
-    path.write_text(f"---\n{url_line}tags: {tags}\nsource_title: {title}\n---\n\n## Summary\n{body}")
+    summary_line = f"summary: {summary}\n" if summary else ""
+    path.write_text(
+        f"---\nsource_title: {title}\n{url_line}{summary_line}"
+        f"tags: {tags}\ncreated: '{created}'\n---\n\n## Summary\n{body}"
+    )
     return path
 
 
@@ -453,4 +459,145 @@ async def test_cmd_purgeall_empty_skip_list(handler, brain_dir):
 async def test_cmd_purgeall_rejects_unauthorised(handler, brain_dir):
     update, ctx = _make_update(99999)
     await handler.cmd_purgeall(update, ctx)
+    update.message.reply_text.assert_not_called()
+
+
+# ── /memories command ─────────────────────────────────────────────────────────
+
+async def test_cmd_memories_lists_recent(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_memory(m, "one-aaa111", [], "Article One", created="2026-04-10T10:00:00")
+    write_memory(m, "two-bbb222", [], "Article Two", created="2026-04-11T10:00:00")
+    update, ctx = _make_update(12345)
+    await handler.cmd_memories(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Article One" in reply
+    assert "Article Two" in reply
+    assert len(handler._last_results) == 2
+
+
+async def test_cmd_memories_custom_count(handler, brain_dir):
+    m = brain_dir / "memories"
+    for i in range(5):
+        write_memory(m, f"p{i}-{'a' * 5}{i}", [], f"Page {i}")
+    update, ctx = _make_update(12345, ["3"])
+    await handler.cmd_memories(update, ctx)
+    assert len(handler._last_results) == 3
+
+
+async def test_cmd_memories_empty(handler, brain_dir):
+    update, ctx = _make_update(12345)
+    await handler.cmd_memories(update, ctx)
+    assert "No memories" in update.message.reply_text.call_args[0][0]
+
+
+async def test_cmd_memories_rejects_unauthorised(handler, brain_dir):
+    update, ctx = _make_update(99999)
+    await handler.cmd_memories(update, ctx)
+    update.message.reply_text.assert_not_called()
+
+
+# ── /search command ───────────────────────────────────────────────────────────
+
+async def test_cmd_search_returns_matches(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_memory(m, "litellm-aaa111", ["litellm", "routing"], "LiteLLM Router")
+    write_memory(m, "cooking-bbb222", ["food"], "Cooking Tips")
+    update, ctx = _make_update(12345, ["litellm"])
+    await handler.cmd_search(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "LiteLLM" in reply
+    assert "Cooking" not in reply
+    assert len(handler._last_results) == 1
+
+
+async def test_cmd_search_no_matches(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_memory(m, "cooking-bbb222", ["food"], "Cooking Tips")
+    update, ctx = _make_update(12345, ["litellm"])
+    await handler.cmd_search(update, ctx)
+    assert "No memories match" in update.message.reply_text.call_args[0][0]
+
+
+async def test_cmd_search_no_args(handler, brain_dir):
+    update, ctx = _make_update(12345, [])
+    await handler.cmd_search(update, ctx)
+    assert "Usage" in update.message.reply_text.call_args[0][0]
+
+
+async def test_cmd_search_rejects_unauthorised(handler, brain_dir):
+    update, ctx = _make_update(99999, ["litellm"])
+    await handler.cmd_search(update, ctx)
+    update.message.reply_text.assert_not_called()
+
+
+# ── /memory command ───────────────────────────────────────────────────────────
+
+async def test_cmd_memory_shows_details(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_memory(m, "litellm-aaa111", ["litellm"], "LiteLLM Router",
+                 source_url="https://litellm.ai", summary="A great router.")
+    handler._last_results = list(m.glob("*.md"))
+    update, ctx = _make_update(12345, ["1"])
+    await handler.cmd_memory(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "LiteLLM Router" in reply
+    assert "https://litellm.ai" in reply
+    assert "A great router." in reply
+
+
+async def test_cmd_memory_invalid_index(handler, brain_dir):
+    handler._last_results = []
+    update, ctx = _make_update(12345, ["5"])
+    await handler.cmd_memory(update, ctx)
+    assert "Invalid index" in update.message.reply_text.call_args[0][0]
+
+
+async def test_cmd_memory_no_results(handler, brain_dir):
+    handler._last_results = []
+    update, ctx = _make_update(12345, ["1"])
+    await handler.cmd_memory(update, ctx)
+    assert "Invalid index" in update.message.reply_text.call_args[0][0]
+
+
+async def test_cmd_memory_rejects_unauthorised(handler, brain_dir):
+    update, ctx = _make_update(99999, ["1"])
+    await handler.cmd_memory(update, ctx)
+    update.message.reply_text.assert_not_called()
+
+
+# ── /delete command ───────────────────────────────────────────────────────────
+
+async def test_cmd_delete_removes_file(handler, brain_dir):
+    m = brain_dir / "memories"
+    p = write_memory(m, "litellm-aaa111", [], "LiteLLM Router")
+    handler._last_results = [p]
+    update, ctx = _make_update(12345, ["1"])
+    await handler.cmd_delete(update, ctx)
+    assert not p.exists()
+    assert "Deleted" in update.message.reply_text.call_args[0][0]
+    assert "LiteLLM Router" in update.message.reply_text.call_args[0][0]
+
+
+async def test_cmd_delete_updates_last_results(handler, brain_dir):
+    m = brain_dir / "memories"
+    p1 = write_memory(m, "one-aaa111", [], "Article One")
+    p2 = write_memory(m, "two-bbb222", [], "Article Two")
+    handler._last_results = [p1, p2]
+    update, ctx = _make_update(12345, ["1"])
+    await handler.cmd_delete(update, ctx)
+    assert p1 not in handler._last_results
+    assert p2 in handler._last_results
+
+
+async def test_cmd_delete_invalid_index(handler, brain_dir):
+    handler._last_results = []
+    update, ctx = _make_update(12345, ["99"])
+    await handler.cmd_delete(update, ctx)
+    assert "Invalid index" in update.message.reply_text.call_args[0][0]
+
+
+async def test_cmd_delete_rejects_unauthorised(handler, brain_dir):
+    update, ctx = _make_update(99999, ["1"])
+    await handler.cmd_delete(update, ctx)
     update.message.reply_text.assert_not_called()

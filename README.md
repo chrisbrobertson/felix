@@ -234,6 +234,17 @@ tail -f ~/secondbrain/logs/error.log
 
 Send these slash commands to your bot to manage the domain skip filter:
 
+**Memory browsing:**
+
+| Command | Effect |
+|---------|--------|
+| `/memories [N]` | List N most recent memories (default 10, max 50) |
+| `/search <query>` | Keyword search across all memories |
+| `/memory <N>` | View full details of memory at index N from last list/search |
+| `/delete <N>` | Delete memory at index N from last list/search |
+
+**Domain skip filter:**
+
 | Command | Effect |
 |---------|--------|
 | `/skip <domain>` | Add a domain to the ignore list (takes effect within 5 min) |

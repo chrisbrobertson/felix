@@ -335,3 +335,59 @@ async def test_purgeall_command_clears_all_skip_domain_memories(
     assert keeper.exists()
     reply = mock_update.message.reply_text.call_args[0][0]
     assert "google.com" in reply
+
+
+async def test_memories_list_search_view_delete_flow(infra, chat_handler_instance):
+    """End-to-end: /memories → /search → /memory → /delete."""
+    m = infra["root"] / "memories"
+
+    def mk(slug, title, tags, url, summary):
+        p = m / f"2026-04-11-{slug}.md"
+        p.write_text(
+            f"---\nsource_title: {title}\nsource_url: {url}\n"
+            f"summary: {summary}\ntags: {tags}\ncreated: '2026-04-11T10:00:00'\n---\n\n"
+            f"## Summary\n{summary}\n"
+        )
+        return p
+
+    p1 = mk("litellm-aaa", "LiteLLM Router", "['litellm']",
+             "https://litellm.ai", "LiteLLM is an LLM router.")
+    p2 = mk("react-bbb", "ReAct Prompting", "['react','prompting']",
+             "https://promptingguide.ai/react", "ReAct combines reasoning and acting.")
+    p3 = mk("cooking-ccc", "Cooking Tips", "['food']",
+             "https://cooking.com", "Tips for cooking.")
+
+    u = MagicMock()
+    u.effective_user.id = 12345
+    u.message = AsyncMock()
+
+    # Step 1: /memories lists all 3
+    ctx = MagicMock(); ctx.args = []
+    await chat_handler_instance.cmd_memories(u, ctx)
+    reply = u.message.reply_text.call_args[0][0]
+    assert "LiteLLM" in reply or "ReAct" in reply or "Cooking" in reply
+    assert len(chat_handler_instance._last_results) == 3
+
+    # Step 2: /search finds litellm
+    u.message.reset_mock()
+    ctx = MagicMock(); ctx.args = ["litellm"]
+    await chat_handler_instance.cmd_search(u, ctx)
+    reply = u.message.reply_text.call_args[0][0]
+    assert "LiteLLM" in reply
+    assert len(chat_handler_instance._last_results) == 1
+
+    # Step 3: /memory 1 shows details of the search result
+    u.message.reset_mock()
+    ctx = MagicMock(); ctx.args = ["1"]
+    await chat_handler_instance.cmd_memory(u, ctx)
+    reply = u.message.reply_text.call_args[0][0]
+    assert "LiteLLM" in reply
+    assert "litellm.ai" in reply
+
+    # Step 4: /delete 1 removes the file
+    u.message.reset_mock()
+    ctx = MagicMock(); ctx.args = ["1"]
+    await chat_handler_instance.cmd_delete(u, ctx)
+    assert not p1.exists()
+    assert "Deleted" in u.message.reply_text.call_args[0][0]
+    assert len(chat_handler_instance._last_results) == 0

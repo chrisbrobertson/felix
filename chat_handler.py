@@ -32,9 +32,15 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("skiplist", self.cmd_skiplist))
         self.app.add_handler(CommandHandler("purge", self.cmd_purge))
         self.app.add_handler(CommandHandler("purgeall", self.cmd_purgeall))
+        self.app.add_handler(CommandHandler("memories", self.cmd_memories))
+        self.app.add_handler(CommandHandler("search", self.cmd_search))
+        self.app.add_handler(CommandHandler("memory", self.cmd_memory))
+        self.app.add_handler(CommandHandler("delete", self.cmd_delete))
         # Cache: path -> (mtime, header_text). Invalidated when mtime changes.
         # Avoids reading every file on every chat message.
-        self._header_cache: dict[Path, tuple[float, str]] = {}
+        self._header_cache: dict = {}
+        # Last /memories or /search result set — used by /memory <N> and /delete <N>.
+        self._last_results: list = []
 
     async def start(self):
         await self.app.initialize()
@@ -128,20 +134,11 @@ class TelegramChatHandler:
     def _purge_domain(self, domain: str) -> int:
         """Delete all memory files whose source_url frontmatter contains domain.
 
-        Reads the full file — memory files are tiny (~2KB) and purge is a
-        one-off operation, so the 500-char relevance-scoring limit doesn't apply.
         Returns the count of deleted files.
         """
         deleted = 0
         for f in (BRAIN_DIR / "memories").glob("*.md"):
-            text = f.read_text()
-            m = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
-            if not m:
-                continue
-            try:
-                fm = yaml.safe_load(m.group(1))
-            except Exception:
-                continue
+            fm = self._parse_frontmatter(f)
             if domain in (fm.get("source_url") or ""):
                 f.unlink()
                 deleted += 1
@@ -220,6 +217,156 @@ class TelegramChatHandler:
             count = self._purge_domain(domain)
             lines.append(f"• {domain} — {count} deleted" if count else f"• {domain} — 0 found")
         await update.message.reply_text("\n".join(lines))
+
+    # ── Memory management helpers ─────────────────────────────────────────────
+
+    def _parse_frontmatter(self, path: Path) -> dict:
+        """Parse YAML frontmatter from a memory file. Returns {} on any failure."""
+        try:
+            text = path.read_text()
+        except Exception:
+            return {}
+        m = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
+        if not m:
+            return {}
+        try:
+            return yaml.safe_load(m.group(1)) or {}
+        except Exception:
+            return {}
+
+    def _resolve_index(self, n: str) -> Path:
+        """Convert 1-based index string to a Path from _last_results, or None."""
+        try:
+            idx = int(n) - 1
+        except (ValueError, TypeError):
+            return None
+        if 0 <= idx < len(self._last_results):
+            return self._last_results[idx]
+        return None
+
+    def _fmt_memory_line(self, i: int, fm: dict) -> str:
+        title = (fm.get("source_title") or "(no title)")[:60]
+        date = (fm.get("created") or "")[:10]
+        return f"{i}. {title}  ({date})"
+
+    # ── /memories command ─────────────────────────────────────────────────────
+
+    async def cmd_memories(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        try:
+            limit = int(context.args[0]) if context.args else 10
+            limit = max(1, min(limit, 50))
+        except (ValueError, IndexError):
+            limit = 10
+
+        files = list((BRAIN_DIR / "memories").glob("*.md"))
+        if not files:
+            await update.message.reply_text("No memories found.")
+            return
+
+        # Sort by mtime descending (fast — no file reads needed)
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        files = files[:limit]
+        self._last_results = files
+
+        lines = [f"Your {len(files)} most recent memories:"]
+        for i, f in enumerate(files, 1):
+            fm = self._parse_frontmatter(f)
+            lines.append(self._fmt_memory_line(i, fm))
+        await update.message.reply_text("\n".join(lines))
+
+    # ── /search command ───────────────────────────────────────────────────────
+
+    async def cmd_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /search <query>")
+            return
+
+        query = " ".join(context.args)
+        files = list((BRAIN_DIR / "memories").glob("*.md"))
+
+        scored = [
+            (self._score_relevance(f, query), f.stat().st_mtime, f)
+            for f in files
+        ]
+        matches = sorted(
+            [(s, mt, f) for s, mt, f in scored if s > 0],
+            key=lambda t: (t[0], t[1]),
+            reverse=True
+        )[:10]
+
+        if not matches:
+            await update.message.reply_text(f"No memories match '{query}'.")
+            return
+
+        self._last_results = [f for _, _, f in matches]
+        lines = [f"Search results for \"{query}\":"]
+        for i, (score, _, f) in enumerate(matches, 1):
+            fm = self._parse_frontmatter(f)
+            lines.append(self._fmt_memory_line(i, fm) + f" [score: {score}]")
+        await update.message.reply_text("\n".join(lines))
+
+    # ── /memory command ───────────────────────────────────────────────────────
+
+    async def cmd_memory(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /memory <N>")
+            return
+
+        path = self._resolve_index(context.args[0])
+        if path is None:
+            await update.message.reply_text(
+                "Invalid index. Run /memories or /search first."
+            )
+            return
+
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title") or "(no title)"
+        url = fm.get("source_url") or ""
+        date = (fm.get("created") or "")[:10]
+        summary = fm.get("summary") or ""
+        tags = fm.get("tags") or []
+        tag_str = f"\nTags: {', '.join(tags)}" if tags else ""
+
+        lines = [f"{title}", f"{url}", f"Date: {date}{tag_str}", "", summary]
+        await update.message.reply_text("\n".join(lines))
+
+    # ── /delete command ───────────────────────────────────────────────────────
+
+    async def cmd_delete(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /delete <N>")
+            return
+
+        path = self._resolve_index(context.args[0])
+        if path is None:
+            await update.message.reply_text(
+                "Invalid index. Run /memories or /search first."
+            )
+            return
+
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title") or path.name
+
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass  # already gone
+
+        # Remove from result list so subsequent indices still work
+        try:
+            self._last_results.remove(path)
+        except ValueError:
+            pass
+
+        await update.message.reply_text(f"Deleted: {title}")
 
     async def _send_reply(self, update: Update, text: str):
         """Chunk response into ≤4096-char messages to respect Telegram's hard limit."""
