@@ -26,12 +26,49 @@ echo ""
 echo "Checking prerequisites..."
 
 PYTHON="$(command -v python3 || true)"
-[ -z "$PYTHON" ] && die "python3 not found. Install Python 3.11+ and re-run."
+
+_upgrade_python() {
+    if command -v brew &>/dev/null; then
+        echo ""
+        read -r -p "  Install Python 3.13 via Homebrew now? [Y/n]: " CONFIRM
+        CONFIRM="${CONFIRM:-Y}"
+        if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
+            info "Running: brew install python@3.13"
+            brew install python@3.13
+            # Prefer the versioned binary brew just installed
+            PYTHON="$(command -v python3.13 \
+                     || brew --prefix python@3.13 2>/dev/null | xargs -I{} echo {}/bin/python3.13 \
+                     || command -v python3)"
+            ok "Python upgraded via Homebrew"
+        else
+            die "Python 3.11+ is required. Install it and re-run."
+        fi
+    else
+        echo ""
+        echo "  Install options:"
+        echo "    Homebrew (recommended):  brew install python@3.13"
+        echo "    Direct download:         https://www.python.org/downloads/"
+        echo ""
+        die "Python 3.11+ required. Install it and re-run."
+    fi
+}
+
+if [ -z "$PYTHON" ]; then
+    echo ""
+    printf "${YELLOW}  !${NC}  python3 not found.\n"
+    _upgrade_python
+fi
 
 PY_MAJOR="$("$PYTHON" -c 'import sys; print(sys.version_info.major)')"
 PY_MINOR="$("$PYTHON" -c 'import sys; print(sys.version_info.minor)')"
 if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 11 ]; }; then
-    die "Python 3.11+ required, found $PY_MAJOR.$PY_MINOR."
+    printf "${YELLOW}  !${NC}  Python 3.11+ required, found $PY_MAJOR.$PY_MINOR.\n"
+    _upgrade_python
+    # Re-check after upgrade
+    PY_MAJOR="$("$PYTHON" -c 'import sys; print(sys.version_info.major)')"
+    PY_MINOR="$("$PYTHON" -c 'import sys; print(sys.version_info.minor)')"
+    { [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 11 ]; }; } && \
+        die "Still on Python $PY_MAJOR.$PY_MINOR after upgrade attempt. Fix manually and re-run."
 fi
 ok "Python $PY_MAJOR.$PY_MINOR"
 
