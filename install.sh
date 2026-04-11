@@ -460,6 +460,10 @@ if [ "$ROLE" = "full" ]; then
     echo ""
     echo "Checking Full Disk Access for email scanner..."
 
+    # Resolve the real binary path — macOS FDA dialog rejects symlinks.
+    # venv/bin/python3 → python3.13 → /opt/homebrew/... → real binary
+    PYTHON_REAL="$("$VENV/bin/python3" -c "import os, sys; print(os.path.realpath(sys.executable))")"
+
     FDA_OK=false
     if "$VENV/bin/python3" -c \
         "import os, sys; os.listdir(os.path.expanduser('~/Library/Mail/')); sys.exit(0)" \
@@ -478,8 +482,8 @@ if [ "$ROLE" = "full" ]; then
         echo ""
         echo "  To grant access:"
         echo "    1. System Settings will open to Privacy & Security → Full Disk Access"
-        echo "    2. Click the + button and add:"
-        printf "       %s\n" "$VENV/bin/python3"
+        echo "    2. Click the + button and navigate to (or paste with Cmd+Shift+G):"
+        printf "       %s\n" "$PYTHON_REAL"
         echo "    3. Re-run ./install.sh to verify"
         echo ""
         read -r -p "  Open System Settings → Full Disk Access now? [Y/n]: " OPEN_FDA
@@ -487,8 +491,11 @@ if [ "$ROLE" = "full" ]; then
         if [[ "$OPEN_FDA" =~ ^[Yy]$ ]]; then
             open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
             echo ""
-            printf "${YELLOW}  →${NC}  Add %s in the Full Disk Access list,\n" "$VENV/bin/python3"
-            echo "     then re-run ./install.sh to reload the daemon with access."
+            printf "${YELLOW}  →${NC}  In the Full Disk Access list click +, press Cmd+Shift+G,\n"
+            echo "     paste this path and click Open:"
+            printf "       %s\n" "$PYTHON_REAL"
+            echo ""
+            echo "     Then re-run ./install.sh to reload the daemon with access."
         else
             info "Skipped — re-run ./install.sh after granting access to reload the daemon"
         fi
