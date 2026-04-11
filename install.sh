@@ -460,17 +460,15 @@ if [ "$ROLE" = "full" ]; then
     echo ""
     echo "Checking Full Disk Access for email scanner..."
 
-    # Resolve the FDA-compatible path.
-    # The FDA dialog requires an .app bundle — it rejects symlinks and raw
-    # binaries inside .framework directories (shows them as documents).
-    # Homebrew Python ships Python.app alongside the binary; use that if present.
-    PYTHON_REAL="$("$VENV/bin/python3" -c "
-import os, sys
-exe = os.path.realpath(sys.executable)
-framework_ver = os.path.dirname(os.path.dirname(exe))
-app = os.path.join(framework_ver, 'Resources', 'Python.app')
-print(app if os.path.isdir(app) else exe)
-")"
+    # Resolve the actual binary the daemon runs as.
+    # FDA is granted per-executable. Python.app (the bundle) and python3.13
+    # (the binary) are separate TCC entries — granting FDA to the .app does
+    # NOT cover the binary. The + button in the FDA dialog filters for app
+    # bundles, so we open a Finder window instead and instruct the user to
+    # drag the binary directly into the FDA list (drag bypasses the filter).
+    PYTHON_REAL="$("$VENV/bin/python3" -c "import os, sys; print(os.path.realpath(sys.executable))")"
+    PYTHON_DIR="$(dirname "$PYTHON_REAL")"
+    PYTHON_BIN="$(basename "$PYTHON_REAL")"
 
     FDA_OK=false
     if "$VENV/bin/python3" -c \
@@ -488,21 +486,21 @@ print(app if os.path.isdir(app) else exe)
         echo "  Without Full Disk Access it falls back to AppleScript"
         echo "  (slower, no conversation threading, requires Mail.app open)."
         echo ""
-        echo "  To grant access:"
-        echo "    1. Open a Finder window and press Cmd+Shift+G, then paste:"
-        printf "       %s\n" "$(dirname "$PYTHON_REAL")"
-        echo "    2. Drag the file/app from Finder into the Full Disk Access list"
-        printf "       (drag: %s)\n" "$(basename "$PYTHON_REAL")"
-        echo "    3. Re-run ./install.sh to verify"
+        echo "  The FDA + button only shows app bundles. To add the Python binary:"
+        echo "    1. System Settings will open to Privacy & Security → Full Disk Access"
+        echo "    2. A Finder window will open at:"
+        printf "       %s\n" "$PYTHON_DIR"
+        printf "    3. Drag '%s' from that Finder window into the FDA list\n" "$PYTHON_BIN"
+        echo "    4. Re-run ./install.sh to verify"
         echo ""
-        read -r -p "  Open System Settings → Full Disk Access now? [Y/n]: " OPEN_FDA
+        read -r -p "  Open System Settings + Finder now? [Y/n]: " OPEN_FDA
         OPEN_FDA="${OPEN_FDA:-Y}"
         if [[ "$OPEN_FDA" =~ ^[Yy]$ ]]; then
             open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
-            open "$(dirname "$PYTHON_REAL")"
+            open "$PYTHON_DIR"
             echo ""
-            printf "${YELLOW}  →${NC}  A Finder window opened at the right folder.\n"
-            printf "       Drag '%s' into the Full Disk Access list,\n" "$(basename "$PYTHON_REAL")"
+            printf "${YELLOW}  →${NC}  Drag '%s' from the Finder window\n" "$PYTHON_BIN"
+            echo "       into the Full Disk Access list in System Settings,"
             echo "       then re-run ./install.sh to reload the daemon with access."
         else
             info "Skipped — re-run ./install.sh after granting access to reload the daemon"
