@@ -128,14 +128,14 @@ class TelegramChatHandler:
     def _purge_domain(self, domain: str) -> int:
         """Delete all memory files whose source_url frontmatter contains domain.
 
-        Reads only the first 500 chars of each file (source_url is always near
-        the top), matching the same cheap-read pattern used for relevance scoring.
+        Reads the full file — memory files are tiny (~2KB) and purge is a
+        one-off operation, so the 500-char relevance-scoring limit doesn't apply.
         Returns the count of deleted files.
         """
         deleted = 0
         for f in (BRAIN_DIR / "memories").glob("*.md"):
-            header = f.read_text()[:500]
-            m = re.match(r"^---\n(.*?)\n---", header, re.DOTALL)
+            text = f.read_text()
+            m = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
             if not m:
                 continue
             try:
