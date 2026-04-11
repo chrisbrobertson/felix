@@ -36,7 +36,7 @@ class SkillExecutor:
         instructions = instructions_match.group(1).strip() if instructions_match else ""
         return {"meta": meta, "instructions": instructions, "raw": text}
 
-    async def run(self, inputs: dict, score: float | None = None) -> str | None:
+    async def run(self, inputs: dict, score=None):
         meta = self._skill["meta"]
         model = meta.get("preferred_model", "gemini/gemini-2.0-flash")
         user_msg = "\n".join(f"**{k}:**\n{v}" for k, v in inputs.items())
@@ -63,7 +63,7 @@ class SkillExecutor:
             return None
 
     async def _log_execution(self, inputs: dict, model: str,
-                              score: float | None, notes: str = ""):
+                              score, notes: str = ""):
         slug = list(inputs.values())[0][:20].replace(" ", "-").lower() \
                if inputs else "unknown"
         date = datetime.now().strftime("%Y-%m-%d")

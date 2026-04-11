@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import yaml
 
 import chat_handler as ch
 
@@ -15,6 +16,10 @@ user:
   telegram_user_id: "12345"
   name: Chris
   timezone: America/Los_Angeles
+browser_watcher:
+  skip_domains:
+    - google.com
+    - facebook.com
 """
 
 
@@ -42,10 +47,22 @@ def handler(brain_dir):
         yield h
 
 
-def write_memory(memories_dir: Path, slug: str, tags: list, title: str, body: str = "content") -> Path:
+def write_memory(memories_dir: Path, slug: str, tags: list, title: str,
+                 body: str = "content", source_url: str = "") -> Path:
     path = memories_dir / f"2026-04-11-{slug}.md"
-    path.write_text(f"---\ntags: {tags}\nsource_title: {title}\n---\n\n## Summary\n{body}")
+    url_line = f"source_url: {source_url}\n" if source_url else ""
+    path.write_text(f"---\n{url_line}tags: {tags}\nsource_title: {title}\n---\n\n## Summary\n{body}")
     return path
+
+
+def _make_update(user_id: int, args=None):
+    """Build a mock Update with an async message and optional command args."""
+    mock_update = MagicMock()
+    mock_update.effective_user.id = user_id
+    mock_update.message = AsyncMock()
+    mock_context = MagicMock()
+    mock_context.args = args or []
+    return mock_update, mock_context
 
 
 # --- _score_relevance ---
@@ -207,3 +224,233 @@ async def test_handle_message_processes_authorised_user(handler, brain_dir):
 
     await handler.handle_message(mock_update, MagicMock())
     mock_update.message.reply_text.assert_called()
+
+
+# ── _edit_skip_domains ────────────────────────────────────────────────────────
+
+def test_edit_skip_domains_add(handler, brain_dir):
+    result = handler._edit_skip_domains("add", "twitter.com")
+    assert result is None
+    config = yaml.safe_load((brain_dir / "config.yaml").read_text())
+    assert "twitter.com" in config["browser_watcher"]["skip_domains"]
+
+
+def test_edit_skip_domains_add_already_present(handler, brain_dir):
+    result = handler._edit_skip_domains("add", "google.com")
+    assert "already" in result
+    # list unchanged
+    config = yaml.safe_load((brain_dir / "config.yaml").read_text())
+    assert config["browser_watcher"]["skip_domains"].count("google.com") == 1
+
+
+def test_edit_skip_domains_remove(handler, brain_dir):
+    result = handler._edit_skip_domains("remove", "google.com")
+    assert result is None
+    config = yaml.safe_load((brain_dir / "config.yaml").read_text())
+    assert "google.com" not in config["browser_watcher"]["skip_domains"]
+
+
+def test_edit_skip_domains_remove_not_present(handler, brain_dir):
+    result = handler._edit_skip_domains("remove", "nothere.com")
+    assert "not on the skip list" in result
+
+
+def test_edit_skip_domains_writes_atomically(handler, brain_dir, monkeypatch):
+    """Tmp file is written then renamed — original never partially overwritten."""
+    renamed = []
+    real_rename = os.rename
+
+    def capture_rename(src, dst):
+        renamed.append((src, dst))
+        real_rename(src, dst)
+
+    monkeypatch.setattr(ch.os, "rename", capture_rename)
+    handler._edit_skip_domains("add", "example.com")
+    assert len(renamed) == 1
+    src, dst = renamed[0]
+    assert str(src).endswith(".tmp")
+    assert dst == brain_dir / "config.yaml"
+
+
+# ── _purge_domain ─────────────────────────────────────────────────────────────
+
+def test_purge_domain_deletes_matching_memories(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_memory(m, "ex-aaa111", [], "Example Page", source_url="https://example.com/page")
+    write_memory(m, "other-bbb222", [], "Other Page", source_url="https://other.com/page")
+    count = handler._purge_domain("example.com")
+    assert count == 1
+    assert not (m / "2026-04-11-ex-aaa111.md").exists()
+    assert (m / "2026-04-11-other-bbb222.md").exists()
+
+
+def test_purge_domain_no_matches(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_memory(m, "other-bbb222", [], "Other Page", source_url="https://other.com/page")
+    count = handler._purge_domain("nowhere.com")
+    assert count == 0
+    assert len(list(m.glob("*.md"))) == 1
+
+
+def test_purge_domain_skips_files_without_source_url(handler, brain_dir):
+    m = brain_dir / "memories"
+    p = m / "2026-04-11-no-url-aaa111.md"
+    p.write_text("---\ntags: []\nsource_title: No URL File\n---\n\n## Summary\ncontent")
+    count = handler._purge_domain("example.com")
+    assert count == 0
+    assert p.exists()
+
+
+def test_purge_domain_skips_files_without_frontmatter(handler, brain_dir):
+    m = brain_dir / "memories"
+    p = m / "2026-04-11-no-fm-aaa111.md"
+    p.write_text("## Summary\nJust plain markdown, no frontmatter.")
+    count = handler._purge_domain("example.com")
+    assert count == 0
+    assert p.exists()
+
+
+def test_purge_domain_deletes_multiple_matches(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_memory(m, "ex1-aaa111", [], "Ex 1", source_url="https://example.com/a")
+    write_memory(m, "ex2-bbb222", [], "Ex 2", source_url="https://example.com/b")
+    write_memory(m, "other-ccc333", [], "Other", source_url="https://other.com/c")
+    count = handler._purge_domain("example.com")
+    assert count == 2
+    assert len(list(m.glob("*.md"))) == 1
+
+
+# ── /skip command ─────────────────────────────────────────────────────────────
+
+async def test_cmd_skip_adds_domain(handler, brain_dir):
+    update, ctx = _make_update(12345, ["twitter.com"])
+    await handler.cmd_skip(update, ctx)
+    config = yaml.safe_load((brain_dir / "config.yaml").read_text())
+    assert "twitter.com" in config["browser_watcher"]["skip_domains"]
+    update.message.reply_text.assert_called_once()
+    assert "twitter.com" in update.message.reply_text.call_args[0][0]
+
+
+async def test_cmd_skip_already_present(handler, brain_dir):
+    update, ctx = _make_update(12345, ["google.com"])
+    await handler.cmd_skip(update, ctx)
+    assert "already" in update.message.reply_text.call_args[0][0]
+
+
+async def test_cmd_skip_no_args(handler, brain_dir):
+    update, ctx = _make_update(12345, [])
+    await handler.cmd_skip(update, ctx)
+    assert "Usage" in update.message.reply_text.call_args[0][0]
+
+
+async def test_cmd_skip_rejects_unauthorised(handler, brain_dir):
+    update, ctx = _make_update(99999, ["evil.com"])
+    await handler.cmd_skip(update, ctx)
+    update.message.reply_text.assert_not_called()
+
+
+# ── /unskip command ───────────────────────────────────────────────────────────
+
+async def test_cmd_unskip_removes_domain(handler, brain_dir):
+    update, ctx = _make_update(12345, ["google.com"])
+    await handler.cmd_unskip(update, ctx)
+    config = yaml.safe_load((brain_dir / "config.yaml").read_text())
+    assert "google.com" not in config["browser_watcher"]["skip_domains"]
+    assert "Removed" in update.message.reply_text.call_args[0][0]
+
+
+async def test_cmd_unskip_not_present(handler, brain_dir):
+    update, ctx = _make_update(12345, ["nothere.com"])
+    await handler.cmd_unskip(update, ctx)
+    assert "not on the skip list" in update.message.reply_text.call_args[0][0]
+
+
+async def test_cmd_unskip_rejects_unauthorised(handler, brain_dir):
+    update, ctx = _make_update(99999, ["google.com"])
+    await handler.cmd_unskip(update, ctx)
+    update.message.reply_text.assert_not_called()
+
+
+# ── /skiplist command ─────────────────────────────────────────────────────────
+
+async def test_cmd_skiplist_shows_domains(handler, brain_dir):
+    update, ctx = _make_update(12345)
+    await handler.cmd_skiplist(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "google.com" in reply
+    assert "facebook.com" in reply
+
+
+async def test_cmd_skiplist_empty(handler, brain_dir):
+    config = yaml.safe_load((brain_dir / "config.yaml").read_text())
+    config["browser_watcher"]["skip_domains"] = []
+    (brain_dir / "config.yaml").write_text(yaml.dump(config))
+    update, ctx = _make_update(12345)
+    await handler.cmd_skiplist(update, ctx)
+    assert "empty" in update.message.reply_text.call_args[0][0]
+
+
+async def test_cmd_skiplist_rejects_unauthorised(handler, brain_dir):
+    update, ctx = _make_update(99999)
+    await handler.cmd_skiplist(update, ctx)
+    update.message.reply_text.assert_not_called()
+
+
+# ── /purge command ────────────────────────────────────────────────────────────
+
+async def test_cmd_purge_deletes_and_reports_count(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_memory(m, "ex-aaa111", [], "Ex", source_url="https://example.com/x")
+    update, ctx = _make_update(12345, ["example.com"])
+    await handler.cmd_purge(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Deleted 1" in reply
+    assert not (m / "2026-04-11-ex-aaa111.md").exists()
+
+
+async def test_cmd_purge_no_matches(handler, brain_dir):
+    update, ctx = _make_update(12345, ["nowhere.com"])
+    await handler.cmd_purge(update, ctx)
+    assert "No memories found" in update.message.reply_text.call_args[0][0]
+
+
+async def test_cmd_purge_no_args(handler, brain_dir):
+    update, ctx = _make_update(12345, [])
+    await handler.cmd_purge(update, ctx)
+    assert "Usage" in update.message.reply_text.call_args[0][0]
+
+
+async def test_cmd_purge_rejects_unauthorised(handler, brain_dir):
+    update, ctx = _make_update(99999, ["example.com"])
+    await handler.cmd_purge(update, ctx)
+    update.message.reply_text.assert_not_called()
+
+
+# ── /purgeall command ─────────────────────────────────────────────────────────
+
+async def test_cmd_purgeall_reports_per_domain(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_memory(m, "g-aaa111", [], "G", source_url="https://google.com/search")
+    write_memory(m, "f-bbb222", [], "F", source_url="https://facebook.com/feed")
+    update, ctx = _make_update(12345)
+    await handler.cmd_purgeall(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "google.com" in reply
+    assert "facebook.com" in reply
+    assert "1 deleted" in reply
+    assert len(list(m.glob("*.md"))) == 0
+
+
+async def test_cmd_purgeall_empty_skip_list(handler, brain_dir):
+    config = yaml.safe_load((brain_dir / "config.yaml").read_text())
+    config["browser_watcher"]["skip_domains"] = []
+    (brain_dir / "config.yaml").write_text(yaml.dump(config))
+    update, ctx = _make_update(12345)
+    await handler.cmd_purgeall(update, ctx)
+    assert "empty" in update.message.reply_text.call_args[0][0]
+
+
+async def test_cmd_purgeall_rejects_unauthorised(handler, brain_dir):
+    update, ctx = _make_update(99999)
+    await handler.cmd_purgeall(update, ctx)
+    update.message.reply_text.assert_not_called()

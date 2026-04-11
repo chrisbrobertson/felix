@@ -1,11 +1,14 @@
 import asyncio
 import logging
+import os
 import re
 import yaml
 from pathlib import Path
 
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+
+from skill_executor import SkillExecutor
 
 log = logging.getLogger("chat-handler")
 
@@ -19,12 +22,16 @@ class TelegramChatHandler:
         config = yaml.safe_load((BRAIN_DIR / "config.yaml").read_text())
         self.token = config["telegram"]["bot_token"]
         self.allowed_user_id = int(config["user"]["telegram_user_id"])
-        from skill_executor import SkillExecutor
         self.executor = SkillExecutor("chat")
         self.app = ApplicationBuilder().token(self.token).build()
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
         )
+        self.app.add_handler(CommandHandler("skip", self.cmd_skip))
+        self.app.add_handler(CommandHandler("unskip", self.cmd_unskip))
+        self.app.add_handler(CommandHandler("skiplist", self.cmd_skiplist))
+        self.app.add_handler(CommandHandler("purge", self.cmd_purge))
+        self.app.add_handler(CommandHandler("purgeall", self.cmd_purgeall))
         # Cache: path -> (mtime, header_text). Invalidated when mtime changes.
         # Avoids reading every file on every chat message.
         self._header_cache: dict[Path, tuple[float, str]] = {}
@@ -95,6 +102,124 @@ class TelegramChatHandler:
             budget -= len(text)
 
         return "\n\n---\n\n".join(parts)
+
+    def _edit_skip_domains(self, action: str, domain: str):
+        """Add or remove a domain from browser_watcher.skip_domains in config.yaml.
+
+        Returns an error/info string if no change was made, or None on success.
+        Writes atomically to avoid corrupting the iCloud-synced config file.
+        """
+        config_path = BRAIN_DIR / "config.yaml"
+        config = yaml.safe_load(config_path.read_text())
+        domains = config.setdefault("browser_watcher", {}).setdefault("skip_domains", [])
+        if action == "add":
+            if domain in domains:
+                return f"{domain} is already on the skip list."
+            domains.append(domain)
+        elif action == "remove":
+            if domain not in domains:
+                return f"{domain} was not on the skip list."
+            domains.remove(domain)
+        tmp = config_path.with_suffix(".tmp")
+        tmp.write_text(yaml.dump(config, default_flow_style=False))
+        os.rename(tmp, config_path)
+        return None
+
+    def _purge_domain(self, domain: str) -> int:
+        """Delete all memory files whose source_url frontmatter contains domain.
+
+        Reads only the first 500 chars of each file (source_url is always near
+        the top), matching the same cheap-read pattern used for relevance scoring.
+        Returns the count of deleted files.
+        """
+        deleted = 0
+        for f in (BRAIN_DIR / "memories").glob("*.md"):
+            header = f.read_text()[:500]
+            m = re.match(r"^---\n(.*?)\n---", header, re.DOTALL)
+            if not m:
+                continue
+            try:
+                fm = yaml.safe_load(m.group(1))
+            except Exception:
+                continue
+            if domain in (fm.get("source_url") or ""):
+                f.unlink()
+                deleted += 1
+        return deleted
+
+    # ── Telegram slash commands ───────────────────────────────────────────────
+
+    def _check_auth(self, update: Update) -> bool:
+        if update.effective_user.id != self.allowed_user_id:
+            log.warning(f"Ignored command from unauthorised user_id={update.effective_user.id}")
+            return False
+        return True
+
+    async def cmd_skip(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /skip <domain>")
+            return
+        domain = context.args[0].lower()
+        msg = self._edit_skip_domains("add", domain)
+        if msg:
+            await update.message.reply_text(msg)
+        else:
+            await update.message.reply_text(
+                f"Added {domain} to skip list. Browser watcher will ignore it within 5 minutes."
+            )
+
+    async def cmd_unskip(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /unskip <domain>")
+            return
+        domain = context.args[0].lower()
+        msg = self._edit_skip_domains("remove", domain)
+        if msg:
+            await update.message.reply_text(msg)
+        else:
+            await update.message.reply_text(f"Removed {domain} from skip list.")
+
+    async def cmd_skiplist(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        config = yaml.safe_load((BRAIN_DIR / "config.yaml").read_text())
+        domains = config.get("browser_watcher", {}).get("skip_domains", [])
+        if not domains:
+            await update.message.reply_text("Skip list is empty.")
+            return
+        lines = "\n".join(f"{i + 1}. {d}" for i, d in enumerate(domains))
+        await update.message.reply_text(f"Skipped domains:\n{lines}")
+
+    async def cmd_purge(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /purge <domain>")
+            return
+        domain = context.args[0].lower()
+        count = self._purge_domain(domain)
+        if count:
+            await update.message.reply_text(f"Deleted {count} memories from {domain}.")
+        else:
+            await update.message.reply_text(f"No memories found for {domain}.")
+
+    async def cmd_purgeall(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        config = yaml.safe_load((BRAIN_DIR / "config.yaml").read_text())
+        domains = config.get("browser_watcher", {}).get("skip_domains", [])
+        if not domains:
+            await update.message.reply_text("Skip list is empty — nothing to purge.")
+            return
+        lines = ["Purge complete:"]
+        for domain in domains:
+            count = self._purge_domain(domain)
+            lines.append(f"• {domain} — {count} deleted" if count else f"• {domain} — 0 found")
+        await update.message.reply_text("\n".join(lines))
 
     async def _send_reply(self, update: Update, text: str):
         """Chunk response into ≤4096-char messages to respect Telegram's hard limit."""

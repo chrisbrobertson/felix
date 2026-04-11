@@ -27,7 +27,7 @@ browser_watcher:
   interval_seconds: 300          # poll every 5 minutes
   min_dwell_seconds: 30          # ignore pages visited < 30s
   min_content_chars: 500         # ignore stubs, redirects
-  skip_domains:                  # noise filter
+  skip_domains:                  # noise filter — edit here or via /skip in Telegram
     - google.com
     - googleadservices.com
     - doubleclick.net

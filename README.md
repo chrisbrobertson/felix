@@ -230,6 +230,22 @@ tail -f ~/secondbrain/logs/error.log
 
 ---
 
+## Telegram Commands
+
+Send these slash commands to your bot to manage the domain skip filter:
+
+| Command | Effect |
+|---------|--------|
+| `/skip <domain>` | Add a domain to the ignore list (takes effect within 5 min) |
+| `/unskip <domain>` | Remove a domain from the ignore list |
+| `/skiplist` | Show all currently skipped domains |
+| `/purge <domain>` | Delete all captured memories whose URL contains `<domain>` |
+| `/purgeall` | Delete memories for every domain currently on the skip list |
+
+The skip list is stored in `$BRAIN/config.yaml` under `browser_watcher.skip_domains`. You can also edit it manually — changes are picked up on the next watcher poll cycle.
+
+---
+
 ## Files never to commit
 
 - `$BRAIN/config.yaml` — contains your bot token and user ID; lives in iCloud only

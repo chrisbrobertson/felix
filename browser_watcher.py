@@ -44,7 +44,7 @@ class BrowserWatcher:
         shutil.copy2(src, tmp)
         return tmp
 
-    def _get_firefox_history_db(self) -> Path | None:
+    def _get_firefox_history_db(self):
         profiles = list(FIREFOX_HISTORY.glob("*.default-release/places.sqlite"))
         return profiles[0] if profiles else None
 
@@ -104,7 +104,7 @@ class BrowserWatcher:
             return False
         return True
 
-    async def _fetch_content(self, url: str) -> str | None:
+    async def _fetch_content(self, url: str):
         try:
             async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
                 r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})

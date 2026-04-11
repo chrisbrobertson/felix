@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 import browser_watcher as bw
+import chat_handler as ch
 import memory_writer as mw
 import skill_executor as se
 
@@ -45,6 +46,18 @@ An article about LiteLLM's routing capabilities.
 **Tags:** litellm, routing, llm"""
 
 
+BRAIN_CONFIG_YAML = """\
+telegram:
+  bot_token: fake-token
+user:
+  telegram_user_id: "12345"
+  name: Chris
+browser_watcher:
+  skip_domains:
+    - google.com
+"""
+
+
 @pytest.fixture
 def infra(tmp_path):
     """Sets up skills + memories dirs and returns paths."""
@@ -55,9 +68,27 @@ def infra(tmp_path):
     memories = tmp_path / "memories"
     memories.mkdir()
 
+    (tmp_path / "config.yaml").write_text(BRAIN_CONFIG_YAML)
+
     seen = tmp_path / "seen.txt"
 
     return {"skills": skills, "memories": memories, "seen": seen, "root": tmp_path}
+
+
+@pytest.fixture
+def chat_handler_instance(infra):
+    """TelegramChatHandler wired to the infra tmp_path brain dir."""
+    mock_app = MagicMock()
+    mock_builder = MagicMock()
+    mock_builder.token.return_value = mock_builder
+    mock_builder.build.return_value = mock_app
+
+    with patch.object(ch, "BRAIN_DIR", infra["root"]), \
+         patch("chat_handler.ApplicationBuilder", return_value=mock_builder), \
+         patch("chat_handler.SkillExecutor"):
+        handler = ch.TelegramChatHandler()
+        handler.allowed_user_id = 12345
+        yield handler
 
 
 async def test_executor_to_memory_file(infra):
@@ -216,3 +247,91 @@ async def test_watcher_role_logs_to_jsonl_not_skill_file(infra, tmp_path):
 
     assert (infra["skills"] / "summarize-webpage.md").read_text() == original_skill
     assert local_log.exists()
+
+
+# ── Domain skip filter integration ────────────────────────────────────────────
+
+async def test_skip_command_persists_and_watcher_ignores_domain(
+    infra, chat_handler_instance
+):
+    """/skip writes to config.yaml; watcher then rejects URLs from that domain."""
+    # Step 1: add twitter.com via the /skip command
+    mock_update = MagicMock()
+    mock_update.effective_user.id = 12345
+    mock_update.message = AsyncMock()
+    mock_ctx = MagicMock()
+    mock_ctx.args = ["twitter.com"]
+
+    await chat_handler_instance.cmd_skip(mock_update, mock_ctx)
+
+    # Verify config.yaml was updated
+    config = yaml.safe_load((infra["root"] / "config.yaml").read_text())
+    assert "twitter.com" in config["browser_watcher"]["skip_domains"]
+
+    # Step 2: confirm the browser watcher respects the updated config
+    entry = {"url": "https://twitter.com/something", "title": "Tweet",
+             "visit_count": 1, "browser": "chrome"}
+
+    with patch.object(bw, "SEEN_URLS_FILE", infra["seen"]):
+        w = bw.BrowserWatcher(role="full")
+        w.seen_urls = set()
+        should = w._should_process(entry, config)
+
+    assert should is False
+
+
+async def test_purge_command_removes_correct_memories(infra, chat_handler_instance):
+    """/purge deletes memories matching the domain and leaves others intact."""
+    m = infra["root"] / "memories"
+
+    # Write two memories — one for example.com, one for other.com
+    target = m / "2026-04-11-ex-aaa111.md"
+    target.write_text(
+        "---\nsource_url: https://example.com/article\ntags: []\n---\n\n## Summary\nEx"
+    )
+    keeper = m / "2026-04-11-other-bbb222.md"
+    keeper.write_text(
+        "---\nsource_url: https://other.com/page\ntags: []\n---\n\n## Summary\nOther"
+    )
+
+    mock_update = MagicMock()
+    mock_update.effective_user.id = 12345
+    mock_update.message = AsyncMock()
+    mock_ctx = MagicMock()
+    mock_ctx.args = ["example.com"]
+
+    await chat_handler_instance.cmd_purge(mock_update, mock_ctx)
+
+    assert not target.exists()
+    assert keeper.exists()
+    reply = mock_update.message.reply_text.call_args[0][0]
+    assert "Deleted 1" in reply
+
+
+async def test_purgeall_command_clears_all_skip_domain_memories(
+    infra, chat_handler_instance
+):
+    """/purgeall removes memories for every domain currently on the skip list."""
+    m = infra["root"] / "memories"
+
+    # google.com is already in the skip list from the fixture config
+    g = m / "2026-04-11-google-aaa111.md"
+    g.write_text(
+        "---\nsource_url: https://google.com/search\ntags: []\n---\n\n## Summary\nG"
+    )
+    keeper = m / "2026-04-11-other-bbb222.md"
+    keeper.write_text(
+        "---\nsource_url: https://other.com/page\ntags: []\n---\n\n## Summary\nOther"
+    )
+
+    mock_update = MagicMock()
+    mock_update.effective_user.id = 12345
+    mock_update.message = AsyncMock()
+    mock_ctx = MagicMock()
+
+    await chat_handler_instance.cmd_purgeall(mock_update, mock_ctx)
+
+    assert not g.exists()
+    assert keeper.exists()
+    reply = mock_update.message.reply_text.call_args[0][0]
+    assert "google.com" in reply
