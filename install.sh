@@ -28,7 +28,12 @@ echo ""
 # ── 1. Prerequisites ──────────────────────────────────────────────────────────
 echo "Checking prerequisites..."
 
-PYTHON="$(command -v python3 || true)"
+# Prefer venv Python if already installed and valid (idempotent re-runs)
+if [ -x "$VENV/bin/python3" ]; then
+    PYTHON="$VENV/bin/python3"
+else
+    PYTHON="$(command -v python3 || true)"
+fi
 
 _upgrade_python() {
     if command -v brew &>/dev/null; then
