@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # install.sh — idempotent setup for second-brain on a new machine
-# Safe to run multiple times. Skips steps already completed.
+# Safe to run multiple times. Reads existing configuration and skips
+# steps that are already up to date.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -75,16 +76,81 @@ ICLOUD_ROOT="$HOME/Library/Mobile Documents/com~apple~CloudDocs"
 [ ! -d "$ICLOUD_ROOT" ] && die "iCloud Drive not found. Enable iCloud Drive in System Settings → Apple ID first."
 ok "iCloud Drive"
 
+# ── Read existing configuration ───────────────────────────────────────────────
+# Detect values already stored in the launchd plist and config.yaml so
+# re-runs don't ask for credentials that are already configured.
+
+_plist_env_val() {
+    # Read an EnvironmentVariables key from the plist using plistlib (stdlib).
+    local key="$1"
+    "$PYTHON" - "$PLIST_DEST" "$key" 2>/dev/null << 'PYEOF'
+import plistlib, sys
+try:
+    with open(sys.argv[1], 'rb') as f:
+        p = plistlib.load(f)
+    val = p.get('EnvironmentVariables', {}).get(sys.argv[2], '')
+    print(val if val else '', end='')
+except Exception:
+    pass
+PYEOF
+}
+
+_config_yaml_val() {
+    # Read a dotted key path (e.g. telegram.bot_token) from config.yaml via awk.
+    # Avoids requiring pyyaml in the system Python.
+    local section="$1" key="$2" config="$3"
+    awk -v sec="$section" -v k="$key" '
+        /^[^ ]/ { in_sec = ($0 ~ "^" sec ":") }
+        in_sec && /^  / {
+            split($0, a, /: */)
+            gsub(/^ +| +$/, "", a[1])
+            gsub(/^ +| +$/, "", a[2])
+            gsub(/^["'"'"']|["'"'"']$/, "", a[2])
+            if (a[1] == k) { print a[2]; exit }
+        }
+    ' "$config" 2>/dev/null || echo ""
+}
+
+EXISTING_ROLE=""
+EXISTING_GEMINI_KEY=""
+EXISTING_ANTHROPIC_KEY=""
+EXISTING_TELEGRAM_TOKEN=""
+EXISTING_TELEGRAM_USER_ID=""
+
+if [ -f "$PLIST_DEST" ]; then
+    EXISTING_ROLE="$(_plist_env_val SECOND_BRAIN_ROLE)"
+    EXISTING_GEMINI_KEY="$(_plist_env_val GEMINI_API_KEY)"
+    EXISTING_ANTHROPIC_KEY="$(_plist_env_val ANTHROPIC_API_KEY)"
+fi
+
+CONFIG_DEST="$BRAIN_DIR/config.yaml"
+if [ -f "$CONFIG_DEST" ]; then
+    _tok="$(_config_yaml_val telegram bot_token "$CONFIG_DEST")"
+    _uid="$(_config_yaml_val user telegram_user_id "$CONFIG_DEST")"
+    # Only use if they look like real values, not the template placeholders
+    [[ "$_tok" != "YOUR_BOT_TOKEN" && -n "$_tok" ]] && EXISTING_TELEGRAM_TOKEN="$_tok"
+    [[ "$_uid" != "YOUR_TELEGRAM_USER_ID" && -n "$_uid" ]] && EXISTING_TELEGRAM_USER_ID="$_uid"
+fi
+
 # ── 2. Role ───────────────────────────────────────────────────────────────────
 echo ""
-echo "  Deployment role:"
-echo "    watcher  browser watcher only — captures pages you read (laptop)"
-echo "    full     watcher + Telegram bot + index builder (always-on machine)"
-echo ""
-read -r -p "  Role for this machine [watcher]: " ROLE
-ROLE="${ROLE:-watcher}"
-[[ "$ROLE" == "full" || "$ROLE" == "watcher" ]] || die "Role must be 'full' or 'watcher'."
-ok "Role: $ROLE"
+if [ -n "$EXISTING_ROLE" ]; then
+    ROLE="$EXISTING_ROLE"
+    skip "Role: $ROLE  (from existing config — press Enter to keep, or type to change)"
+    read -r -p "  Role [$ROLE]: " NEW_ROLE
+    [ -n "$NEW_ROLE" ] && ROLE="$NEW_ROLE"
+    [[ "$ROLE" == "full" || "$ROLE" == "watcher" ]] || die "Role must be 'full' or 'watcher'."
+    ok "Role: $ROLE"
+else
+    echo "  Deployment role:"
+    echo "    watcher  browser watcher only — captures pages you read (laptop)"
+    echo "    full     watcher + Telegram bot + index builder (always-on machine)"
+    echo ""
+    read -r -p "  Role for this machine [watcher]: " ROLE
+    ROLE="${ROLE:-watcher}"
+    [[ "$ROLE" == "full" || "$ROLE" == "watcher" ]] || die "Role must be 'full' or 'watcher'."
+    ok "Role: $ROLE"
+fi
 
 # ── 3. API keys ───────────────────────────────────────────────────────────────
 echo ""
@@ -94,6 +160,9 @@ echo "────────"
 if [ -n "${GEMINI_API_KEY:-}" ]; then
     ok "GEMINI_API_KEY (from environment)"
     GEMINI_KEY="$GEMINI_API_KEY"
+elif [ -n "$EXISTING_GEMINI_KEY" ]; then
+    ok "Gemini API key (from existing config)"
+    GEMINI_KEY="$EXISTING_GEMINI_KEY"
 else
     echo "  Get one at: https://aistudio.google.com/app/apikey"
     read -r -p "  Gemini API key: " GEMINI_KEY
@@ -105,6 +174,9 @@ if [ "$ROLE" = "full" ]; then
     if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
         ok "ANTHROPIC_API_KEY (from environment)"
         ANTHROPIC_KEY="$ANTHROPIC_API_KEY"
+    elif [ -n "$EXISTING_ANTHROPIC_KEY" ]; then
+        ok "Anthropic API key (from existing config)"
+        ANTHROPIC_KEY="$EXISTING_ANTHROPIC_KEY"
     else
         echo "  Get one at: https://console.anthropic.com/"
         read -r -p "  Anthropic API key: " ANTHROPIC_KEY
@@ -116,16 +188,23 @@ fi
 TELEGRAM_TOKEN=""
 TELEGRAM_USER_ID=""
 if [ "$ROLE" = "full" ]; then
-    echo ""
-    echo "Telegram"
-    echo "────────"
-    echo "  Bot token:  message @BotFather → /newbot"
-    echo "  User ID:    message @userinfobot"
-    echo ""
-    read -r -p "  Bot token: " TELEGRAM_TOKEN
-    [ -z "$TELEGRAM_TOKEN" ] && die "Telegram bot token is required for the full role."
-    read -r -p "  Your numeric user ID: " TELEGRAM_USER_ID
-    [ -z "$TELEGRAM_USER_ID" ] && die "Telegram user ID is required for the full role."
+    if [ -n "$EXISTING_TELEGRAM_TOKEN" ] && [ -n "$EXISTING_TELEGRAM_USER_ID" ]; then
+        ok "Telegram bot token (from existing config)"
+        ok "Telegram user ID: $EXISTING_TELEGRAM_USER_ID (from existing config)"
+        TELEGRAM_TOKEN="$EXISTING_TELEGRAM_TOKEN"
+        TELEGRAM_USER_ID="$EXISTING_TELEGRAM_USER_ID"
+    else
+        echo ""
+        echo "Telegram"
+        echo "────────"
+        echo "  Bot token:  message @BotFather → /newbot"
+        echo "  User ID:    message @userinfobot"
+        echo ""
+        read -r -p "  Bot token: " TELEGRAM_TOKEN
+        [ -z "$TELEGRAM_TOKEN" ] && die "Telegram bot token is required for the full role."
+        read -r -p "  Your numeric user ID: " TELEGRAM_USER_ID
+        [ -z "$TELEGRAM_USER_ID" ] && die "Telegram user ID is required for the full role."
+    fi
 fi
 
 # ── 5. Deploy directory ───────────────────────────────────────────────────────
@@ -157,22 +236,34 @@ fi
 
 # ── 7. Python dependencies ────────────────────────────────────────────────────
 echo ""
-echo "Installing Python dependencies into venv..."
-"$VENV/bin/pip" install -q --upgrade pip
+echo "Checking Python dependencies..."
+
+REQS_HASH_FILE="$DEPLOY_DIR/.requirements-hash"
 if [ "$ROLE" = "watcher" ]; then
-    # python-telegram-bot not needed on watcher nodes — keep the venv lean
-    "$VENV/bin/pip" install -q litellm httpx beautifulsoup4 lxml pyyaml
+    # Fixed set for watcher — hash the package names directly
+    REQS_HASH="$(echo 'litellm httpx beautifulsoup4 lxml pyyaml' | shasum -a 256 | cut -d' ' -f1)"
 else
-    "$VENV/bin/pip" install -q -r "$REPO_DIR/requirements.txt"
+    REQS_HASH="$(shasum -a 256 "$REPO_DIR/requirements.txt" | cut -d' ' -f1)"
 fi
-ok "Dependencies installed"
+
+if [ -f "$REQS_HASH_FILE" ] && [ "$(cat "$REQS_HASH_FILE")" = "$REQS_HASH" ]; then
+    skip "Dependencies unchanged"
+else
+    info "Installing dependencies..."
+    "$VENV/bin/pip" install -q --upgrade pip
+    if [ "$ROLE" = "watcher" ]; then
+        "$VENV/bin/pip" install -q litellm httpx beautifulsoup4 lxml pyyaml
+    else
+        "$VENV/bin/pip" install -q -r "$REPO_DIR/requirements.txt"
+    fi
+    echo "$REQS_HASH" > "$REQS_HASH_FILE"
+    ok "Dependencies installed"
+fi
 
 # ── 8. Deploy source files ────────────────────────────────────────────────────
 echo ""
 echo "Deploying source files to $DEPLOY_DIR..."
 
-# Daemon source files — only the modules the daemon actually imports.
-# Tests, migration scripts, and repo tooling stay in the repo.
 DAEMON_FILES=(
     daemon.py
     browser_watcher.py
@@ -220,12 +311,10 @@ done
 # ── 11. config.yaml ───────────────────────────────────────────────────────────
 echo ""
 echo "Writing config.yaml..."
-CONFIG_DEST="$BRAIN_DIR/config.yaml"
 if [ -f "$CONFIG_DEST" ]; then
     skip "$CONFIG_DEST  (preserving existing — edit manually to change settings)"
 else
     cp "$REPO_DIR/config.yaml.template" "$CONFIG_DEST"
-    # Use Python for substitution — avoids sed escaping issues with special chars in tokens
     ROLE="$ROLE" \
     TELEGRAM_TOKEN="$TELEGRAM_TOKEN" \
     TELEGRAM_USER_ID="$TELEGRAM_USER_ID" \
@@ -293,8 +382,8 @@ fi
 echo ""
 echo "Configuring launchd agent..."
 
-# Always write — picks up role/key/path changes on re-run
-cat > "$PLIST_DEST" << PLIST_EOF
+PLIST_TMP="$(mktemp)"
+cat > "$PLIST_TMP" << PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -329,15 +418,37 @@ cat > "$PLIST_DEST" << PLIST_EOF
 </dict>
 </plist>
 PLIST_EOF
-ok "Wrote $PLIST_DEST"
+
+PLIST_CHANGED=false
+if [ -f "$PLIST_DEST" ] && cmp -s "$PLIST_TMP" "$PLIST_DEST"; then
+    skip "launchd plist unchanged"
+    rm "$PLIST_TMP"
+else
+    mv "$PLIST_TMP" "$PLIST_DEST"
+    ok "Wrote $PLIST_DEST"
+    PLIST_CHANGED=true
+fi
 
 # ── 15. Load (or reload) the agent ────────────────────────────────────────────
-if launchctl list "$PLIST_NAME" &>/dev/null; then
-    info "Reloading existing agent..."
-    launchctl unload "$PLIST_DEST" 2>/dev/null || true
+NEEDS_RELOAD=false
+[ "$deployed" -gt 0 ] && NEEDS_RELOAD=true
+[ "$PLIST_CHANGED" = "true" ] && NEEDS_RELOAD=true
+
+if [ "$NEEDS_RELOAD" = "true" ]; then
+    if launchctl list "$PLIST_NAME" &>/dev/null; then
+        info "Reloading daemon (source or config changed)..."
+        launchctl unload "$PLIST_DEST" 2>/dev/null || true
+    fi
+    launchctl load "$PLIST_DEST"
+    ok "Daemon reloaded"
+else
+    if launchctl list "$PLIST_NAME" &>/dev/null; then
+        skip "Daemon already running — nothing changed, no reload needed"
+    else
+        launchctl load "$PLIST_DEST"
+        ok "Daemon loaded"
+    fi
 fi
-launchctl load "$PLIST_DEST"
-ok "launchd agent loaded"
 
 # ── 16. Full Disk Access check (full role only) ───────────────────────────────
 if [ "$ROLE" = "full" ]; then
