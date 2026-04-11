@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.chrisrobertson.secondbrain</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/python3</string>
+    <string>/Users/chrisrobertson/repos/secondbrain/daemon.py</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/second-brain.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/second-brain.error.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- Role is set here, not in config.yaml — config.yaml syncs via iCloud
+         and a change on one machine would propagate to all machines.
+         Mac Studio (leader): full   MacBook Pro (watcher): watcher -->
+    <key>SECOND_BRAIN_ROLE</key>
+    <string>full</string>
+    <key>ANTHROPIC_API_KEY</key>
+    <string>YOUR_KEY</string>
+    <key>GEMINI_API_KEY</key>
+    <string>YOUR_KEY</string>
+  </dict>
+</dict>
+</plist>

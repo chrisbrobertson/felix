@@ -1,0 +1,55 @@
+# ~/Library/Mobile Documents/com~apple~CloudDocs/second-brain/config.yaml
+# Copy this file to the path above and fill in your values.
+
+daemon:
+  role: full
+  # Role controls which tasks this machine runs. Set per-machine in a local
+  # override or just edit before launch. Valid values:
+  #
+  #   full     — browser_watcher + telegram bot + index_builder + skill_optimizer
+  #              Run on your primary always-on machine (Mac Studio / Mac Mini).
+  #              Needs ANTHROPIC_API_KEY + GEMINI_API_KEY.
+  #
+  #   watcher  — browser_watcher only. Summarizes pages visited on this machine,
+  #              writes memory files to iCloud. No Telegram, no index, no optimizer.
+  #              Only needs GEMINI_API_KEY (summarize-webpage uses gemini-flash).
+  #              Run on MacBook Pro when traveling.
+
+user:
+  telegram_user_id: YOUR_TELEGRAM_USER_ID   # whitelist — bot ignores all others
+  name: Chris
+  timezone: America/Los_Angeles
+
+telegram:
+  bot_token: YOUR_BOT_TOKEN                 # from @BotFather — only needed on full node
+
+browser_watcher:
+  interval_seconds: 300          # poll every 5 minutes
+  min_dwell_seconds: 30          # ignore pages visited < 30s
+  min_content_chars: 500         # ignore stubs, redirects
+  skip_domains:                  # noise filter
+    - google.com
+    - googleadservices.com
+    - doubleclick.net
+    - facebook.com
+    - twitter.com
+    - t.co
+    - linkedin.com
+    - youtube.com                # optional — remove if you want YT titles captured
+
+litellm:
+  # Local endpoints (optional)
+  providers:
+    - name: mac-studio
+      api_base: http://mac-studio.local:8000/v1
+      api_key: none
+      models: [nemotron-cascade-2]
+
+skill_optimizer:
+  run_hour: 3                    # 3am daily
+  min_runs_before_optimize: 10   # don't optimize on sparse data
+  underperformance_threshold: 0.70
+
+memory:
+  max_context_memories: 20       # max files loaded into chat context
+  index_rebuild_interval: 3600   # rebuild index.md every hour
