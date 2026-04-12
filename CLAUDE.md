@@ -60,6 +60,20 @@ Every user-facing feature must have corresponding documentation in `README.md`. 
 
 `CLAUDE.md` is guidance for Claude Code only — it is not a substitute for user-facing docs. If you add or change something a human operator needs to know to set up or run the system, update `README.md`.
 
+## Agent Isolation
+
+When spawning implementation agents (via the `Agent` tool), always pass `isolation: "worktree"`. This gives each agent its own git worktree so its in-progress changes never touch the working tree of the main session or other agents running in parallel.
+
+```python
+Agent(
+    description="...",
+    prompt="...",
+    isolation="worktree",   # required for all implementation agents
+)
+```
+
+Research-only agents (Explore, Plan, docs reads) do not need a worktree — only agents that write files or run tests.
+
 ## Committing and Deploying
 
 Commit automatically after each work item is completed — do not wait to be asked. A work item is a logical unit: a new feature, a bug fix, a test suite addition, a docs update. Do not batch unrelated changes into one commit.
