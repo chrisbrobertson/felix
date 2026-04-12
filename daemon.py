@@ -40,6 +40,7 @@ async def main():
         from commitment_tracker import CommitmentTracker
         from contact_tracker import ContactTracker
         from slack_scanner import SlackScanner
+        from calendar_scanner import CalendarScanner
         chat = TelegramChatHandler()
         optimizer = SkillOptimizer()
         indexer = IndexBuilder()
@@ -49,6 +50,7 @@ async def main():
         commitment_tracker = CommitmentTracker(role=role)
         contact_tracker = ContactTracker(role=role)
         slack_scanner = SlackScanner(role=role)
+        calendar_scanner = CalendarScanner(role=role)
         await chat.start()
         tasks += [
             chat.poll_loop,
@@ -60,6 +62,7 @@ async def main():
             commitment_tracker.run_loop,
             contact_tracker.run_loop,
             slack_scanner.run_loop,
+            calendar_scanner.run_loop,
         ]
 
     stop_event = asyncio.Event()

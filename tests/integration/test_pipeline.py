@@ -1509,3 +1509,111 @@ async def test_slack_scanner_writes_memory_for_thread(tmp_path):
     state = json.loads(state_file.read_text())
     assert "C001" in state["channels"]
     assert "1712700000.000200" in state["channels"]["C001"]["threads"]
+
+
+# ── Calendar Scanner integration ──────────────────────────────────────────────
+
+async def test_calendar_scanner_writes_memory_for_event(tmp_path):
+    """CalendarScanner._run_scan → calendar-event-*.md written with correct frontmatter."""
+    import sqlite3 as _sqlite3
+    import calendar_scanner as cs
+    from calendar_scanner import CalendarScanner, CalendarCacheSource, _datetime_to_cd
+    from datetime import datetime as _dt, timedelta as _td
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "calendar-state.json"
+
+    # Build a minimal Calendar Cache SQLite database
+    db_path = tmp_path / "Calendar Cache"
+    conn = _sqlite3.connect(str(db_path))
+    conn.executescript("""
+        CREATE TABLE ZCALENDAR (
+            Z_PK INTEGER PRIMARY KEY,
+            ZTITLE TEXT
+        );
+        CREATE TABLE ZCALENDARITEM (
+            Z_PK INTEGER PRIMARY KEY,
+            ZTITLE TEXT,
+            ZSTARTDATE REAL,
+            ZENDDATE REAL,
+            ZMODIFIEDDATE REAL,
+            ZLOCATION TEXT,
+            ZNOTES TEXT,
+            ZISALLDAY INTEGER,
+            ZHASRECURRENCERULES INTEGER,
+            ZMYATTENDEESTATUS INTEGER,
+            ZEXTERNALIDENTIFIER TEXT,
+            ZCALENDAR INTEGER
+        );
+        CREATE TABLE ZATTENDEE (
+            ZCOMMONNAME TEXT,
+            ZADDRESS TEXT,
+            ZCALENDARITEM INTEGER
+        );
+    """)
+    conn.execute("INSERT INTO ZCALENDAR (Z_PK, ZTITLE) VALUES (1, 'Work')")
+
+    # Insert an event
+    now = _dt.now()
+    event_start = now + _td(days=1)
+    start_cd = _datetime_to_cd(event_start)
+    end_cd = _datetime_to_cd(event_start + _td(hours=1))
+    modified_cd = _datetime_to_cd(now)
+
+    conn.execute(
+        "INSERT INTO ZCALENDARITEM VALUES (1, 'Team Standup', ?, ?, ?, 'Zoom', 'Sprint review items', 0, 1, 0, 'abc123', 1)",
+        (start_cd, end_cd, modified_cd)
+    )
+    conn.execute("INSERT INTO ZATTENDEE VALUES ('Chris Robertson', 'chris@example.com', 1)")
+    conn.execute("INSERT INTO ZATTENDEE VALUES ('Sarah Chen', 'sarah@example.com', 1)")
+    conn.commit()
+    conn.close()
+
+    config_content = {
+        "calendar_scanner": {
+            "interval_seconds": 300,
+            "lookback_days": 7,
+            "forward_days": 7,
+            "skip_calendars": [],
+            "max_events_per_cycle": 50,
+        }
+    }
+
+    scanner = CalendarScanner(role="full")
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "STATE_FILE", state_file), \
+         patch.object(cs, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch.object(CalendarCacheSource, "_find_db_path", return_value=db_path), \
+         patch.object(CalendarCacheSource, "_copy_db", return_value=db_path), \
+         patch("calendar_scanner.acompletion", new=AsyncMock(
+             return_value=MagicMock(
+                 choices=[MagicMock(message=MagicMock(
+                     content='{"summary": "Weekly engineering standup", "tags": ["standup", "engineering"]}'
+                 ))]
+             )
+         ), create=True):
+
+        import yaml as _yaml
+        (tmp_path / "config.yaml").write_text(_yaml.dump(config_content))
+
+        await scanner._run_scan()
+
+    mem_files = list(memories_dir.glob("calendar-event-*.md"))
+    assert len(mem_files) == 1, f"Expected 1 calendar memory, got {[f.name for f in mem_files]}"
+
+    import yaml as _yaml
+    text = mem_files[0].read_text()
+    parts = text.split("---", 2)
+    fm = _yaml.safe_load(parts[1])
+
+    assert fm["type"] == "calendar_event"
+    assert fm["source_title"] == "Team Standup"
+    assert fm["calendar_name"] == "Work"
+    assert fm["location"] == "Zoom"
+    assert fm["recurrence"] is True
+    assert len(fm["participants"]) == 2
+    assert any(p["email"] == "chris@example.com" for p in fm["participants"])
+    assert "## Event Details" in text
+    assert "## Context" in text

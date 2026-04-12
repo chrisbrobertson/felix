@@ -114,7 +114,11 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 8. **Commitment Tracker** (every 5 min, `full` role only) — scans `meeting_transcript` and `email_thread` memory files for new/changed content (mtime-based), calls LLM to extract commitments and waiting-on items, writes one `commitment-{slug}-{id}.md` per item. Confidence ≥0.7 → auto-active; 0.5–0.69 → `needs-review` tag; <0.5 → discarded. Exposes `/commitments`, `/complete N`, `/dismiss N` Telegram commands. State persisted in `DEPLOY_DIR/commitment-scanner-state.json`.
 
-9. **Contact Tracker** (every 5 min, `full` role only) — scans `email_thread`, `meeting_transcript`, `calendar_event`, and `slack_thread` memory files for participant names and emails (mtime-based). Writes one `contact-{name-slug}.md` per person with email-based deduplication, recency-weighted relationship scoring, and interaction history. Exposes `/contacts [N]` (list sorted by last interaction) and `/contact <name|N>` (detail view with open commitments) Telegram commands. State persisted in `DEPLOY_DIR/contact-tracker-state.json`.
+9. **Calendar Scanner** (every 5 min, `full` role only) — reads Apple Calendar.app data (SQLite Calendar Cache primary, AppleScript fallback), writes one `calendar-event-{date}-{slug}-{id}.md` per event in a rolling ±7-day window. `type: calendar_event` in frontmatter. Change detection via modification timestamp. SQLite path requires no permissions; AppleScript fallback requires Automation permission to Calendar.app. State persisted in `DEPLOY_DIR/calendar-scanner-state.json`.
+
+10. **Contact Tracker** (every 5 min, `full` role only) — scans `email_thread`, `meeting_transcript`, `calendar_event`, and `slack_thread` memory files for participant names and emails (mtime-based). Writes one `contact-{name-slug}.md` per person with email-based deduplication, recency-weighted relationship scoring, and interaction history. Exposes `/contacts [N]` (list sorted by last interaction) and `/contact <name|N>` (detail view with open commitments) Telegram commands. State persisted in `DEPLOY_DIR/contact-tracker-state.json`.
+
+11. **Slack Scanner** (every 5 min, `full` role only) — polls Slack Web API for threads in monitored channels, writes `slack-thread-*.md` memory files. Requires `SLACK_BOT_TOKEN` and `SLACK_USER_ID` env vars; exits gracefully if missing. State persisted in `DEPLOY_DIR/slack-scanner-state.json`.
 
 ## Two Deployment Roles
 
@@ -155,7 +159,11 @@ All runtime state lives in `~/secondbrain/` — separate from the repo and from 
 ├── email-scanner-state.json        # high-water ROWID for email scanner
 ├── zoom-scanner-state.json         # processed meeting UUIDs for zoom scanner
 ├── commitment-scanner-state.json   # processed file mtimes for commitment tracker
-└── contact-tracker-state.json      # processed file mtimes and interaction timestamps for contact tracker
+├── calendar-scanner-state.json     # processed event modification timestamps
+├── contact-tracker-state.json      # processed file mtimes and interaction timestamps
+├── slack-scanner-state.json        # processed Slack thread timestamps
+├── commitment-corrections.jsonl    # /wrong and /missed feedback log
+└── commitment-accuracy.json        # extraction precision stats per source type
 ```
 
 `SECOND_BRAIN_DIR` env var overrides the deploy dir location (defaults to `~/secondbrain`). The launchd plist sets this explicitly so the daemon always finds its runtime files.

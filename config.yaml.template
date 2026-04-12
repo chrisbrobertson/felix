@@ -113,3 +113,10 @@ slack_scanner:
   min_thread_messages: 2         # skip threads with fewer replies than this
   max_channels_per_cycle: 20
   max_threads_per_channel: 30
+
+calendar_scanner:
+  interval_seconds: 300          # scan every 5 minutes
+  lookback_days: 7               # events up to N days in the past
+  forward_days: 7                # events up to N days in the future
+  skip_calendars: []             # calendar names to exclude (e.g. ["Birthdays", "Holidays"])
+  max_events_per_cycle: 50
