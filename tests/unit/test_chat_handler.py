@@ -1204,3 +1204,133 @@ def test_migrate_idempotent(tmp_path):
     fm = _yaml.safe_load(migrated.read_text().split("---", 2)[1])
     assert fm["type"] == "project"
     assert fm["category"] == "code"
+
+
+# ── /clean command ────────────────────────────────────────────────────────────
+
+def _make_calendar_memory(memories_dir: Path, slug: str) -> Path:
+    """Write a minimal calendar_event memory file."""
+    f = memories_dir / f"calendar-event-2026-04-12-{slug}-aabbccdd.md"
+    f.write_text(
+        f"---\ntype: calendar_event\nsource_title: {slug}\n---\n\nBody\n"
+    )
+    return f
+
+
+def _make_email_memory(memories_dir: Path, slug: str) -> Path:
+    f = memories_dir / f"email-thread-{slug}-aabbccdd.md"
+    f.write_text(
+        f"---\ntype: email_thread\nsource_title: {slug}\n---\n\nBody\n"
+    )
+    return f
+
+
+def _make_update(user_id=12345, args=None):
+    update = MagicMock()
+    update.effective_user.id = user_id
+    update.effective_chat.id = 99999
+    update.message = AsyncMock()
+    context = MagicMock()
+    context.args = args or []
+    return update, context
+
+
+@pytest.mark.asyncio
+async def test_clean_no_args_shows_help(handler, brain_dir):
+    update, context = _make_update()
+    await handler.cmd_clean(update, context)
+    text = update.message.reply_text.call_args[0][0]
+    assert "Usage" in text
+    assert "calendar" in text
+    assert "all" in text
+
+
+@pytest.mark.asyncio
+async def test_clean_unknown_type(handler, brain_dir):
+    update, context = _make_update(args=["bogustype"])
+    await handler.cmd_clean(update, context)
+    text = update.message.reply_text.call_args[0][0]
+    assert "Unknown type" in text
+
+
+@pytest.mark.asyncio
+async def test_clean_preview_shows_count_no_deletion(handler, brain_dir):
+    """Running /clean calendar without confirm shows count and does not delete."""
+    m = brain_dir / "memories"
+    _make_calendar_memory(m, "standup")
+    _make_calendar_memory(m, "review")
+
+    update, context = _make_update(args=["calendar"])
+    with patch.object(ch, "BRAIN_DIR", brain_dir):
+        await handler.cmd_clean(update, context)
+
+    text = update.message.reply_text.call_args[0][0]
+    assert "2 file(s)" in text
+    assert "confirm" in text.lower()
+    # Files must NOT be deleted
+    assert len(list(m.glob("calendar-event-*.md"))) == 2
+
+
+@pytest.mark.asyncio
+async def test_clean_confirm_deletes_files_and_resets_state(handler, brain_dir, tmp_path):
+    """Running /clean calendar confirm deletes files and resets the state file."""
+    m = brain_dir / "memories"
+    _make_calendar_memory(m, "standup")
+    _make_calendar_memory(m, "review")
+
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+    state_file = deploy_dir / "calendar-scanner-state.json"
+    state_file.write_text('{"processed": {"foo.md": "2026-04-12T10:00:00"}}')
+
+    update, context = _make_update(args=["calendar", "confirm"])
+    with patch.object(ch, "BRAIN_DIR", brain_dir), \
+         patch.object(ch, "DEPLOY_DIR", deploy_dir):
+        await handler.cmd_clean(update, context)
+
+    text = update.message.reply_text.call_args[0][0]
+    assert "2 memory file(s) deleted" in text
+    # Files gone
+    assert len(list(m.glob("calendar-event-*.md"))) == 0
+    # State reset to {}
+    assert state_file.read_text().strip() == "{}"
+
+
+@pytest.mark.asyncio
+async def test_clean_confirm_only_deletes_matching_type(handler, brain_dir, tmp_path):
+    """Cleaning calendar does not touch email-thread files."""
+    m = brain_dir / "memories"
+    cal = _make_calendar_memory(m, "standup")
+    email = _make_email_memory(m, "newsletter")
+
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+
+    update, context = _make_update(args=["calendar", "confirm"])
+    with patch.object(ch, "BRAIN_DIR", brain_dir), \
+         patch.object(ch, "DEPLOY_DIR", deploy_dir):
+        await handler.cmd_clean(update, context)
+
+    assert not cal.exists()
+    assert email.exists()
+
+
+@pytest.mark.asyncio
+async def test_clean_all_confirm_deletes_all_types(handler, brain_dir, tmp_path):
+    """Cleaning all removes every registered type."""
+    m = brain_dir / "memories"
+    cal = _make_calendar_memory(m, "standup")
+    email = _make_email_memory(m, "thread")
+
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+
+    update, context = _make_update(args=["all", "confirm"])
+    with patch.object(ch, "BRAIN_DIR", brain_dir), \
+         patch.object(ch, "DEPLOY_DIR", deploy_dir):
+        await handler.cmd_clean(update, context)
+
+    assert not cal.exists()
+    assert not email.exists()
+    text = update.message.reply_text.call_args[0][0]
+    assert "deleted" in text

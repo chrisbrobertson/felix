@@ -13,8 +13,57 @@ from skill_executor import SkillExecutor
 log = logging.getLogger("chat-handler")
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
+DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
 MAX_CONTEXT_CHARS = 80_000
 TG_MAX_CHARS = 4096  # Telegram hard limit per message
+
+# ── /clean type registry ──────────────────────────────────────────────────────
+# Each entry: label, glob pattern in memories/, optional type frontmatter filter,
+# optional state file in DEPLOY_DIR to reset so the scanner reprocesses from scratch.
+_CLEAN_TYPES: dict = {
+    "calendar": {
+        "label": "Calendar events",
+        "glob": "calendar-event-*.md",
+        "type_filter": "calendar_event",
+        "state_file": "calendar-scanner-state.json",
+    },
+    "meetings": {
+        "label": "Meeting transcripts",
+        "glob": "meeting-*.md",
+        "type_filter": "meeting_transcript",
+        "state_file": "zoom-scanner-state.json",
+    },
+    "email": {
+        "label": "Email threads",
+        "glob": "email-thread-*.md",
+        "type_filter": "email_thread",
+        "state_file": "email-scanner-state.json",
+    },
+    "slack": {
+        "label": "Slack threads",
+        "glob": "slack-thread-*.md",
+        "type_filter": "slack_thread",
+        "state_file": "slack-scanner-state.json",
+    },
+    "contacts": {
+        "label": "Contacts",
+        "glob": "contact-*.md",
+        "type_filter": None,
+        "state_file": "contact-tracker-state.json",
+    },
+    "commitments": {
+        "label": "Commitments",
+        "glob": "commitment-*.md",
+        "type_filter": None,
+        "state_file": "commitment-scanner-state.json",
+    },
+    "projects": {
+        "label": "Project memories",
+        "glob": "project-*.md",
+        "type_filter": "project",
+        "state_file": None,
+    },
+}
 
 # Single source of truth for all Telegram commands and their descriptions.
 # /help iterates this to render the grouped help text.
@@ -91,6 +140,9 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("report_resume",  "Resume paused report N"),
         ("report_run",     "Run report N immediately"),
     ],
+    "Maintenance": [
+        ("clean", "Delete & reprocess memories for a data type. /clean <type|all> [confirm]"),
+    ],
     "Meta": [
         ("help",     "Show this list"),
         ("commands", "Alias of /help"),
@@ -142,6 +194,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("help", self.cmd_help))
         self.app.add_handler(CommandHandler("commands", self.cmd_help))
         self.app.add_handler(CommandHandler("settings", self.cmd_settings))
+        self.app.add_handler(CommandHandler("clean", self.cmd_clean))
         self.app.add_handler(CommandHandler("briefing", self.cmd_briefing))
         self.app.add_handler(CommandHandler("mute", self.cmd_mute))
         self.app.add_handler(CommandHandler("unmute", self.cmd_unmute))
@@ -2358,6 +2411,128 @@ class TelegramChatHandler:
         tmp.write_text(yaml.dump(config, default_flow_style=False))
         os.rename(tmp, config_path)
         await update.message.reply_text(f"Updated {key} to: {value}")
+
+    # ── /clean helpers ────────────────────────────────────────────────────────
+
+    def _clean_collect_files(self, cfg: dict) -> list:
+        """Return all memory files matching this clean-type config."""
+        files = list((BRAIN_DIR / "memories").glob(cfg["glob"]))
+        if cfg.get("type_filter"):
+            files = [f for f in files
+                     if self._parse_frontmatter(f).get("type") == cfg["type_filter"]]
+        return files
+
+    def _clean_reset_state(self, state_filename: str):
+        """Overwrite a scanner state file with {} so it reprocesses from scratch."""
+        state_path = DEPLOY_DIR / state_filename
+        if not state_path.exists():
+            return
+        tmp = state_path.with_suffix(".tmp")
+        tmp.write_text("{}")
+        os.rename(tmp, state_path)
+
+    async def cmd_clean(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Delete and reprocess memories for one data type (or all scanner types).
+
+        Usage:
+          /clean                       — list available types
+          /clean <type>                — preview: show what would be deleted
+          /clean <type> confirm        — execute after preview (step 2 of 2)
+          /clean all                   — preview all scanner types
+          /clean all confirm           — execute all
+        """
+        if not self._check_auth(update):
+            return
+
+        valid_types = list(_CLEAN_TYPES.keys())
+
+        if not context.args:
+            lines = [
+                "Usage: /clean <type> [confirm]",
+                "",
+                "Available types:",
+            ]
+            for key, cfg in _CLEAN_TYPES.items():
+                lines.append(f"  {key:<12} — {cfg['label']}")
+            lines += [
+                "  all          — all of the above",
+                "",
+                "Run /clean <type> to preview what will be deleted, then",
+                "/clean <type> confirm to execute.",
+            ]
+            await update.message.reply_text("\n".join(lines))
+            return
+
+        type_key = context.args[0].lower()
+        confirmed = len(context.args) > 1 and context.args[1].lower() == "confirm"
+
+        if type_key not in valid_types and type_key != "all":
+            await update.message.reply_text(
+                f"Unknown type '{type_key}'.\n"
+                f"Valid types: {', '.join(valid_types)}, all"
+            )
+            return
+
+        types_to_clean = valid_types if type_key == "all" else [type_key]
+
+        # Collect counts for the preview
+        file_map: dict = {}  # type_key -> list[Path]
+        total = 0
+        for t in types_to_clean:
+            files = self._clean_collect_files(_CLEAN_TYPES[t])
+            file_map[t] = files
+            total += len(files)
+
+        if not confirmed:
+            # ── Step 1: preview ─────────────────────────────────────────────
+            lines = [
+                f"{'WARNING: ' if type_key == 'all' else ''}This will permanently delete "
+                f"{total} memory file(s) and reset scanner state:",
+                "",
+            ]
+            for t in types_to_clean:
+                cfg = _CLEAN_TYPES[t]
+                n = len(file_map[t])
+                state_note = " + state reset" if cfg.get("state_file") else ""
+                lines.append(f"  {cfg['label']}: {n} file(s){state_note}")
+            lines += [
+                "",
+                "Scanners will reprocess from scratch on their next scheduled cycle.",
+                "",
+                f"To confirm, run:  /clean {type_key} confirm",
+                "(This is step 1 of 2 — you must send the confirm command to proceed.)",
+            ]
+            await update.message.reply_text("\n".join(lines))
+            return
+
+        # ── Step 2: execute ──────────────────────────────────────────────────
+        deleted = 0
+        states_reset = []
+        errors = []
+
+        for t in types_to_clean:
+            cfg = _CLEAN_TYPES[t]
+            for f in file_map[t]:
+                try:
+                    f.unlink()
+                    deleted += 1
+                except Exception as e:
+                    errors.append(f.name)
+                    log.warning("Failed to delete %s: %s", f, e)
+            if cfg.get("state_file"):
+                try:
+                    self._clean_reset_state(cfg["state_file"])
+                    states_reset.append(cfg["state_file"])
+                except Exception as e:
+                    log.warning("Failed to reset state %s: %s", cfg["state_file"], e)
+
+        lines = [f"Done. {deleted} memory file(s) deleted."]
+        if states_reset:
+            lines.append(f"State reset: {', '.join(states_reset)}")
+        lines.append("Scanners will reprocess on their next scheduled cycle.")
+        if errors:
+            lines.append(f"\nWarning: could not delete {len(errors)} file(s): {', '.join(errors[:5])}")
+        await update.message.reply_text("\n".join(lines))
 
     async def _send_reply(self, update: Update, text: str):
         """Chunk response into ≤4096-char messages to respect Telegram's hard limit."""
