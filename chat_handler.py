@@ -94,6 +94,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
     "Meta": [
         ("help",     "Show this list"),
         ("commands", "Alias of /help"),
+        ("settings", "View or change display settings (date_format, timezone)"),
     ],
 }
 
@@ -140,6 +141,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("communication", self.cmd_comm))
         self.app.add_handler(CommandHandler("help", self.cmd_help))
         self.app.add_handler(CommandHandler("commands", self.cmd_help))
+        self.app.add_handler(CommandHandler("settings", self.cmd_settings))
         self.app.add_handler(CommandHandler("briefing", self.cmd_briefing))
         self.app.add_handler(CommandHandler("mute", self.cmd_mute))
         self.app.add_handler(CommandHandler("unmute", self.cmd_unmute))
@@ -234,10 +236,116 @@ class TelegramChatHandler:
         tokens = {w for w in re.findall(r'\b\w{3,}\b', query.lower())}
         return sum(1 for t in tokens if t in header)
 
+    def _fmt_command_list(self) -> str:
+        """Format COMMAND_REGISTRY as plain text for injection into LLM context."""
+        lines = ["# Available Telegram Commands",
+                 "(You know these commands and can reference or suggest them to the user.)"]
+        for group, cmds in COMMAND_REGISTRY.items():
+            lines.append(f"\n## {group}")
+            for cmd, desc in cmds:
+                lines.append(f"/{cmd} — {desc}")
+        return "\n".join(lines)
+
+    def _get_display_config(self) -> dict:
+        """Read display config from config.yaml (live, so /settings changes take effect)."""
+        try:
+            config = yaml.safe_load((BRAIN_DIR / "config.yaml").read_text())
+            return config.get("display", {})
+        except Exception:
+            return {}
+
+    def _fmt_datetime(self, iso_str) -> str:
+        """Format an ISO datetime string per display.date_format and display.timezone config."""
+        if not iso_str:
+            return ""
+        from datetime import datetime
+        display = self._get_display_config()
+        fmt = display.get("date_format", "MM/DD/YYYY, HH:MM")
+        tz_name = display.get("timezone", "")
+
+        dt = None
+        dt_str = str(iso_str).strip()
+        for pattern in (
+            "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M%z",
+            "%Y-%m-%dT%H:%M",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d",
+        ):
+            try:
+                dt = datetime.strptime(dt_str, pattern)
+                break
+            except ValueError:
+                continue
+        if dt is None:
+            return dt_str[:16]
+
+        if tz_name:
+            try:
+                import zoneinfo
+                tz = zoneinfo.ZoneInfo(tz_name)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=tz)
+                else:
+                    dt = dt.astimezone(tz)
+            except Exception:
+                pass
+
+        if fmt == "DD/MM/YYYY, HH:MM":
+            return dt.strftime("%d/%m/%Y, %H:%M")
+        elif fmt == "YYYY-MM-DD HH:MM":
+            return dt.strftime("%Y-%m-%d %H:%M")
+        else:
+            return dt.strftime("%m/%d/%Y, %H:%M")
+
+    def _fmt_duration(self, start_str, end_str) -> str:
+        """Return a human-friendly duration string like '1h 30m'."""
+        if not start_str or not end_str:
+            return ""
+        from datetime import datetime
+        s = e = None
+        for pattern in (
+            "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M%z",
+            "%Y-%m-%dT%H:%M",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+        ):
+            try:
+                s = datetime.strptime(str(start_str).strip(), pattern)
+                e = datetime.strptime(str(end_str).strip(), pattern)
+                break
+            except ValueError:
+                continue
+        if s is None or e is None:
+            return ""
+        # Strip tz for subtraction if mixed
+        if s.tzinfo is not None and e.tzinfo is None:
+            e = e.replace(tzinfo=s.tzinfo)
+        elif s.tzinfo is None and e.tzinfo is not None:
+            s = s.replace(tzinfo=e.tzinfo)
+        total_minutes = int((e - s).total_seconds() / 60)
+        if total_minutes <= 0:
+            return ""
+        hours, mins = divmod(total_minutes, 60)
+        if hours and mins:
+            return f"{hours}h {mins}m"
+        elif hours:
+            return f"{hours}h"
+        return f"{mins}m"
+
     def _load_context(self, query: str) -> str:
         """Load memory files into context with relevance sorting and hard char budget."""
         parts = []
         budget = MAX_CONTEXT_CHARS
+
+        # Always inject the full command list so the LLM knows what's available
+        cmd_block = self._fmt_command_list()
+        parts.append(cmd_block)
+        budget -= len(cmd_block)
 
         index_path = BRAIN_DIR / "index.md"
         if index_path.exists():
@@ -1297,10 +1405,12 @@ class TelegramChatHandler:
         lines = [f"Calendar events ({len(events)} shown):"]
         for i, (_, fm) in enumerate(events, 1):
             title = (fm.get("source_title") or "(no title)")[:50]
-            start = (str(fm.get("start_time") or ""))[:16]
+            start = self._fmt_datetime(fm.get("start_time") or "")
+            duration = self._fmt_duration(fm.get("start_time"), fm.get("end_time"))
+            dur_str = f" ({duration})" if duration else ""
             location = fm.get("location") or ""
-            loc_str = f" ({location[:30]})" if location else ""
-            lines.append(f"{i}. [{start}] {title}{loc_str}")
+            loc_str = f" — {location[:30]}" if location else ""
+            lines.append(f"{i}. {start}{dur_str} {title}{loc_str}")
         lines.append("\nUse /event <N> for details.")
         await update.message.reply_text("\n".join(lines))
 
@@ -1326,7 +1436,14 @@ class TelegramChatHandler:
         participants = fm.get("participants") or []
         summary = fm.get("summary") or ""
 
-        time_str = "All day" if all_day else f"{start} – {end}"
+        if all_day:
+            time_str = "All day"
+        else:
+            start_fmt = self._fmt_datetime(start)
+            end_fmt = self._fmt_datetime(end)
+            duration = self._fmt_duration(start, end)
+            dur_str = f" ({duration})" if duration else ""
+            time_str = f"{start_fmt} – {end_fmt}{dur_str}"
         parts_str = ", ".join(participants[:10]) if participants else "none listed"
         lines = [
             title,
@@ -2079,6 +2196,89 @@ class TelegramChatHandler:
             await self.report_scheduler.trigger_report(r["name"], r, chat_id)
         except Exception as e:
             await self._send_reply(update, f"Report failed: {e}")
+
+    async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """View or change display settings: date_format, timezone.
+
+        Usage:
+          /settings                           — show current settings
+          /settings date_format MM/DD/YYYY, HH:MM
+          /settings date_format DD/MM/YYYY, HH:MM
+          /settings date_format YYYY-MM-DD HH:MM
+          /settings timezone America/Los_Angeles
+          /settings timezone UTC
+        """
+        if not self._check_auth(update):
+            return
+
+        config_path = BRAIN_DIR / "config.yaml"
+        try:
+            config = yaml.safe_load(config_path.read_text())
+        except Exception as e:
+            await update.message.reply_text(f"Could not read config: {e}")
+            return
+
+        display = config.setdefault("display", {})
+
+        VALID_DATE_FORMATS = {"MM/DD/YYYY, HH:MM", "DD/MM/YYYY, HH:MM", "YYYY-MM-DD HH:MM"}
+
+        if not context.args:
+            # Show current settings
+            fmt = display.get("date_format", "MM/DD/YYYY, HH:MM")
+            tz = display.get("timezone", "(system default)")
+            lines = [
+                "Display settings:",
+                f"  date_format: {fmt}",
+                f"  timezone: {tz}",
+                "",
+                "Change with:",
+                "  /settings date_format MM/DD/YYYY, HH:MM",
+                "  /settings date_format DD/MM/YYYY, HH:MM",
+                "  /settings date_format YYYY-MM-DD HH:MM",
+                "  /settings timezone America/Los_Angeles",
+                "  /settings timezone UTC",
+            ]
+            await update.message.reply_text("\n".join(lines))
+            return
+
+        key = context.args[0].lower()
+        # Rejoin remaining args to support values with spaces
+        value = " ".join(context.args[1:]).strip()
+
+        if not value:
+            await update.message.reply_text(f"Usage: /settings {key} <value>")
+            return
+
+        if key == "date_format":
+            if value not in VALID_DATE_FORMATS:
+                await update.message.reply_text(
+                    f"Unknown format '{value}'. Valid options:\n" +
+                    "\n".join(f"  {f}" for f in sorted(VALID_DATE_FORMATS))
+                )
+                return
+            display["date_format"] = value
+        elif key == "timezone":
+            try:
+                import zoneinfo
+                zoneinfo.ZoneInfo(value)  # validate
+            except Exception:
+                await update.message.reply_text(
+                    f"Unknown timezone '{value}'. Use IANA timezone names like "
+                    "America/Los_Angeles, UTC, Europe/London."
+                )
+                return
+            display["timezone"] = value
+        else:
+            await update.message.reply_text(
+                f"Unknown setting '{key}'. Available: date_format, timezone"
+            )
+            return
+
+        config["display"] = display
+        tmp = config_path.with_suffix(".tmp")
+        tmp.write_text(yaml.dump(config, default_flow_style=False))
+        os.rename(tmp, config_path)
+        await update.message.reply_text(f"Updated {key} to: {value}")
 
     async def _send_reply(self, update: Update, text: str):
         """Chunk response into ≤4096-char messages to respect Telegram's hard limit."""

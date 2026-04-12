@@ -110,14 +110,16 @@ def test_budget_exhaustion_drops_lowest_relevance(handler, brain_dir):
 
 def test_context_with_no_memories_and_no_index(handler, brain_dir):
     ctx = handler._load_context("query")
-    assert ctx == ""
+    # Command list is always injected; no memories or index → only the command block
+    assert "Available Telegram Commands" in ctx
+    assert "Memory Index" not in ctx
 
 
 def test_context_with_only_index(handler, brain_dir):
     (brain_dir / "index.md").write_text("Only the index exists.")
     ctx = handler._load_context("query")
     assert "Only the index exists." in ctx
-    assert "---" not in ctx  # no separator added when no memory files follow
+    assert "Available Telegram Commands" in ctx
 
 
 def test_header_cache_persists_across_queries(handler, brain_dir):

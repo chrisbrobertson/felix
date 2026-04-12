@@ -127,8 +127,11 @@ def test_header_cache_reused_when_mtime_unchanged(handler, brain_dir):
 def test_context_prepends_index_when_present(handler, brain_dir):
     (brain_dir / "index.md").write_text("Weekly index content.")
     ctx = handler._load_context("anything")
-    assert ctx.startswith("# Memory Index")
+    # Command list is always first; index follows
+    assert "Available Telegram Commands" in ctx
     assert "Weekly index content." in ctx
+    # Index appears after the command block
+    assert ctx.index("Memory Index") > ctx.index("Available Telegram Commands")
 
 
 def test_context_includes_all_memories(handler, brain_dir):
@@ -159,7 +162,8 @@ def test_context_respects_char_budget(handler, brain_dir):
 
 def test_context_empty_when_no_memories_and_no_index(handler, brain_dir):
     ctx = handler._load_context("anything")
-    assert ctx == ""
+    # Command list is always injected even when no memories or index exist
+    assert "Available Telegram Commands" in ctx
 
 
 def test_context_index_only_when_no_memories(handler, brain_dir):
