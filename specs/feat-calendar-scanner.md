@@ -2,7 +2,7 @@
 specmas: 3.0
 kind: feature
 id: feat-calendar-scanner
-version: 1.0.0
+version: 1.1.0
 created: 2026-04-11
 status: draft
 complexity: moderate
@@ -471,3 +471,44 @@ No env vars required. Calendar.app data is local; no API credentials needed.
 | `test_applescript_fallback_triggered` | Missing Calendar Cache → AppleScript path taken |
 | `test_applescript_output_parsed` | `|||`-delimited output produces correct event dicts |
 | `test_applescript_timeout_kills_process` | Timeout kills subprocess, no hang |
+| `test_cmd_events_lists_recent` | `/events` returns N most recent in window |
+| `test_cmd_events_default_n_10` | Without N arg, returns at most 10 |
+| `test_cmd_events_custom_n` | `/events 5` returns 5 entries |
+| `test_cmd_events_n_clamped` | N=999 clamped to 50; N=0 clamped to 1 |
+| `test_cmd_events_sets_last_event_set` | `_last_event_set` populated after call |
+| `test_cmd_event_detail_view` | `/event 1` shows start time, location, attendees, description |
+| `test_cmd_event_invalid_index` | `/event 99` without prior list → error message |
+
+---
+
+## Changelog
+
+### v1.1.0 — 2026-04-11
+
+**New FRs:**
+
+#### FR-10: /events and /event Telegram commands
+**Priority:** High
+
+**`/events [N]`** — list calendar events from memory files.
+
+- Globs `BRAIN_DIR/memories/calendar-event-*.md`
+- Filters on `type == "calendar_event"`
+- Sorts by `start_time` ascending (soonest first within future events; past events sorted descending after them — or simple `start_time` ascending overall so upcoming are at top)
+- Default N=10; clamp `[1, 50]`
+- Sets `self._last_event_set` to displayed paths (for `/event N`)
+- Reply format: `N. [YYYY-MM-DD HH:MM] title (location)`; location omitted if absent
+- If no results: `"No calendar events found."`
+
+**`/event <N>`** — show full detail for event N from last `/events` list.
+
+- Resolves index from `self._last_event_set` via `_resolve_event_index`
+- Reply includes: title, start/end time, all_day flag, location, participants list, description summary, `calendar_name`
+- If N out of range or `_last_event_set` empty: `"Invalid index. Run /events first."`
+
+**CommandHandler registrations:**
+
+```python
+self.app.add_handler(CommandHandler("events", self.cmd_events))
+self.app.add_handler(CommandHandler("event",  self.cmd_event))
+```

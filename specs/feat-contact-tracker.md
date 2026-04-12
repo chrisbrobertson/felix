@@ -2,7 +2,7 @@
 specmas: 3.0
 kind: feature
 id: feat-contact-tracker
-version: 1.0.0
+version: 1.1.0
 created: 2026-04-11
 status: draft
 complexity: moderate
@@ -472,3 +472,26 @@ contact_tracker:
 | `test_cmd_contact_shows_open_commitments` | Active commitment files for contact shown |
 | `test_skip_non_source_types` | webpage and code_project files ignored |
 | `test_state_file_persists` | Processed map and interaction timestamps survive restart |
+
+---
+
+## Changelog
+
+### v1.1.0 — 2026-04-11
+
+**New FRs:**
+
+#### FR-9: /people alias for /contacts
+**Priority:** Low
+
+Register `/people` as an additional command name that invokes the same handler
+as `/contacts`. No behavioural change — purely a discoverability alias.
+
+```python
+self.app.add_handler(CommandHandler("people", self.cmd_contacts))
+```
+
+The COMMAND_REGISTRY in `chat_handler.py` lists both `people` and `contacts`
+with distinct descriptions:
+- `people` — "List contacts (alias of /contacts)"
+- `contacts` — "List people you've interacted with"

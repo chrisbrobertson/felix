@@ -2,7 +2,7 @@
 specmas: 3.0
 kind: feature
 id: feat-slack-scanner
-version: 1.0.0
+version: 1.1.0
 created: 2026-04-11
 status: draft
 complexity: moderate
@@ -490,3 +490,14 @@ slack_scanner:
 | `test_max_channels_per_cycle` | 25 channels → 20 processed, 5 deferred |
 | `test_max_threads_per_channel` | 35 threads in channel → 30 processed |
 | `test_watcher_role_skips_slack_scanner` | `role=watcher` → SlackScanner not instantiated |
+
+---
+
+## Changelog
+
+### v1.1.0 — 2026-04-11
+
+**Note:** Slack threads are surfaced via the unified `/comms` command defined in
+`feat-memory-management.md` (v1.1.0). There is no dedicated `/slack` command —
+`/comms slack` filters to slack threads only. The `slack_thread` memory type and
+frontmatter format are unchanged.

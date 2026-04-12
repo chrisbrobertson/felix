@@ -2,7 +2,7 @@
 specmas: 3.0
 kind: feature
 id: feat-memory-management
-version: 1.0.0
+version: 1.1.0
 created: 2026-04-11
 status: draft
 complexity: low
@@ -30,11 +30,14 @@ entry from a domain is unwanted.
 
 **In Scope:**
 - `/memories [N]` — list the N most recent memories (default 10)
-- `/search <query>` — keyword search across all memories
+- `/search <query>` — keyword search across ALL memory types (all `.md` in `memories/`)
 - `/memory <N>` — view full details of a single memory by index
 - `/delete <N>` — delete a single memory by index
+- `/help` (alias `/commands`) — grouped list of all bot commands, sourced from `COMMAND_REGISTRY`
+- `/comms [email|slack] [N]` (aliases `/messages`, `/communications`) — unified list across `email_thread` and `slack_thread` memory files; optional source filter
+- `/comm <N>` (aliases `/message`, `/communication`) — detail view of comm N from last `/comms` list
 - Session-local index: commands that accept `<N>` operate on the result set
-  from the most recent `/memories` or `/search` call
+  from the most recent list command for that type
 
 **Out of Scope:**
 - Editing memory content (read/delete only)
@@ -262,3 +265,155 @@ self.app.add_handler(CommandHandler("delete",   self.cmd_delete))
 /memory 1          → full details of entry 1
 /delete 1          → confirmation; entry removed from list
 ```
+
+---
+
+## Changelog
+
+### v1.1.0 — 2026-04-11
+
+**New FRs:**
+
+#### FR-5: /help command and COMMAND_REGISTRY
+**Priority:** High
+**Commands:** `/help`, `/commands`
+
+A module-level constant `COMMAND_REGISTRY` in `chat_handler.py` is the single
+source of truth for all available commands and their one-line descriptions.
+Structure:
+
+```python
+COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
+    "Knowledge listings": [
+        ("memories",       "List recent web memories"),
+        ("search",         "Keyword search across ALL memory types"),
+        ("memory",         "Show memory N from last list"),
+        ("delete",         "Delete memory N from last list"),
+        ("people",         "List contacts (alias of /contacts)"),
+        ("contacts",       "List people you've interacted with"),
+        ("contact",        "Show contact by name or N"),
+        ("projects",       "List code/work/person projects (optional category filter)"),
+        ("project",        "Show project N from last list"),
+        ("events",         "List recent and upcoming calendar events"),
+        ("event",          "Show event N from last list"),
+        ("meetings",       "List recent meeting transcripts"),
+        ("meeting",        "Show meeting N from last list"),
+        ("comms",          "List recent email + slack threads (optional 'email' or 'slack' filter)"),
+        ("comm",           "Show comm N from last list"),
+        ("messages",       "Alias of /comms"),
+        ("communications", "Alias of /comms"),
+    ],
+    "Commitments": [
+        ("commitments", "List active commitments"),
+        ("complete",    "Mark commitment N complete"),
+        ("dismiss",     "Dismiss commitment N"),
+        ("wrong",       "Mark extracted commitment N as a false positive"),
+        ("missed",      "Manually add a commitment the bot missed"),
+        ("accuracy",    "Show extraction precision per source type"),
+    ],
+    "Notifications": [
+        ("briefing", "Trigger today's briefing now"),
+        ("mute",     "Suppress proactive notifications"),
+        ("unmute",   "Resume proactive notifications"),
+    ],
+    "Domain filter": [
+        ("skip",     "Add a domain to the ignore list"),
+        ("unskip",   "Remove a domain from the ignore list"),
+        ("skiplist", "Show currently skipped domains"),
+        ("purge",    "Delete all memories for a domain"),
+        ("purgeall", "Delete memories for every skipped domain"),
+    ],
+    "Meta": [
+        ("help",     "Show this list"),
+        ("commands", "Alias of /help"),
+    ],
+}
+```
+
+**`/help` behaviour:**
+- Iterates `COMMAND_REGISTRY` in order
+- Renders each section as a bold header followed by `  /cmd — description` lines
+- Chunks output into ≤4096-char Telegram messages (same chunking helper used by
+  `/commitments`)
+- Aliases (e.g. `/messages`) are listed but not repeated under the section header
+
+**Acceptance criteria:**
+- Adding a new `CommandHandler` registration without a matching `COMMAND_REGISTRY`
+  entry causes a test to fail (registry-completeness test)
+- `/help` renders all groups in order, no truncation within a group
+- `/commands` replies identically to `/help`
+
+---
+
+#### FR-6: /comms unified communications listing
+**Priority:** High
+**Commands:** `/comms [email|slack] [N]`, `/messages [...]`, `/communications [...]`
+
+List `email_thread` and `slack_thread` memory files in a single command.
+
+**Behaviour:**
+- Globs `BRAIN_DIR/memories/email-thread-*.md` AND `slack-thread-*.md`
+- Filters on `type in {"email_thread", "slack_thread"}`
+- Optional first-arg filter: `email` → `email_thread` only; `slack` → `slack_thread` only
+- If first arg is neither `email` nor `slack` (and not a number), treat it as
+  an invalid filter and reply with usage hint
+- N (default 10; clamp `[1, 50]`): if first arg is `email`/`slack`, N is second arg;
+  otherwise first arg is N
+- Sorts by most-recent-activity timestamp: `last_message` for email threads,
+  the timestamp component of the filename for slack threads (fallback: file mtime)
+- Sets `self._last_comms_set` to displayed paths (for `/comm N`)
+- Reply format: `N. [email] subject — sender (date)` or `N. [slack] #channel — opener (date)`
+  The `[email]`/`[slack]` source tag is always shown so the user knows where each
+  thread came from
+- If no results: `"No communications found."` (or type-specific message if filter applied)
+
+**`/comm <N>`** — detail view for comm N from last `/comms` list.
+
+- Resolves index from `self._last_comms_set` via `_resolve_comm_index`
+- Routes to email-shaped or slack-shaped formatter based on `type` of resolved file:
+  - **email**: subject, participants, `last_message` date, summary
+  - **slack**: channel, thread starter, `last_reply` date, summary
+- If N out of range or `_last_comms_set` empty: `"Invalid index. Run /comms first."`
+
+**CommandHandler registrations:**
+
+```python
+self.app.add_handler(CommandHandler("comms",          self.cmd_comms))
+self.app.add_handler(CommandHandler("messages",       self.cmd_comms))
+self.app.add_handler(CommandHandler("communications", self.cmd_comms))
+self.app.add_handler(CommandHandler("comm",           self.cmd_comm))
+self.app.add_handler(CommandHandler("message",        self.cmd_comm))
+self.app.add_handler(CommandHandler("communication",  self.cmd_comm))
+```
+
+**Acceptance criteria:**
+- `/comms` shows mixed email and slack results sorted by recency
+- `/comms email` returns only email threads
+- `/comms slack` returns only slack threads
+- `/comms 5` returns 5 entries (N parsed when no filter)
+- `/comms email 5` returns 5 email entries (N parsed after filter)
+- `/comm 1` after `/comms` shows correct email or slack detail
+- Source tag present on every line in listing
+
+---
+
+## Additional Tests (v1.1.0)
+
+| Test | Assertion |
+|------|-----------|
+| `test_cmd_help_renders_all_groups` | All group headers in output |
+| `test_cmd_help_all_registry_commands_listed` | Every entry in COMMAND_REGISTRY appears in output |
+| `test_cmd_help_chunks_at_4096` | Output > 4096 chars split into multiple messages |
+| `test_cmd_commands_alias` | `/commands` produces same output as `/help` |
+| `test_registry_completeness` | Every CommandHandler registration has a COMMAND_REGISTRY entry |
+| `test_cmd_comms_mixed_results` | `/comms` returns both email and slack threads |
+| `test_cmd_comms_email_filter` | `/comms email` returns only email_thread files |
+| `test_cmd_comms_slack_filter` | `/comms slack` returns only slack_thread files |
+| `test_cmd_comms_n_arg_no_filter` | `/comms 5` returns 5 entries |
+| `test_cmd_comms_n_arg_with_filter` | `/comms email 5` returns 5 email entries |
+| `test_cmd_comms_n_clamped` | N=999 clamped to 50; N=0 clamped to 1 |
+| `test_cmd_comms_source_tag_in_reply` | `[email]` or `[slack]` present on every line |
+| `test_cmd_comms_sets_last_comms_set` | `_last_comms_set` populated after call |
+| `test_cmd_comm_email_detail` | `/comm N` for email file shows subject + summary |
+| `test_cmd_comm_slack_detail` | `/comm N` for slack file shows channel + summary |
+| `test_cmd_comm_invalid_index` | Out-of-range N → error message |

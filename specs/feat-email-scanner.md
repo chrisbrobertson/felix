@@ -2,7 +2,7 @@
 specmas: 3.0
 kind: feature
 id: feat-email-scanner
-version: 1.0.0
+version: 1.1.0
 created: 2026-04-11
 status: draft
 complexity: moderate
@@ -351,3 +351,14 @@ and falls back to AppleScript automatically.
 3. Run one scan cycle
 4. Assert two `email-thread-*.md` files exist with correct frontmatter
 5. Run scan again with same data — assert no file writes (mtime unchanged)
+
+---
+
+## Changelog
+
+### v1.1.0 — 2026-04-11
+
+**Note:** Email threads are surfaced via the unified `/comms` command defined in
+`feat-memory-management.md` (v1.1.0). There is no dedicated `/emails` command —
+`/comms email` filters to email threads only. The `email_thread` memory type and
+frontmatter format are unchanged.

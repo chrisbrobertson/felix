@@ -2,7 +2,7 @@
 specmas: 3.0
 kind: feature
 id: feat-zoom-transcript-scanner
-version: 1.0.0
+version: 1.1.0
 created: 2026-04-11
 status: draft
 complexity: moderate
@@ -425,6 +425,13 @@ zoom_scanner:
 | `test_write_memory_atomic` | No temp file left after write |
 | `test_transcript_truncated_at_50_lines` | >50 segments → truncation marker in file |
 | `test_watcher_role_skips_zoom_scanner` | role=watcher → ZoomScanner not instantiated |
+| `test_cmd_meetings_lists_recent` | `/meetings` returns N most recent meeting files |
+| `test_cmd_meetings_default_n_10` | Without N arg, returns at most 10 |
+| `test_cmd_meetings_custom_n` | `/meetings 5` returns 5 entries |
+| `test_cmd_meetings_n_clamped` | N=999 clamped to 50; N=0 clamped to 1 |
+| `test_cmd_meetings_sets_last_meeting_set` | `_last_meeting_set` populated after call |
+| `test_cmd_meeting_detail_view` | `/meeting 1` shows date, attendees, summary |
+| `test_cmd_meeting_invalid_index` | `/meeting 99` without prior list → error message |
 
 ---
 
@@ -436,3 +443,37 @@ zoom_scanner:
 4. Add to launchd plist `EnvironmentVariables`: `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET`
 5. Enable cloud recording with transcription in Zoom account settings (Account Management → Recording)
 6. Run `./install.sh` — it will detect the new env vars and add them to the plist
+
+---
+
+## Changelog
+
+### v1.1.0 — 2026-04-11
+
+**New FRs:**
+
+#### FR-10: /meetings and /meeting Telegram commands
+**Priority:** High
+
+**`/meetings [N]`** — list meeting transcripts from memory files.
+
+- Globs `BRAIN_DIR/memories/meeting-*.md`
+- Filters on `type == "meeting_transcript"`
+- Sorts by `start_time` (or `created`) descending — most recent first
+- Default N=10; clamp `[1, 50]`
+- Sets `self._last_meeting_set` to displayed paths (for `/meeting N`)
+- Reply format: `N. [YYYY-MM-DD] title — M participants`
+- If no results: `"No meeting transcripts found."`
+
+**`/meeting <N>`** — show full detail for meeting N from last `/meetings` list.
+
+- Resolves index from `self._last_meeting_set` via `_resolve_meeting_index`
+- Reply includes: title, date, duration, participants, summary
+- If N out of range or `_last_meeting_set` empty: `"Invalid index. Run /meetings first."`
+
+**CommandHandler registrations:**
+
+```python
+self.app.add_handler(CommandHandler("meetings", self.cmd_meetings))
+self.app.add_handler(CommandHandler("meeting",  self.cmd_meeting))
+```

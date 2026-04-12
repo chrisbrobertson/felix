@@ -2,7 +2,7 @@
 specmas: 3.0
 kind: feature
 id: feat-code-project-scanner
-version: 1.0.0
+version: 1.1.0
 created: 2026-04-11
 status: draft
 complexity: moderate
@@ -165,10 +165,12 @@ Field order in frontmatter:
 
 ```
 source_title, summary, tags, last_scanned,
-source_url, type, local_path, default_branch, languages, head_sha
+source_url, type, category, local_path, default_branch, languages, head_sha
 ```
 
-`type` is always `code_project`.
+`type` is always `project`. `category` is always `code` for this scanner.
+This generalises the former `code_project` type — future scanners may write
+`category: person` or `category: work` under the same `type: project` umbrella.
 
 ---
 
@@ -181,7 +183,8 @@ summary: Personal knowledge system — browser history watcher, Telegram bot, iC
 tags: [python, telegram, llm, personal-tools]
 last_scanned: '2026-04-11T14:30:00'
 source_url: git@github.com:chrisrobertson/secondbrain.git
-type: code_project
+type: project
+category: code
 local_path: /Users/chrisrobertson/repos/secondbrain
 default_branch: main
 languages: [python]
@@ -288,7 +291,16 @@ raise to the daemon level.
 | `test_needs_update_true_when_no_memory` | Returns True when file absent |
 | `test_write_memory_field_order` | source_title on line 2, summary line 3, tags line 4 |
 | `test_write_memory_atomic` | No .tmp file left after write |
-| `test_write_memory_type_is_code_project` | type field = code_project |
+| `test_write_memory_type_is_project` | type field = project, category field = code |
+| `test_migrate_legacy_code_project` | Existing file with `type: code_project` rewritten to `type: project` + `category: code` |
+| `test_migrate_idempotent` | Running migration twice does not change already-migrated file |
+| `test_cmd_projects_lists_all` | `/projects` returns all project-*.md files |
+| `test_cmd_projects_filter_by_category` | `/projects code` returns only category=code files |
+| `test_cmd_projects_default_n_10` | Without N arg, returns at most 10 |
+| `test_cmd_projects_custom_n` | `/projects 5` returns 5 entries |
+| `test_cmd_projects_n_clamped` | N=999 clamped to 50; N=0 clamped to 1 |
+| `test_cmd_project_detail_view` | `/project 1` shows full description, languages, last commit |
+| `test_cmd_project_invalid_index` | `/project 99` without prior list → error message |
 | `test_find_related_same_org` | Repos with same git org appear as related |
 | `test_find_related_shared_language` | Repos with shared language appear as related |
 
@@ -297,5 +309,59 @@ raise to the daemon level.
 1. Create a tmp git repo with a commit and a README
 2. Instantiate `ProjectScanner` pointed at tmp dir
 3. Run one scan cycle
-4. Assert `memories/project-{name}.md` exists with correct frontmatter
+4. Assert `memories/project-{name}.md` exists with `type: project`, `category: code`
 5. Run scan again with no new commits — assert no file write (mtime unchanged)
+
+---
+
+## Changelog
+
+### v1.1.0 — 2026-04-11
+
+**Breaking:** Memory file `type` field changed from `code_project` to `project`.
+A `category: code` field is added alongside it to enable future project types
+(`person`, `work`, etc.) without requiring another type rename.
+
+**New FRs:**
+
+#### FR-8: Legacy file migration
+**Priority:** Critical
+
+On `ProjectScanner.__init__`, glob all `project-*.md` files in `MEMORIES_DIR`.
+For any file whose frontmatter contains `type: code_project`, rewrite the
+frontmatter in place:
+- Set `type: project`
+- Add `category: code` after the `type` field
+
+Use atomic write (temp + rename). Log one INFO line per file migrated.
+The migration is idempotent — files already containing `type: project` are
+skipped. No state file required.
+
+---
+
+#### FR-9: /projects and /project Telegram commands
+**Priority:** High
+
+**`/projects [category] [N]`** — list projects from memory files.
+
+- Globs `BRAIN_DIR/memories/project-*.md`
+- Filters on `type == "project"` (accepts both `project` and legacy `code_project` for a one-cycle transition)
+- If first arg is a known category word (not a bare integer), filters on `category == first_arg`
+- If first/only numeric arg present, uses as N (default 10; clamp `[1, 50]`)
+- Sorts by `last_scanned` descending
+- Sets `self._last_project_set` to the displayed file paths (for `/project N`)
+- Reply format: `N. name [category] (last commit date)`
+- If no results: `"No projects found."` or `"No code projects found."` if filter applied
+
+**`/project <N>`** — show full detail for project N from last `/projects` list.
+
+- Resolves index from `self._last_project_set` via `_resolve_project_index`
+- Reply includes: title, `source_url`, `local_path`, languages, last commit, summary, related projects
+- If N out of range or `_last_project_set` empty: `"Invalid index. Run /projects first."`
+
+**CommandHandler registrations:**
+
+```python
+self.app.add_handler(CommandHandler("projects", self.cmd_projects))
+self.app.add_handler(CommandHandler("project",  self.cmd_project))
+```
