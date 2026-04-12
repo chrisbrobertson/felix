@@ -224,6 +224,8 @@ Grant it once in **System Settings → Privacy & Security → Full Disk Access**
 
 The installer creates the venv with `--copies` so `~/secondbrain/venv/bin/python3` is a real executable (not a symlink into a `.framework` bundle). macOS accepts it for FDA; framework-internal binaries and symlinks are rejected.
 
+**Known limitation:** On macOS Sonoma (and later), ad-hoc signed binaries (e.g., Homebrew Python) can appear in the FDA list but fail silently at runtime. The scanner detects this and falls back to AppleScript. If you see "AppleScript fallback" warnings in logs despite granting FDA, your Python binary is ad-hoc signed. The AppleScript path is slower and requires Mail.app to be running, but works reliably once configured.
+
 If Full Disk Access is not granted, the scanner falls back to AppleScript (requires Mail.app to be running, no conversation threading, slower). A warning is logged at each scan cycle until access is granted.
 
 To force a full re-scan of all email threads (e.g. after granting FDA for the first time), set `full_rescan: true` in `$BRAIN/config.yaml` under `email_scanner:`. The flag is automatically cleared after the scan completes.

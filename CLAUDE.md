@@ -107,7 +107,7 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 5. **Project Scanner** (every 5 min) — globs `~/repos/` and `~/repo/` for git repos, extracts metadata (remote URL, HEAD sha, recent commits, branches, languages), generates a 1-2 sentence LLM summary from README on first scan or README change, writes `project-{name}.md` memory file. Skips write when HEAD sha unchanged. `type: code_project` in frontmatter.
 
-6. **Email Scanner** (every 5 min) — reads Apple Mail.app data (SQLite Envelope Index primary, AppleScript fallback), writes one `email-thread-{slug}-{conv-id}.md` per conversation thread. Skips write when `message_count` and `last_message` unchanged. `type: email_thread` in frontmatter. Requires Full Disk Access for SQLite path. State (high-water ROWID) persisted in `DEPLOY_DIR/email-scanner-state.json`.
+6. **Email Scanner** (every 5 min) — reads Apple Mail.app data (SQLite Envelope Index primary, AppleScript fallback), writes one `email-thread-{slug}-{conv-id}.md` per conversation thread. Skips write when `message_count` and `last_message` unchanged. `type: email_thread` in frontmatter. Requires Full Disk Access for SQLite path; on macOS Sonoma, Homebrew Python (ad-hoc signed) silently fails FDA at runtime even when granted — AppleScript fallback (120s timeout, last-500-message item-slice approach) is the operative path on most setups. State (high-water ROWID) persisted in `DEPLOY_DIR/email-scanner-state.json`.
 
 7. **Zoom Scanner** (every 5 min, `full` role only) — polls Zoom Cloud Recordings API via Server-to-Server OAuth (M2M), downloads VTT transcripts, parses speaker-attributed segments, generates LLM summary, writes `meeting-{date}-{slug}-{id}.md` per meeting. `type: meeting_transcript` in frontmatter. Deduplication via `DEPLOY_DIR/zoom-scanner-state.json`. Requires `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET` env vars; exits gracefully if missing.
 
@@ -120,9 +120,10 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 ## LLM Routing
 
-LiteLLM unified API with two named routes:
+LiteLLM unified API with named routes:
 - `summarize` → `gemini/gemini-2.0-flash` (high volume, cheap)
 - `chat` / `optimizer` → `claude-sonnet-4-20250514` (quality matters)
+- `judge` → `claude-haiku-4-5-20251001` (skill optimizer scoring)
 - `local` fallback → OpenAI-compatible local endpoint
 
 Config lives at `~/.litellm/config.yaml`. API keys come from env vars (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`).
