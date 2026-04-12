@@ -90,4 +90,26 @@ commitment_tracker:
   source_types:                  # memory types to scan for commitments
     - meeting_transcript
     - email_thread
-    # - slack_thread             # uncomment when slack scanner is implemented
+    - calendar_event
+    - slack_thread
+
+contact_tracker:
+  interval_seconds: 300          # scan every 5 minutes
+  source_types:                  # memory types to scan for participants
+    - email_thread
+    - meeting_transcript
+    - calendar_event
+    - slack_thread
+  summary_refresh_threshold: 3   # new interactions before regenerating LLM summary
+  max_files_per_cycle: 50
+
+slack_scanner:
+  interval_seconds: 300          # scan every 5 minutes
+  lookback_days: 7               # initial history window on first run per channel
+  channel_include: []            # whitelist (empty = all channels bot can see)
+  channel_exclude:               # blacklist (applied when include is empty)
+    - general
+    - random
+  min_thread_messages: 2         # skip threads with fewer replies than this
+  max_channels_per_cycle: 20
+  max_threads_per_channel: 30

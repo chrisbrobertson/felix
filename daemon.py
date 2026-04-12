@@ -38,6 +38,8 @@ async def main():
         from email_scanner import EmailScanner
         from zoom_scanner import ZoomScanner
         from commitment_tracker import CommitmentTracker
+        from contact_tracker import ContactTracker
+        from slack_scanner import SlackScanner
         chat = TelegramChatHandler()
         optimizer = SkillOptimizer()
         indexer = IndexBuilder()
@@ -45,6 +47,8 @@ async def main():
         email_scanner = EmailScanner(role=role)
         zoom_scanner = ZoomScanner(role=role)
         commitment_tracker = CommitmentTracker(role=role)
+        contact_tracker = ContactTracker(role=role)
+        slack_scanner = SlackScanner(role=role)
         await chat.start()
         tasks += [
             chat.poll_loop,
@@ -54,6 +58,8 @@ async def main():
             email_scanner.run_loop,
             zoom_scanner.run_loop,
             commitment_tracker.run_loop,
+            contact_tracker.run_loop,
+            slack_scanner.run_loop,
         ]
 
     stop_event = asyncio.Event()

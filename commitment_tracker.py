@@ -17,10 +17,14 @@ MEMORIES_DIR = BRAIN_DIR / "memories"
 CONFIG_PATH = BRAIN_DIR / "config.yaml"
 DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
 STATE_FILE = DEPLOY_DIR / "commitment-scanner-state.json"
+CORRECTIONS_FILE = DEPLOY_DIR / "commitment-corrections.jsonl"
+ACCURACY_FILE = DEPLOY_DIR / "commitment-accuracy.json"
 
 MAX_FILES_PER_CYCLE = 30
 MIN_CONFIDENCE_DEFAULT = 0.5
 NEEDS_REVIEW_THRESHOLD = 0.7
+MAX_CORRECTIONS_IN_PROMPT = 20
+MAX_CORRECTIONS_CHARS = 1000
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -45,6 +49,112 @@ def _slugify(text: str, max_len: int = 40) -> str:
     s = re.sub(r'[^a-z0-9]+', '-', s)
     s = s.strip('-')
     return s[:max_len].rstrip('-')
+
+
+def _load_corrections(max_count: int = MAX_CORRECTIONS_IN_PROMPT) -> list:
+    """Load the last N corrections from the corrections JSONL file."""
+    if not CORRECTIONS_FILE.exists():
+        return []
+    try:
+        lines = CORRECTIONS_FILE.read_text().strip().split("\n")
+        corrections = []
+        for line in lines:
+            if line.strip():
+                corrections.append(json.loads(line))
+        return corrections[-max_count:]
+    except Exception as e:
+        log.warning("Failed to load corrections: %s", e)
+        return []
+
+
+def _build_corrections_prompt_section(corrections: list) -> str:
+    """Build few-shot examples section from corrections, capped at MAX_CORRECTIONS_CHARS."""
+    if not corrections:
+        return ""
+
+    false_positives = [c for c in corrections if c.get("correction_type") == "false_positive"]
+    missed = [c for c in corrections if c.get("correction_type") == "missed"]
+
+    if not false_positives and not missed:
+        return ""
+
+    lines = ["Learning from previous corrections:", ""]
+
+    if false_positives:
+        lines.append("Do NOT extract items like these (previously marked as false positives):")
+        for c in false_positives[:10]:  # Limit to avoid excessive length
+            desc = c.get("description", "")[:80]
+            owner = c.get("owner", "")
+            source_type = c.get("source_type", "")
+            lines.append(f'- "{desc}" ({owner}, {source_type}) — too vague, not a real commitment')
+
+    if missed:
+        if false_positives:
+            lines.append("")
+        lines.append("DO extract items like these (previously missed):")
+        for c in missed[:10]:
+            desc = c.get("description", "")[:80]
+            lines.append(f'- "{desc}" — a commitment that was missed')
+
+    lines.append("")
+    section = "\n".join(lines)
+
+    # Cap at MAX_CORRECTIONS_CHARS
+    if len(section) > MAX_CORRECTIONS_CHARS:
+        section = section[:MAX_CORRECTIONS_CHARS] + "\n[truncated]\n"
+
+    return section
+
+
+def _load_accuracy() -> dict:
+    """Load accuracy JSON file."""
+    if not ACCURACY_FILE.exists():
+        return {"by_source_type": {}, "last_updated": None}
+    try:
+        return json.loads(ACCURACY_FILE.read_text())
+    except Exception:
+        return {"by_source_type": {}, "last_updated": None}
+
+
+def _save_accuracy(data: dict):
+    """Atomically save accuracy JSON file."""
+    data["last_updated"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    tmp = ACCURACY_FILE.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=2))
+        os.rename(str(tmp), str(ACCURACY_FILE))
+    except Exception as e:
+        log.warning("Failed to save accuracy file: %s", e)
+
+
+def _increment_extracted_count(source_type: str):
+    """Increment the extracted count for a source type."""
+    data = _load_accuracy()
+    by_type = data["by_source_type"]
+    if source_type not in by_type:
+        by_type[source_type] = {"extracted": 0, "false_positives": 0, "missed": 0}
+    by_type[source_type]["extracted"] += 1
+    _save_accuracy(data)
+
+
+def _record_false_positive(source_type: str):
+    """Increment the false_positives count for a source type."""
+    data = _load_accuracy()
+    by_type = data["by_source_type"]
+    if source_type not in by_type:
+        by_type[source_type] = {"extracted": 0, "false_positives": 0, "missed": 0}
+    by_type[source_type]["false_positives"] += 1
+    _save_accuracy(data)
+
+
+def _record_missed(source_type: str):
+    """Increment the missed count for a source type."""
+    data = _load_accuracy()
+    by_type = data["by_source_type"]
+    if source_type not in by_type:
+        by_type[source_type] = {"extracted": 0, "false_positives": 0, "missed": 0}
+    by_type[source_type]["missed"] += 1
+    _save_accuracy(data)
 
 
 # ── CommitmentTracker ─────────────────────────────────────────────────────────
@@ -115,9 +225,14 @@ class CommitmentTracker:
         )
         date_str = str(meeting_date)[:19] if meeting_date else "unknown"
 
+        # Load and prepend corrections as few-shot examples (FR-13)
+        corrections = _load_corrections()
+        corrections_section = _build_corrections_prompt_section(corrections)
+
         prompt = (
             f"Extract commitments and waiting-on items from this {source_type}.\n\n"
-            f"Source: {source_title}\n"
+            + (corrections_section + "\n" if corrections_section else "")
+            + f"Source: {source_title}\n"
             f"Participants: {participant_str}\n"
             f"Date: {date_str}\n\n"
             f"Content:\n{summary}\n\n{body_section}\n\n"
@@ -181,6 +296,7 @@ class CommitmentTracker:
         source_memory_url: str,
         source_title: str,
         min_confidence: float,
+        source_type: str = "",
     ):
         confidence = float(item.get("confidence", 0))
         if confidence < min_confidence:
@@ -260,6 +376,9 @@ class CommitmentTracker:
             tmp_path.write_text(content, encoding="utf-8")
             os.rename(str(tmp_path), str(commitment_path))
             log.debug("Wrote %s", commitment_path.name)
+            # Increment extracted count in accuracy tracking (FR-14)
+            if source_type:
+                _increment_extracted_count(source_type)
         except Exception:
             log.exception("Failed to write commitment file %s", commitment_path.name)
             try:
@@ -286,6 +405,50 @@ class CommitmentTracker:
         tmp = commitment_path.with_suffix(".tmp")
         tmp.write_text(new_content, encoding="utf-8")
         os.rename(str(tmp), str(commitment_path))
+
+    def create_manual_commitment(
+        self,
+        commitment_type: str,
+        description: str,
+        owner: str,
+        due_date: Optional[str],
+        source_note: str,
+    ) -> Path:
+        """Create a commitment file from manual /missed command (FR-12)."""
+        source_url = f"manual:{hashlib.sha1(description.encode()).hexdigest()[:12]}"
+        stable_id = _stable_commitment_id(source_url, description, owner)
+        commitment_path = self._commitment_path(description, stable_id)
+        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+        fm = {
+            "source_title": description,
+            "summary": f"{owner} committed to {description.lower()}",
+            "tags": [],
+            "last_scanned": now,
+            "source_url": f"commitment:{stable_id}",
+            "type": "commitment",
+            "commitment_type": commitment_type,
+            "owner": owner,
+            "owner_email": None,
+            "recipient": None,
+            "due_date": due_date if due_date and due_date != "unknown" else None,
+            "due_date_confidence": "explicit" if due_date and due_date != "unknown" else "none",
+            "confidence": 1.0,
+            "status": "active",
+            "source_memory": source_url,
+            "extracted_text": "",
+            "correction_type": "manual_add",
+        }
+        frontmatter = yaml.dump(fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
+
+        context = f"Manually added via /missed command.\nSource note: {source_note}"
+        content = f"---\n{frontmatter}---\n\n## Context\n{context}\n"
+
+        tmp_path = commitment_path.with_suffix(".tmp")
+        tmp_path.write_text(content, encoding="utf-8")
+        os.rename(str(tmp_path), str(commitment_path))
+
+        return commitment_path
 
     # ── Run loop ──────────────────────────────────────────────────────────────
 
@@ -368,10 +531,11 @@ class CommitmentTracker:
                 fm = _parse_frontmatter(content)
                 source_url = fm.get("source_url") or f"file:{f.name}"
                 source_title = fm.get("source_title") or f.name
+                source_type = fm.get("type", "")
 
                 items = await self._extract_commitments(f, fm, content)
                 for item in items:
-                    self._write_commitment(item, source_url, source_title, min_confidence)
+                    self._write_commitment(item, source_url, source_title, min_confidence, source_type)
 
                 # Persist state after each file to survive mid-cycle crashes
                 processed[f.name] = mtime

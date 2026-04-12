@@ -39,6 +39,11 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("commitments", self.cmd_commitments))
         self.app.add_handler(CommandHandler("complete", self.cmd_complete))
         self.app.add_handler(CommandHandler("dismiss", self.cmd_dismiss))
+        self.app.add_handler(CommandHandler("wrong", self.cmd_wrong))
+        self.app.add_handler(CommandHandler("missed", self.cmd_missed))
+        self.app.add_handler(CommandHandler("accuracy", self.cmd_accuracy))
+        self.app.add_handler(CommandHandler("contacts", self.cmd_contacts))
+        self.app.add_handler(CommandHandler("contact", self.cmd_contact))
         # Cache: path -> (mtime, header_text). Invalidated when mtime changes.
         # Avoids reading every file on every chat message.
         self._header_cache: dict = {}
@@ -46,6 +51,8 @@ class TelegramChatHandler:
         self._last_results: list = []
         # Last /commitments result set — used by /complete <N> and /dismiss <N>.
         self._last_commitment_set: list = []
+        # Last /contacts result set — used by /contact <N>.
+        self._last_contact_set: list = []
 
     async def start(self):
         await self.app.initialize()
@@ -496,6 +503,354 @@ class TelegramChatHandler:
         except Exception as e:
             await update.message.reply_text(f"Error updating commitment: {e}")
 
+    # ── /wrong command (FR-11) ────────────────────────────────────────────────
+
+    async def cmd_wrong(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /wrong N")
+            return
+
+        path = self._resolve_commitment_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /commitments first.")
+            return
+
+        from commitment_tracker import (
+            CommitmentTracker,
+            CORRECTIONS_FILE,
+            _record_false_positive,
+        )
+        import json
+        from datetime import datetime
+
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title") or "commitment"
+        owner = fm.get("owner", "")
+        label = f'"{title}"' + (f" ({owner})" if owner else "")
+        source_memory = fm.get("source_memory", "")
+        source_type = ""
+
+        # Infer source_type from source_memory URL scheme
+        if source_memory.startswith("zoom:"):
+            source_type = "meeting_transcript"
+        elif source_memory.startswith("email:"):
+            source_type = "email_thread"
+        elif ":" in source_memory:
+            source_type = source_memory.split(":")[0]
+
+        # Extract commitment_id from source_url
+        source_url = fm.get("source_url", "")
+        commitment_id = source_url.split(":")[-1] if ":" in source_url else ""
+
+        try:
+            # Set status to dismissed
+            CommitmentTracker().update_commitment_status(path, "dismissed")
+
+            # Append to corrections JSONL
+            correction = {
+                "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                "correction_type": "false_positive",
+                "commitment_id": commitment_id,
+                "description": title,
+                "owner": owner,
+                "source_memory": source_memory,
+                "source_type": source_type,
+            }
+            CORRECTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with CORRECTIONS_FILE.open("a") as f:
+                f.write(json.dumps(correction) + "\n")
+
+            # Update accuracy stats
+            if source_type:
+                _record_false_positive(source_type)
+
+            await update.message.reply_text(
+                f"\u2717 Marked as incorrect extraction: {label}\n"
+                "This will help avoid similar false positives in future scans."
+            )
+        except Exception as e:
+            await update.message.reply_text(f"Error marking as wrong: {e}")
+
+    # ── /missed command (FR-12) ───────────────────────────────────────────────
+
+    async def cmd_missed(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+
+        # Store user ID in context for the reply handler
+        context.user_data["awaiting_missed_reply"] = True
+        context.user_data["missed_start_time"] = asyncio.get_event_loop().time()
+
+        await update.message.reply_text(
+            "Add a missed commitment. Reply with:\n"
+            "type: outbound|inbound|waiting_on\n"
+            "description: what the commitment is\n"
+            "owner: who made it (name)\n"
+            "due: YYYY-MM-DD or \"unknown\"\n"
+            "source: brief note on where it came from"
+        )
+
+    async def _handle_missed_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle reply to /missed command."""
+        text = update.message.text.strip()
+        from commitment_tracker import CommitmentTracker, CORRECTIONS_FILE, _record_missed
+        import json
+        from datetime import datetime
+
+        # Parse structured reply
+        parsed = {}
+        for line in text.split("\n"):
+            if ":" in line:
+                key, val = line.split(":", 1)
+                parsed[key.strip().lower()] = val.strip()
+
+        # Validate required fields
+        required = {"type", "description", "owner", "due", "source"}
+        missing = required - set(parsed.keys())
+        if missing:
+            await update.message.reply_text(
+                f"Missing required fields: {', '.join(missing)}. Please try /missed again."
+            )
+            context.user_data["awaiting_missed_reply"] = False
+            return
+
+        commitment_type = parsed["type"]
+        if commitment_type not in ("outbound", "inbound", "waiting_on"):
+            await update.message.reply_text(
+                "Invalid type. Must be: outbound, inbound, or waiting_on. Try /missed again."
+            )
+            context.user_data["awaiting_missed_reply"] = False
+            return
+
+        description = parsed["description"]
+        owner = parsed["owner"]
+        due_date = parsed["due"] if parsed["due"].lower() != "unknown" else None
+        source_note = parsed["source"]
+
+        # Infer source_type from source note (best effort)
+        source_type = "manual"
+        if "meeting" in source_note.lower() or "zoom" in source_note.lower():
+            source_type = "meeting_transcript"
+        elif "email" in source_note.lower():
+            source_type = "email_thread"
+
+        try:
+            # Create commitment file
+            tracker = CommitmentTracker()
+            commitment_path = tracker.create_manual_commitment(
+                commitment_type, description, owner, due_date, source_note
+            )
+
+            # Append to corrections JSONL
+            correction = {
+                "timestamp": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                "correction_type": "missed",
+                "description": description,
+                "owner": owner,
+                "source_type": source_type,
+                "source_note": source_note,
+            }
+            CORRECTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with CORRECTIONS_FILE.open("a") as f:
+                f.write(json.dumps(correction) + "\n")
+
+            # Update accuracy stats
+            if source_type:
+                _record_missed(source_type)
+
+            await update.message.reply_text(
+                f'\u2713 Created commitment: "{description}" ({owner})'
+            )
+        except Exception as e:
+            await update.message.reply_text(f"Error creating commitment: {e}")
+        finally:
+            context.user_data["awaiting_missed_reply"] = False
+
+    # ── /accuracy command (FR-14) ─────────────────────────────────────────────
+
+    async def cmd_accuracy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+
+        from commitment_tracker import _load_accuracy
+
+        data = _load_accuracy()
+        by_type = data.get("by_source_type", {})
+
+        if not by_type:
+            await update.message.reply_text(
+                "No accuracy data yet. Use /wrong and /missed to provide feedback."
+            )
+            return
+
+        lines = ["Commitment extraction accuracy:", ""]
+        for source_type, stats in sorted(by_type.items()):
+            extracted = stats.get("extracted", 0)
+            false_positives = stats.get("false_positives", 0)
+            missed = stats.get("missed", 0)
+
+            if extracted > 0:
+                precision = ((extracted - false_positives) / extracted) * 100
+                precision_str = f"{precision:.0f}% precision"
+            else:
+                precision_str = "N/A"
+
+            lines.append(
+                f"{source_type}: {extracted} extracted, {false_positives} false positives "
+                f"({precision_str}), {missed} missed"
+            )
+
+        lines.append("")
+        lines.append("Use /wrong N to flag false positives. Use /missed to add skipped commitments.")
+        await update.message.reply_text("\n".join(lines))
+
+    # ── /contacts command ─────────────────────────────────────────────────────
+
+    async def cmd_contacts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        try:
+            limit = int(context.args[0]) if context.args else 20
+            limit = max(1, min(limit, 50))
+        except (ValueError, IndexError):
+            limit = 20
+
+        files = list((BRAIN_DIR / "memories").glob("contact-*.md"))
+        if not files:
+            await update.message.reply_text("No contacts found.")
+            return
+
+        # Load frontmatter and sort by last_interaction descending
+        contacts = []
+        for f in files:
+            fm = self._parse_frontmatter(f)
+            if fm.get("type") != "contact":
+                continue
+            contacts.append((f, fm))
+
+        contacts.sort(
+            key=lambda x: x[1].get("last_interaction") or "",
+            reverse=True
+        )
+        contacts = contacts[:limit]
+        self._last_contact_set = [f for f, _ in contacts]
+
+        total = len(list((BRAIN_DIR / "memories").glob("contact-*.md")))
+        lines = [f"Contacts ({total} total):"]
+
+        for i, (f, fm) in enumerate(contacts, 1):
+            name = fm.get("name", "(no name)")
+            last_interaction = (fm.get("last_interaction") or "")[:10]
+            score = fm.get("relationship_score", 0.0)
+            # Note: source types would require tracking, simplified for now
+            lines.append(f"{i}. {name} — last: {last_interaction} — score: {score}")
+
+        lines.append("\nUse /contact <name> or /contact <N> for details.")
+        await update.message.reply_text("\n".join(lines))
+
+    # ── /contact command ──────────────────────────────────────────────────────
+
+    def _resolve_contact_index(self, n: str):
+        """Convert 1-based index string to a Path from _last_contact_set, or None."""
+        try:
+            idx = int(n) - 1
+        except (ValueError, TypeError):
+            return None
+        if 0 <= idx < len(self._last_contact_set):
+            return self._last_contact_set[idx]
+        return None
+
+    def _find_contact_by_name(self, query: str):
+        """Find contact file by case-insensitive substring match on name field."""
+        query_lower = query.lower()
+        files = list((BRAIN_DIR / "memories").glob("contact-*.md"))
+
+        for f in files:
+            fm = self._parse_frontmatter(f)
+            if fm.get("type") != "contact":
+                continue
+            name = fm.get("name", "")
+            if query_lower in name.lower():
+                return f, fm
+
+        return None, None
+
+    async def cmd_contact(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /contact <name or N>")
+            return
+
+        arg = " ".join(context.args)
+
+        # Try index resolution first
+        path = self._resolve_contact_index(arg)
+        if path:
+            fm = self._parse_frontmatter(path)
+        else:
+            # Try name match
+            path, fm = self._find_contact_by_name(arg)
+            if not path:
+                await update.message.reply_text(
+                    f"No contact found for '{arg}'. Try /contacts to browse."
+                )
+                return
+
+        # Build response
+        name = fm.get("name", "(no name)")
+        emails = fm.get("emails", [])
+        email_str = ", ".join(emails) if emails else "no email"
+        score = fm.get("relationship_score", 0.0)
+        interaction_count = fm.get("interaction_count", 0)
+
+        lines = [
+            f"{name} ({email_str})",
+            f"Relationship score: {score} | {interaction_count} interactions",
+            "",
+        ]
+
+        # Find open commitments involving this contact
+        commitment_files = list((BRAIN_DIR / "memories").glob("commitment-*.md"))
+        open_commitments = []
+        for cf in commitment_files:
+            cfm = self._parse_frontmatter(cf)
+            if cfm.get("status") != "active":
+                continue
+            # Match by name or email
+            owner = cfm.get("owner", "")
+            recipient = cfm.get("recipient", "")
+            owner_email = cfm.get("owner_email", "")
+            if name in (owner, recipient) or (emails and owner_email in emails):
+                open_commitments.append(cfm)
+
+        if open_commitments:
+            lines.append("Open commitments:")
+            for cfm in open_commitments[:5]:
+                ct = cfm.get("commitment_type", "outbound")
+                desc = (cfm.get("source_title") or "")[:60]
+                due = cfm.get("due_date")
+                due_str = f"due {due}" if due else "due unknown"
+                direction = "outbound" if ct == "outbound" else "waiting_on"
+                lines.append(f"• [{direction}] {desc} — {due_str}")
+            lines.append("")
+
+        # Add summary from file body
+        try:
+            content = path.read_text()
+            # Extract summary from Recent Interactions section
+            m = re.search(r'## Recent Interactions\n\n(.*?)(?=\n\n##|\Z)', content, re.DOTALL)
+            if m:
+                summary = m.group(1).strip()[:400]
+                lines.append("Summary:")
+                lines.append(summary)
+        except Exception:
+            pass
+
+        await update.message.reply_text("\n".join(lines))
+
     async def _send_reply(self, update: Update, text: str):
         """Chunk response into ≤4096-char messages to respect Telegram's hard limit."""
         if not text:
@@ -510,6 +865,21 @@ class TelegramChatHandler:
 
         if user_id != self.allowed_user_id:
             log.warning(f"Ignored message from unauthorised user_id={user_id} (allowed={self.allowed_user_id})")
+            return
+
+        # Check if we're awaiting a /missed reply (FR-12)
+        if (hasattr(context, "user_data") and
+            isinstance(context.user_data, dict) and
+            context.user_data.get("awaiting_missed_reply") is True):
+            # Check timeout (60 seconds)
+            start_time = context.user_data.get("missed_start_time", 0)
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed > 60:
+                await update.message.reply_text("Cancelled (timeout).")
+                context.user_data["awaiting_missed_reply"] = False
+                return
+            # Handle the structured reply
+            await self._handle_missed_reply(update, context)
             return
 
         query = update.message.text
