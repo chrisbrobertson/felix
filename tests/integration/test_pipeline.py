@@ -237,17 +237,23 @@ async def test_watcher_role_logs_to_jsonl_not_skill_file(infra, tmp_path):
     """Watcher-role executor must not modify the shared skill file."""
     mock_resp = MagicMock()
     mock_resp.choices[0].message.content = FAKE_SUMMARY
-    local_log = tmp_path / "exec.jsonl"
+
+    brain_dir = tmp_path / "brain"
+    logs_dir = brain_dir / "logs"
+    logs_dir.mkdir(parents=True)
+
     original_skill = (infra["skills"] / "summarize-webpage.md").read_text()
 
     with patch.object(se, "SKILLS_DIR", infra["skills"]), \
-         patch.object(se, "LOCAL_EXEC_LOG", local_log), \
+         patch.object(se, "BRAIN_DIR", brain_dir), \
          patch("skill_executor.acompletion", new=AsyncMock(return_value=mock_resp)):
         executor = se.SkillExecutor("summarize-webpage", role="watcher")
         await executor.run({"url": "u", "title": "t", "content": "c"})
 
     assert (infra["skills"] / "summarize-webpage.md").read_text() == original_skill
-    assert local_log.exists()
+    # Check log file created in logs dir
+    log_files = list(logs_dir.glob("*-execution-log.jsonl"))
+    assert len(log_files) == 1
 
 
 # ── Domain skip filter integration ────────────────────────────────────────────
@@ -999,3 +1005,505 @@ async def test_commitment_commands_complete_and_dismiss_flow(infra, chat_handler
     assert "Dismissed" in reply or "✗" in reply
     fm = _parse_frontmatter(p_waiting.read_text())
     assert fm["status"] == "dismissed"
+
+
+# Skill Optimizer Integration Tests
+
+async def test_optimizer_scores_pending_rows(infra):
+    """Seed skill with pending rows → optimizer updates scores."""
+    import skill_optimizer as opt
+    from unittest.mock import Mock
+
+    skills_dir = infra["skills"]
+    memories_dir = infra["memories"]
+
+    # Create skill with pending execution rows
+    skill_content = """---
+name: test-skill
+version: 1
+preferred_model: gemini/gemini-2.0-flash
+success_rate: null
+total_runs: 0
+---
+
+## Instructions
+
+Summarize the content.
+
+## Execution History
+
+| date | input_slug | model | score | notes |
+|------|-----------|-------|-------|-------|
+| 2026-04-14 | article-test-abc | gemini/gemini-2.0-flash | pending |  |
+"""
+
+    skill_path = skills_dir / "test-skill.md"
+    skill_path.write_text(skill_content)
+
+    # Create matching memory file
+    mem_file = memories_dir / "2026-04-14-article-test-abc-hash123.md"
+    mem_file.write_text("""---
+source_url: https://example.com/article
+source_title: Test Article
+---
+
+## Summary
+This is a test article summary.
+
+## Key Points
+- Point one
+- Point two
+""")
+
+    # Mock judge response
+    mock_response = Mock()
+    mock_response.choices = [Mock(message=Mock(content='{"score": 0.85, "reasoning": "Good quality summary"}'))]
+
+    config = {
+        "skill_optimizer": {
+            "run_hour": 3,
+            "min_runs_before_optimize": 10,
+            "underperformance_threshold": 0.70,
+            "skip_above_threshold": 0.90,
+            "regression_tolerance": 0.05,
+            "max_exemplars": 2,
+            "max_history_rows": 100,
+            "max_skill_backups": 5,
+            "judge_model": "judge",
+            "dry_run": False
+        }
+    }
+
+    with patch.object(opt, "BRAIN_DIR", infra["root"]), \
+         patch.object(opt, "SKILLS_DIR", skills_dir), \
+         patch.object(opt, "MEMORIES_DIR", memories_dir), \
+         patch("skill_optimizer.acompletion", return_value=mock_response):
+
+        import asyncio
+        optimizer = opt.SkillOptimizer(config)
+        stop_event = asyncio.Event()
+
+        await optimizer._score_pending_rows(skill_path, stop_event)
+
+    # Check that pending row was scored
+    updated = skill_path.read_text()
+    assert "| pending |" not in updated
+    assert "| 0.85 |" in updated
+    assert "Good quality" in updated
+
+    # Check frontmatter updated
+    fm = yaml.safe_load(updated.split("---")[1])
+    assert fm["total_runs"] == 1
+    assert fm["success_rate"] == 0.85
+
+
+async def test_optimizer_rewrites_underperforming_skill(infra):
+    """Seed with low scores → Instructions section changed."""
+    import skill_optimizer as opt
+    from unittest.mock import Mock
+
+    skills_dir = infra["skills"]
+    memories_dir = infra["memories"]
+
+    # Create underperforming skill
+    skill_content = """---
+name: test-skill
+version: 1
+preferred_model: gemini/gemini-2.0-flash
+success_rate: 0.55
+total_runs: 15
+last_optimized: null
+prev_version_avg_score: null
+exemplar_eligible: false
+---
+
+## Instructions
+
+Old instructions that need improvement.
+
+## Evolution Log
+
+### v1 (2026-04-10) — initial version
+
+## Execution History
+
+| date | input_slug | model | score | notes |
+|------|-----------|-------|-------|-------|
+| 2026-04-14 | article-1 | gemini | 0.50 | poor quality |
+| 2026-04-14 | article-2 | gemini | 0.55 | mediocre |
+| 2026-04-14 | article-3 | gemini | 0.60 | acceptable |
+"""
+
+    skill_path = skills_dir / "test-skill.md"
+    skill_path.write_text(skill_content)
+
+    # Create meta-skill
+    meta_skill = skills_dir / "skill-optimizer.md"
+    meta_skill.write_text("""---
+name: skill-optimizer
+version: 1
+preferred_model: claude-sonnet-4-20250514
+---
+
+## Instructions
+
+You rewrite skills based on critique. Output the complete skill file with updated Instructions.""")
+
+    # Create memory files
+    for i in range(1, 4):
+        mem = memories_dir / f"2026-04-14-article-{i}-hash.md"
+        mem.write_text(f"---\nsource_url: test\n---\n\n## Summary\nTest content {i}")
+
+    # Mock critique response
+    critique_response = Mock()
+    critique_response.choices = [Mock(message=Mock(content="""{
+        "failure_patterns": ["missing key points", "too verbose"],
+        "root_cause": "Instructions lack specificity",
+        "suggested_focus": "Add explicit format requirements"
+    }"""))]
+
+    # Mock rewrite response
+    rewrite_response = Mock()
+    rewrite_response.choices = [Mock(message=Mock(content="""---
+name: test-skill
+version: 1
+preferred_model: gemini/gemini-2.0-flash
+success_rate: 0.55
+total_runs: 15
+last_optimized: null
+prev_version_avg_score: null
+exemplar_eligible: false
+---
+
+## Instructions
+
+Improved instructions with explicit format requirements.
+- Be concise
+- Include all key points
+- Follow structured format
+
+## Evolution Log
+
+### v2 (2026-04-15) — improve format specificity
+**Critique:** Instructions lack specificity
+**Failure patterns:** missing key points, too verbose
+**Change:** Added explicit format requirements and structure guidelines
+**Pre-optimization avg:** 0.55 | **Post (projected):** pending
+
+### v1 (2026-04-10) — initial version
+
+## Execution History
+
+| date | input_slug | model | score | notes |
+|------|-----------|-------|-------|-------|
+| 2026-04-14 | article-1 | gemini | 0.50 | poor quality |
+| 2026-04-14 | article-2 | gemini | 0.55 | mediocre |
+| 2026-04-14 | article-3 | gemini | 0.60 | acceptable |
+"""))]
+
+    config = {
+        "skill_optimizer": {
+            "run_hour": 3,
+            "min_runs_before_optimize": 10,
+            "underperformance_threshold": 0.70,
+            "skip_above_threshold": 0.90,
+            "regression_tolerance": 0.05,
+            "max_exemplars": 2,
+            "max_history_rows": 100,
+            "max_skill_backups": 5,
+            "judge_model": "judge",
+            "dry_run": False
+        }
+    }
+
+    with patch.object(opt, "BRAIN_DIR", infra["root"]), \
+         patch.object(opt, "SKILLS_DIR", skills_dir), \
+         patch.object(opt, "MEMORIES_DIR", memories_dir), \
+         patch("skill_optimizer.acompletion", side_effect=[critique_response, rewrite_response]):
+
+        import asyncio
+        optimizer = opt.SkillOptimizer(config)
+        stop_event = asyncio.Event()
+
+        await optimizer._optimize_skill(skill_path, stop_event)
+
+    # Check Instructions changed
+    updated = skill_path.read_text()
+    assert "Improved instructions with explicit format requirements" in updated
+    assert "Old instructions that need improvement" not in updated
+
+    # Check version incremented
+    fm = yaml.safe_load(updated.split("---")[1])
+    assert fm["version"] == 2
+    assert fm["prev_version_avg_score"] == 0.55
+    assert fm["last_optimized"] == "2026-04-15" or fm["last_optimized"] is not None
+
+
+async def test_optimizer_backup_created(infra):
+    """After rewrite → .1 backup exists with prior content."""
+    import skill_optimizer as opt
+
+    skills_dir = infra["skills"]
+    skill_path = skills_dir / "test-skill.md"
+    original_content = "version 1 content"
+    skill_path.write_text(original_content)
+
+    config = {
+        "skill_optimizer": {
+            "max_skill_backups": 5,
+            "dry_run": False
+        }
+    }
+
+    with patch.object(opt, "SKILLS_DIR", skills_dir):
+        optimizer = opt.SkillOptimizer(config)
+        await optimizer._rotate_backups(skill_path)
+
+    # Check backup created
+    backup_path = skill_path.with_suffix(".md.1")
+    assert backup_path.exists()
+    assert backup_path.read_text() == original_content
+
+
+async def test_optimizer_rollback_on_regression(infra):
+    """Pre-populate prev_version_avg_score > new avg → optimizer restores backup."""
+    import skill_optimizer as opt
+
+    skills_dir = infra["skills"]
+
+    # Create skill with regression
+    regressed_content = """---
+name: test-skill
+version: 2
+preferred_model: gemini/gemini-2.0-flash
+success_rate: 0.55
+total_runs: 20
+prev_version_avg_score: 0.75
+---
+
+## Instructions
+
+New instructions that caused regression.
+
+## Evolution Log
+
+### v2 (2026-04-14) — attempted improvement
+### v1 (2026-04-10) — initial version
+"""
+
+    skill_path = skills_dir / "test-skill.md"
+    skill_path.write_text(regressed_content)
+
+    # Create backup with better performance
+    backup_content = """---
+name: test-skill
+version: 1
+preferred_model: gemini/gemini-2.0-flash
+success_rate: 0.75
+total_runs: 15
+---
+
+## Instructions
+
+Original good instructions.
+
+## Evolution Log
+
+### v1 (2026-04-10) — initial version
+"""
+
+    backup_path = skill_path.with_suffix(".md.1")
+    backup_path.write_text(backup_content)
+
+    config = {
+        "skill_optimizer": {
+            "regression_tolerance": 0.05,
+            "dry_run": False
+        }
+    }
+
+    with patch.object(opt, "SKILLS_DIR", skills_dir):
+        optimizer = opt.SkillOptimizer(config)
+        rolled_back = await optimizer._check_regression_and_rollback(skill_path)
+
+    # Should have rolled back
+    assert rolled_back
+
+    # Check content restored
+    restored = skill_path.read_text()
+    fm = yaml.safe_load(restored.split("---")[1])
+    assert fm["version"] == 1
+    assert "Original good instructions" in restored
+    assert "New instructions that caused regression" not in restored
+
+
+async def test_watcher_log_merged_before_scoring(infra):
+    """Write JSONL to iCloud logs dir → rows appear in history."""
+    import skill_optimizer as opt
+
+    skills_dir = infra["skills"]
+    logs_dir = infra["root"] / "logs"
+    logs_dir.mkdir()
+
+    # Create skill
+    skill_content = """---
+name: test-skill
+version: 1
+preferred_model: gemini/gemini-2.0-flash
+---
+
+## Instructions
+
+Test instructions.
+
+## Execution History
+
+| date | input_slug | model | score | notes |
+|------|-----------|-------|-------|-------|
+"""
+
+    skill_path = skills_dir / "test-skill.md"
+    skill_path.write_text(skill_content)
+
+    # Create watcher JSONL log
+    watcher_log = logs_dir / "macbook-pro-execution-log.jsonl"
+    record = {
+        "date": "2026-04-15",
+        "skill": "test-skill",
+        "input_slug": "watcher-article",
+        "model": "gemini/gemini-2.0-flash",
+        "score": "0.80",
+        "notes": "from watcher",
+        "hostname": "macbook-pro"
+    }
+    watcher_log.write_text(json.dumps(record))
+
+    config = {
+        "skill_optimizer": {
+            "run_hour": 3,
+            "dry_run": False
+        }
+    }
+
+    with patch.object(opt, "BRAIN_DIR", infra["root"]), \
+         patch.object(opt, "SKILLS_DIR", skills_dir):
+        optimizer = opt.SkillOptimizer(config)
+        await optimizer._merge_watcher_logs()
+
+    # Check row appeared in skill file
+    updated = skill_path.read_text()
+    assert "| 2026-04-15 | watcher-article | gemini/gemini-2.0-flash | 0.80 | from watcher |" in updated
+
+    # Check watcher log was renamed
+    assert not watcher_log.exists()
+    processed_files = list(logs_dir.glob("*-execution-log.processed-*.jsonl"))
+    assert len(processed_files) == 1
+
+
+# ── Slack Scanner integration ─────────────────────────────────────────────────
+
+async def test_slack_scanner_writes_memory_for_thread(tmp_path):
+    """SlackScanner._run_scan → slack-thread-*.md written with correct frontmatter."""
+    import slack_scanner as ss
+    from slack_scanner import SlackScanner
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "slack-state.json"
+
+    CHANNELS_RESPONSE = {
+        "ok": True,
+        "channels": [
+            {"id": "C001", "name": "engineering", "is_archived": False}
+        ]
+    }
+
+    MESSAGES_RESPONSE = {
+        "ok": True,
+        "messages": [
+            {
+                "ts": "1712700000.000200",
+                "thread_ts": "1712700000.000200",
+                "reply_count": 2,
+                "text": "Should we migrate to Postgres?",
+                "user": "U001"
+            }
+        ]
+    }
+
+    THREAD_RESPONSE = {
+        "ok": True,
+        "messages": [
+            {"ts": "1712700000.000200", "user": "U001", "text": "Should we migrate to Postgres?"},
+            {"ts": "1712750000.000000", "user": "U002", "text": "What's the use case?"},
+            {"ts": "1712800000.000000", "user": "U001", "text": "Job queuing with pg-boss"}
+        ]
+    }
+
+    USER_RESPONSE = {
+        "ok": True,
+        "user": {"real_name": "Alice Smith", "name": "alice"}
+    }
+
+    LLM_RESPONSE_TEXT = json.dumps({
+        "summary": "Team discussed migrating from SQLite to Postgres for job queuing.",
+        "tags": ["postgres", "database", "migration"]
+    })
+
+    scanner = SlackScanner(role="full")
+
+    import yaml as _yaml
+
+    async def fake_api_call(client, method, params=None, _retry=0):
+        if method == "conversations.list":
+            return CHANNELS_RESPONSE
+        elif method == "conversations.history":
+            return MESSAGES_RESPONSE
+        elif method == "conversations.replies":
+            return THREAD_RESPONSE
+        elif method == "users.info":
+            return USER_RESPONSE
+        return None
+
+    mock_acompletion = AsyncMock()
+    mock_resp = MagicMock()
+    mock_resp.choices = [MagicMock()]
+    mock_resp.choices[0].message.content = LLM_RESPONSE_TEXT
+    mock_acompletion.return_value = mock_resp
+
+    with patch.object(ss, "MEMORIES_DIR", memories_dir), \
+         patch.object(ss, "STATE_FILE", state_file), \
+         patch.object(ss, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch.object(scanner, "_api_call", side_effect=fake_api_call), \
+         patch("slack_scanner.acompletion", mock_acompletion), \
+         patch.dict(os.environ, {"SLACK_BOT_TOKEN": "xoxb-test"}):
+
+        (tmp_path / "config.yaml").write_text(_yaml.dump({
+            "slack_scanner": {
+                "interval_seconds": 300,
+                "lookback_days": 7,
+                "channel_include": [],
+                "channel_exclude": [],
+                "min_thread_messages": 2
+            }
+        }))
+        await scanner._run_scan()
+
+    # Check memory file written
+    files = list(memories_dir.glob("slack-thread-*.md"))
+    assert len(files) == 1
+
+    text = files[0].read_text()
+    fm, _ = _parse_frontmatter(text)
+
+    assert fm["type"] == "slack_thread"
+    assert fm["channel"] == "engineering"
+    assert fm["source_url"] == "slack:C001/1712700000.000200"
+    assert fm["message_count"] == 3
+    assert "## Messages" in text
+    assert "Alice Smith" in text
+
+    # State file updated
+    state = json.loads(state_file.read_text())
+    assert "C001" in state["channels"]
+    assert "1712700000.000200" in state["channels"]["C001"]["threads"]

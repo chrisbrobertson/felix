@@ -1,42 +1,921 @@
 import asyncio
+import json
 import logging
+import os
+import re
+import socket
 import yaml
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
+
+from litellm import acompletion
 
 log = logging.getLogger("skill-optimizer")
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
+SKILLS_DIR = BRAIN_DIR / "skills"
+MEMORIES_DIR = BRAIN_DIR / "memories"
 
 
 class SkillOptimizer:
     """
-    Daily pass: reads each skill's execution history, asks an LLM to identify
-    failure patterns in low-scoring runs, rewrites the Instructions section
-    in-place, and appends to the Evolution Log.
+    Daily pass: reads each skill's execution history, scores pending runs using
+    LLM-as-judge, identifies failure patterns in low-scoring runs, rewrites the
+    Instructions section to address them, maintains rolling backups, and appends
+    to the Evolution Log.
 
-    v0.1 stub — run_loop sleeps until stop_event. Optimizer logic in v0.2.
+    Implements TextGrad Critique-then-Edit (two LLM calls), OPRO trajectory via
+    Evolution Log, DSPy auto-exemplars, and regression-triggered rollback.
     """
 
-    async def _optimize_skill(self, skill_path: Path):
-        # TODO (day 2):
-        # 1. Parse skill file — extract instructions + execution history
-        # 2. Filter rows where score < threshold (from config)
-        # 3. Skip if fewer than min_runs rows (avoid optimizing on noise)
-        # 4. Call LiteLLM with skill-optimizer.md instructions + skill content
-        # 5. Write updated skill file atomically (write tmp, rename)
-        # 6. Append Evolution Log entry with version bump
-        log.debug(f"Optimizer stub — skipping {skill_path.name}")
+    def __init__(self, config: dict):
+        self.config = config.get("skill_optimizer", {})
+        self.run_hour = self.config.get("run_hour", 3)
+        self.min_runs = self.config.get("min_runs_before_optimize", 10)
+        self.underperformance_threshold = self.config.get("underperformance_threshold", 0.70)
+        self.skip_above_threshold = self.config.get("skip_above_threshold", 0.90)
+        self.regression_tolerance = self.config.get("regression_tolerance", 0.05)
+        self.max_exemplars = self.config.get("max_exemplars", 2)
+        self.max_history_rows = self.config.get("max_history_rows", 100)
+        self.max_skill_backups = self.config.get("max_skill_backups", 5)
+        self.judge_model = self.config.get("judge_model", "judge")
+        self.dry_run = self.config.get("dry_run", False)
 
     async def run_loop(self, stop_event: asyncio.Event):
+        """Main loop: schedule daily optimization passes at run_hour."""
         while not stop_event.is_set():
+            # Reload config on each iteration to pick up changes
             try:
                 config = yaml.safe_load((BRAIN_DIR / "config.yaml").read_text())
-                run_hour = config.get("skill_optimizer", {}).get("run_hour", 3)  # noqa: F841
-            except Exception:
+                self.__init__(config)
+            except Exception as e:
+                log.warning(f"Config reload failed: {e}")
+
+            # Calculate sleep duration until next run_hour
+            now = datetime.now()
+            next_run = now.replace(hour=self.run_hour, minute=0, second=0, microsecond=0)
+            if now >= next_run:
+                next_run += timedelta(days=1)
+            sleep_seconds = (next_run - now).total_seconds()
+
+            log.info(f"Next optimization pass scheduled for {next_run.isoformat()} "
+                     f"(sleeping {sleep_seconds:.0f}s)")
+
+            # Sleep until scheduled time or stop_event
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=sleep_seconds)
+                # If we get here, stop_event was set
+                break
+            except asyncio.TimeoutError:
+                # Woke up on schedule
                 pass
 
-            # Stub just waits — replace with real scheduling in day 2
+            # Run the optimization pass
+            if stop_event.is_set():
+                break
+            await self._run_daily_pass(stop_event)
+
+    async def _run_daily_pass(self, stop_event: asyncio.Event):
+        """One full optimization pass: merge logs, score, optimize eligible skills."""
+        log.info("Starting daily optimization pass")
+
+        # FR-2: Merge watcher node execution logs
+        await self._merge_watcher_logs()
+
+        if stop_event.is_set():
+            return
+
+        # Glob all skill files
+        if not SKILLS_DIR.exists():
+            log.warning(f"Skills directory not found: {SKILLS_DIR}")
+            return
+
+        skill_files = sorted(SKILLS_DIR.glob("*.md"))
+        log.info(f"Found {len(skill_files)} skill files")
+
+        for skill_path in skill_files:
+            if stop_event.is_set():
+                break
+
+            skill_name = skill_path.stem
+
+            # FR-4: Always skip skill-optimizer.md itself
+            if skill_name == "skill-optimizer":
+                log.debug(f"Skipped {skill_name} (meta-skill)")
+                continue
+
             try:
-                await asyncio.wait_for(stop_event.wait(), timeout=3600)
-            except asyncio.TimeoutError:
-                pass  # woke up on schedule, not on stop
+                # FR-3: Score pending rows
+                await self._score_pending_rows(skill_path, stop_event)
+
+                # FR-9: Prune execution history
+                await self._prune_execution_history(skill_path)
+
+                # FR-8: Check for regression and rollback if needed
+                rolled_back = await self._check_regression_and_rollback(skill_path)
+
+                # FR-4: Check optimization gates
+                should_optimize, reason = await self._check_optimization_gates(skill_path)
+
+                if not should_optimize:
+                    log.info(f"Skipped {skill_name}: {reason}")
+                    continue
+
+                log.info(f"Optimizing {skill_name}: {reason}")
+
+                # FR-5, FR-6, FR-7: Critique, rewrite, auto-exemplars
+                await self._optimize_skill(skill_path, stop_event)
+
+            except Exception as e:
+                log.error(f"Error processing {skill_name}: {e}", exc_info=True)
+                continue
+
+        log.info("Daily optimization pass complete")
+
+    async def _merge_watcher_logs(self):
+        """FR-2: Merge watcher node JSONL logs into skill execution history tables."""
+        logs_dir = BRAIN_DIR / "logs"
+        if not logs_dir.exists():
+            return
+
+        jsonl_files = list(logs_dir.glob("*-execution-log.jsonl"))
+        if not jsonl_files:
+            log.debug("No watcher logs to merge")
+            return
+
+        log.info(f"Merging {len(jsonl_files)} watcher log files")
+
+        for jsonl_file in jsonl_files:
+            try:
+                hostname = jsonl_file.stem.replace("-execution-log", "")
+                records = []
+
+                # Read all JSONL records
+                for line_no, line in enumerate(jsonl_file.read_text().splitlines(), 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        records.append(json.loads(line))
+                    except json.JSONDecodeError as e:
+                        log.warning(f"Skipping malformed JSONL line {line_no} in {jsonl_file.name}: {e}")
+                        continue
+
+                if not records:
+                    # Empty file, just rename it
+                    date_suffix = datetime.now().strftime("%Y-%m-%d")
+                    processed_name = f"{hostname}-execution-log.processed-{date_suffix}.jsonl"
+                    processed_path = logs_dir / processed_name
+                    jsonl_file.rename(processed_path)
+                    continue
+
+                # Group by skill
+                by_skill = {}
+                for rec in records:
+                    skill_name = rec.get("skill")
+                    if not skill_name:
+                        log.warning(f"Record missing 'skill' field: {rec}")
+                        continue
+                    by_skill.setdefault(skill_name, []).append(rec)
+
+                # Append to each skill's execution history
+                for skill_name, skill_records in by_skill.items():
+                    skill_path = SKILLS_DIR / f"{skill_name}.md"
+                    if not skill_path.exists():
+                        log.warning(f"Skill file not found for watcher log records: {skill_name}")
+                        continue
+
+                    text = skill_path.read_text()
+
+                    # Build rows
+                    rows = []
+                    for rec in skill_records:
+                        row = f"| {rec['date']} | {rec['input_slug']} | {rec['model']} | {rec['score']} | {rec.get('notes', '')} |\n"
+                        rows.append(row)
+
+                    # Append to execution history
+                    if "## Execution History" not in text:
+                        text += (f"\n## Execution History\n\n"
+                                 f"| date | input_slug | model | score | notes |\n"
+                                 f"|------|-----------|-------|-------|-------|\n")
+                        text += "".join(rows)
+                    else:
+                        lines = text.splitlines(keepends=True)
+                        # Find last row in the execution history table
+                        insert_at = len(lines)
+                        for i in range(len(lines) - 1, -1, -1):
+                            if lines[i].strip().startswith("|"):
+                                insert_at = i + 1
+                                break
+                        for row in rows:
+                            lines.insert(insert_at, row)
+                            insert_at += 1
+                        text = "".join(lines)
+
+                    # Atomic write
+                    self._atomic_write(skill_path, text)
+                    log.info(f"Merged {len(skill_records)} records from {hostname} into {skill_name}")
+
+                # Rename processed file
+                date_suffix = datetime.now().strftime("%Y-%m-%d")
+                processed_name = f"{hostname}-execution-log.processed-{date_suffix}.jsonl"
+                processed_path = logs_dir / processed_name
+                jsonl_file.rename(processed_path)
+
+                # Delete processed files older than 30 days
+                cutoff = datetime.now() - timedelta(days=30)
+                for old_file in logs_dir.glob("*-execution-log.processed-*.jsonl"):
+                    try:
+                        # Extract date from filename
+                        date_match = re.search(r'processed-(\d{4}-\d{2}-\d{2})\.jsonl$', old_file.name)
+                        if date_match:
+                            file_date = datetime.strptime(date_match.group(1), "%Y-%m-%d")
+                            if file_date < cutoff:
+                                old_file.unlink()
+                                log.debug(f"Deleted old processed log: {old_file.name}")
+                    except Exception as e:
+                        log.warning(f"Error cleaning up old log {old_file.name}: {e}")
+
+            except Exception as e:
+                log.error(f"Error merging watcher log {jsonl_file.name}: {e}", exc_info=True)
+
+    async def _score_pending_rows(self, skill_path: Path, stop_event: asyncio.Event):
+        """FR-3: Score all pending execution history rows using LLM-as-judge."""
+        text = skill_path.read_text()
+        skill_name = skill_path.stem
+
+        # Extract skill instructions
+        instructions = self._extract_section(text, "## Instructions")
+        if not instructions:
+            log.warning(f"No Instructions section in {skill_name}")
+            return
+
+        # Find pending rows
+        history_section = self._extract_section(text, "## Execution History")
+        if not history_section:
+            return
+
+        lines = history_section.splitlines()
+        pending_rows = []
+        for i, line in enumerate(lines):
+            if "| pending |" in line or line.strip().endswith("| pending |"):
+                pending_rows.append((i, line))
+
+        if not pending_rows:
+            log.debug(f"No pending rows to score in {skill_name}")
+            return
+
+        if self.dry_run:
+            log.info(f"DRY RUN: Would score {len(pending_rows)} pending rows for {skill_name}")
+            return
+
+        log.info(f"Scoring {len(pending_rows)} pending rows in {skill_name}")
+
+        # Score each pending row
+        scored_count = 0
+        for row_idx, row_text in pending_rows:
+            if stop_event.is_set():
+                break
+
+            # Parse row
+            parts = [p.strip() for p in row_text.split("|")]
+            if len(parts) < 6:
+                continue
+
+            date_str = parts[1]
+            input_slug = parts[2]
+            model = parts[3]
+            notes = parts[5] if len(parts) > 5 else ""
+
+            # Find output by matching memory file
+            output_text = await self._find_output_by_slug(input_slug)
+            if not output_text:
+                log.warning(f"No memory file found for {input_slug} in {skill_name} — leaving pending")
+                continue
+
+            # Call judge model
+            try:
+                score, reasoning = await self._call_judge(skill_name, instructions, input_slug,
+                                                          output_text, date_str)
+
+                # Update the row
+                new_row = f"| {date_str} | {input_slug} | {model} | {score:.2f} | {reasoning[:120]} |"
+                lines[row_idx] = new_row
+                scored_count += 1
+
+            except Exception as e:
+                log.warning(f"Judge call failed for {input_slug}: {e}")
+                continue
+
+        if scored_count == 0:
+            return
+
+        # Rebuild execution history section
+        new_history = "\n".join(lines)
+        text = self._replace_section(text, "## Execution History", new_history)
+
+        # Recalculate frontmatter stats
+        text = await self._update_frontmatter_stats(text)
+
+        # Atomic write
+        self._atomic_write(skill_path, text)
+        log.info(f"Scored {scored_count} rows in {skill_name}")
+
+    async def _find_output_by_slug(self, input_slug: str) -> Optional[str]:
+        """Find memory file matching input_slug prefix and return its body."""
+        if not MEMORIES_DIR.exists():
+            return None
+
+        # Match files where the slug component (after date prefix) starts with input_slug
+        for mem_file in MEMORIES_DIR.glob("*.md"):
+            # Extract slug from filename: YYYY-MM-DD-{slug}.md
+            # Slug starts after third hyphen
+            name_parts = mem_file.stem.split("-", 3)
+            if len(name_parts) < 4:
+                continue
+            file_slug = name_parts[3]
+
+            if file_slug.startswith(input_slug) or input_slug in file_slug:
+                try:
+                    content = mem_file.read_text()
+                    # Extract body (after frontmatter)
+                    parts = content.split("---", 2)
+                    if len(parts) >= 3:
+                        return parts[2].strip()
+                except Exception:
+                    continue
+
+        return None
+
+    async def _call_judge(self, skill_name: str, instructions: str, input_slug: str,
+                          output_text: str, date_str: str) -> tuple[float, str]:
+        """Call judge model to score an execution."""
+        prompt = f"""You are evaluating the quality of a skill output.
+
+Skill: {skill_name}
+Skill instructions (what a good output should look like):
+{instructions}
+
+Execution date: {date_str}
+Input: {input_slug}
+Output:
+{output_text}
+
+Rate this output on a scale of 0.0 to 1.0 using this rubric:
+- 1.0: Excellent — fully satisfies all instructions, well-structured, complete
+- 0.7: Acceptable — minor gaps or format issues, still useful
+- 0.5: Weak — missing key content or poorly structured
+- 0.0: Failed — junk, empty, or seriously wrong output
+
+Respond with JSON only:
+{{"score": 0.0, "reasoning": "one sentence explanation"}}"""
+
+        response = await acompletion(
+            model=self.judge_model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200
+        )
+
+        result_text = response.choices[0].message.content.strip()
+
+        # Parse JSON
+        # Try to extract JSON from markdown code block if present
+        if "```json" in result_text:
+            result_text = result_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in result_text:
+            result_text = result_text.split("```")[1].split("```")[0].strip()
+
+        result = json.loads(result_text)
+        score = float(result["score"])
+        reasoning = result.get("reasoning", "")
+
+        return score, reasoning
+
+    async def _update_frontmatter_stats(self, text: str) -> str:
+        """Recalculate success_rate and total_runs from execution history."""
+        history_section = self._extract_section(text, "## Execution History")
+        if not history_section:
+            return text
+
+        scores = []
+        for line in history_section.splitlines():
+            if not line.strip().startswith("|") or "| date |" in line or "|---" in line:
+                continue
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) < 5:
+                continue
+            score_str = parts[4]
+            if score_str == "pending":
+                continue
+            try:
+                score = float(score_str)
+                if score > 0:
+                    scores.append(score)
+            except ValueError:
+                continue
+
+        # Update frontmatter
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            return text
+
+        fm = yaml.safe_load(parts[1])
+        fm["total_runs"] = len(scores)
+        fm["success_rate"] = round(sum(scores) / len(scores), 2) if scores else None
+
+        parts[1] = yaml.dump(fm, sort_keys=False)
+        return "---".join(parts)
+
+    async def _prune_execution_history(self, skill_path: Path):
+        """FR-9: Prune execution history to max_history_rows, keeping pending rows."""
+        text = skill_path.read_text()
+        history_section = self._extract_section(text, "## Execution History")
+        if not history_section:
+            return
+
+        lines = history_section.splitlines()
+
+        # Separate header, pending, and scored rows
+        header_lines = []
+        pending_rows = []
+        scored_rows = []
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped.startswith("|"):
+                continue
+            if "| date |" in line or "|---" in line:
+                header_lines.append(line)
+            elif "| pending |" in line or stripped.endswith("| pending |"):
+                pending_rows.append(line)
+            else:
+                scored_rows.append(line)
+
+        # Keep only newest max_history_rows scored rows
+        if len(scored_rows) > self.max_history_rows:
+            scored_rows = scored_rows[-self.max_history_rows:]
+
+            # Rebuild section
+            new_lines = header_lines + scored_rows + pending_rows
+            new_history = "\n".join(new_lines)
+            text = self._replace_section(text, "## Execution History", new_history)
+
+            if self.dry_run:
+                log.info(f"DRY RUN: Would prune {skill_path.stem} execution history to {self.max_history_rows} rows")
+                return
+
+            self._atomic_write(skill_path, text)
+            log.info(f"Pruned {skill_path.stem} execution history to {self.max_history_rows} rows")
+
+    async def _check_regression_and_rollback(self, skill_path: Path) -> bool:
+        """FR-8: Check for regression and rollback if needed. Returns True if rolled back."""
+        text = skill_path.read_text()
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            return False
+
+        fm = yaml.safe_load(parts[1])
+        current_rate = fm.get("success_rate")
+        prev_rate = fm.get("prev_version_avg_score")
+
+        if current_rate is None or prev_rate is None:
+            return False
+
+        # Check for regression
+        if current_rate < (prev_rate - self.regression_tolerance):
+            log.warning(f"Regression detected in {skill_path.stem}: "
+                        f"{current_rate:.2f} < {prev_rate:.2f} - {self.regression_tolerance}")
+
+            if self.dry_run:
+                log.info(f"DRY RUN: Would rollback {skill_path.stem} from backup")
+                return True
+
+            # Rollback from .1 backup
+            backup_path = skill_path.with_suffix(skill_path.suffix + ".1")
+            if not backup_path.exists():
+                log.warning(f"Cannot rollback {skill_path.stem}: no .1 backup found")
+                return False
+
+            # Restore backup
+            backup_content = backup_path.read_text()
+            self._atomic_write(skill_path, backup_content)
+
+            # Reverse-rotate backups (.2 → .1, .3 → .2, etc.)
+            for i in range(2, self.max_skill_backups + 1):
+                src = skill_path.with_suffix(f"{skill_path.suffix}.{i}")
+                dst = skill_path.with_suffix(f"{skill_path.suffix}.{i-1}")
+                if src.exists():
+                    src.rename(dst)
+
+            # Append rollback entry to Evolution Log
+            text = skill_path.read_text()
+            version = self._get_version(text)
+            rollback_entry = f"\n### v{version} → v{version-1} rollback ({datetime.now().strftime('%Y-%m-%d')})\n"
+            rollback_entry += f"**Reason:** success_rate dropped from {prev_rate:.2f} to {current_rate:.2f} (regression_tolerance={self.regression_tolerance})\n"
+            rollback_entry += f"**Action:** Restored from {skill_path.name}.1\n"
+
+            text = self._append_to_evolution_log(text, rollback_entry)
+            self._atomic_write(skill_path, text)
+
+            log.info(f"Rolled back {skill_path.stem} to version {version-1}")
+            return True
+
+        return False
+
+    async def _check_optimization_gates(self, skill_path: Path) -> tuple[bool, str]:
+        """FR-4: Check if skill should be optimized. Returns (should_optimize, reason)."""
+        text = skill_path.read_text()
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            return False, "invalid frontmatter"
+
+        fm = yaml.safe_load(parts[1])
+        success_rate = fm.get("success_rate")
+        total_runs = fm.get("total_runs", 0)
+        last_optimized = fm.get("last_optimized")
+
+        # Gate 1: Minimum runs
+        if total_runs < self.min_runs:
+            return False, f"total_runs={total_runs} < min_runs={self.min_runs}"
+
+        # Gate 2: Not excellent
+        if success_rate is not None and success_rate >= self.skip_above_threshold:
+            return False, f"success_rate={success_rate:.2f} >= skip_above_threshold={self.skip_above_threshold}"
+
+        # Gate 3: Underperforming
+        if success_rate is not None and success_rate >= self.underperformance_threshold:
+            return False, f"success_rate={success_rate:.2f} >= underperformance_threshold={self.underperformance_threshold}"
+
+        # Gate 4: Enough runs since last optimization
+        if last_optimized:
+            # Count runs since last_optimized date
+            history_section = self._extract_section(text, "## Execution History")
+            if history_section:
+                runs_since = 0
+                for line in history_section.splitlines():
+                    if not line.strip().startswith("|") or "| date |" in line or "|---" in line:
+                        continue
+                    parts_list = [p.strip() for p in line.split("|")]
+                    if len(parts_list) < 2:
+                        continue
+                    date_str = parts_list[1]
+                    if date_str > last_optimized:
+                        runs_since += 1
+
+                if runs_since < self.min_runs:
+                    return False, f"runs_since_last_optimized={runs_since} < min_runs={self.min_runs}"
+
+        return True, f"success_rate={success_rate:.2f} < {self.underperformance_threshold}"
+
+    async def _optimize_skill(self, skill_path: Path, stop_event: asyncio.Event):
+        """FR-5, FR-6, FR-7: Critique, rewrite, and update skill with auto-exemplars."""
+        text = skill_path.read_text()
+        skill_name = skill_path.stem
+
+        # FR-8: Backup before optimization
+        if not self.dry_run:
+            await self._rotate_backups(skill_path)
+
+        # FR-5: Generate critique
+        critique = await self._generate_critique(skill_path)
+        if not critique:
+            log.warning(f"Critique generation failed for {skill_name}")
+            return
+
+        if self.dry_run:
+            log.info(f"DRY RUN: Would optimize {skill_name} — critique: {critique.get('root_cause', 'N/A')}")
+
+        # FR-6: Rewrite instructions
+        new_text = await self._rewrite_skill(skill_path, critique)
+        if not new_text:
+            log.info(f"No change proposed for {skill_name} — skipping write")
+            return
+
+        if self.dry_run:
+            new_instructions = self._extract_section(new_text, "## Instructions")
+            log.info(f"DRY RUN: Proposed new Instructions: {new_instructions[:200]}...")
+            return
+
+        # FR-7: Add auto-exemplars if eligible
+        new_text = await self._add_auto_exemplars(skill_path, new_text)
+
+        # Store prev_version_avg_score for regression detection
+        parts = text.split("---", 2)
+        fm = yaml.safe_load(parts[1])
+        prev_rate = fm.get("success_rate")
+
+        new_parts = new_text.split("---", 2)
+        new_fm = yaml.safe_load(new_parts[1])
+        new_fm["prev_version_avg_score"] = prev_rate
+        new_fm["last_optimized"] = datetime.now().strftime("%Y-%m-%d")
+        new_parts[1] = yaml.dump(new_fm, sort_keys=False)
+        new_text = "---".join(new_parts)
+
+        # Write
+        self._atomic_write(skill_path, new_text)
+        log.info(f"Optimized {skill_name} — new version {new_fm['version']}")
+
+    async def _rotate_backups(self, skill_path: Path):
+        """FR-8: Rotate backup files logrotate-style."""
+        if self.dry_run:
+            log.info(f"DRY RUN: Would backup {skill_path.name} → {skill_path.name}.1")
+            return
+
+        # Delete oldest backup
+        oldest = skill_path.with_suffix(f"{skill_path.suffix}.{self.max_skill_backups}")
+        if oldest.exists():
+            oldest.unlink()
+
+        # Rotate existing backups
+        for i in range(self.max_skill_backups - 1, 0, -1):
+            src = skill_path.with_suffix(f"{skill_path.suffix}.{i}")
+            dst = skill_path.with_suffix(f"{skill_path.suffix}.{i + 1}")
+            if src.exists():
+                src.rename(dst)
+
+        # Copy current to .1
+        backup_path = skill_path.with_suffix(f"{skill_path.suffix}.1")
+        backup_path.write_text(skill_path.read_text())
+        log.debug(f"Backed up {skill_path.name} to {backup_path.name}")
+
+    async def _generate_critique(self, skill_path: Path) -> Optional[dict]:
+        """FR-5: Generate critique using optimizer model."""
+        text = skill_path.read_text()
+        instructions = self._extract_section(text, "## Instructions")
+        evolution_log = self._extract_section(text, "## Evolution Log") or ""
+
+        # Get low-scoring and high-scoring examples
+        low_examples = await self._get_execution_examples(skill_path, max_score=self.underperformance_threshold)
+        high_examples = await self._get_execution_examples(skill_path, min_score=0.80, limit=5)
+
+        if not low_examples:
+            log.warning(f"No low-scoring examples found for {skill_path.stem}")
+            return None
+
+        prompt = f"""You are analyzing a prompt template to identify why some executions score poorly.
+
+Current skill instructions:
+{instructions}
+
+Evolution log (prior optimization attempts):
+{evolution_log}
+
+Low-scoring executions (score < {self.underperformance_threshold}):
+{self._format_examples(low_examples)}
+
+High-scoring executions for contrast:
+{self._format_examples(high_examples)}
+
+Your output must be a JSON object:
+{{
+  "failure_patterns": ["pattern 1", "pattern 2"],
+  "root_cause": "one sentence summary of the core issue",
+  "suggested_focus": "what the rewrite should specifically address"
+}}
+
+Be specific. Cite evidence from the execution examples. Avoid generic observations."""
+
+        try:
+            response = await acompletion(
+                model="optimizer",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=500
+            )
+
+            result_text = response.choices[0].message.content.strip()
+
+            # Extract JSON
+            if "```json" in result_text:
+                result_text = result_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in result_text:
+                result_text = result_text.split("```")[1].split("```")[0].strip()
+
+            critique = json.loads(result_text)
+
+            # Validate required fields
+            if not critique.get("failure_patterns") or not critique.get("root_cause"):
+                log.warning(f"Critique missing required fields: {critique}")
+                return None
+
+            return critique
+
+        except Exception as e:
+            log.warning(f"Critique generation failed: {e}")
+            return None
+
+    async def _get_execution_examples(self, skill_path: Path, min_score: float = 0.0,
+                                      max_score: float = 1.0, limit: int = 10) -> list[dict]:
+        """Get execution examples with scores in the given range."""
+        text = skill_path.read_text()
+        history_section = self._extract_section(text, "## Execution History")
+        if not history_section:
+            return []
+
+        examples = []
+        for line in history_section.splitlines():
+            if not line.strip().startswith("|") or "| date |" in line or "|---" in line:
+                continue
+
+            parts = [p.strip() for p in line.split("|")]
+            if len(parts) < 5:
+                continue
+
+            score_str = parts[4]
+            if score_str == "pending":
+                continue
+
+            try:
+                score = float(score_str)
+                if min_score <= score <= max_score:
+                    input_slug = parts[2]
+                    output = await self._find_output_by_slug(input_slug)
+                    if output:
+                        examples.append({
+                            "date": parts[1],
+                            "input_slug": input_slug,
+                            "score": score,
+                            "output": output[:500]  # Truncate to keep prompt manageable
+                        })
+            except ValueError:
+                continue
+
+        # Return most recent examples
+        return examples[-limit:] if examples else []
+
+    def _format_examples(self, examples: list[dict]) -> str:
+        """Format execution examples for prompt."""
+        if not examples:
+            return "(none)"
+
+        formatted = []
+        for ex in examples:
+            formatted.append(f"Date: {ex['date']}, Score: {ex['score']:.2f}\n"
+                             f"Input: {ex['input_slug']}\n"
+                             f"Output: {ex['output']}\n")
+        return "\n".join(formatted)
+
+    async def _rewrite_skill(self, skill_path: Path, critique: dict) -> Optional[str]:
+        """FR-6: Rewrite skill using meta-skill and critique."""
+        text = skill_path.read_text()
+        current_instructions = self._extract_section(text, "## Instructions")
+
+        # Load meta-skill
+        meta_skill_path = SKILLS_DIR / "skill-optimizer.md"
+        if not meta_skill_path.exists():
+            log.error("skill-optimizer.md not found")
+            return None
+
+        meta_text = meta_skill_path.read_text()
+        meta_instructions = self._extract_section(meta_text, "## Instructions")
+
+        # Build rewrite prompt
+        critique_json = json.dumps(critique, indent=2)
+        user_msg = f"""Current skill file:
+{text}
+
+Critique from analysis:
+{critique_json}
+
+Please rewrite the skill file following the meta-skill instructions."""
+
+        try:
+            response = await acompletion(
+                model="optimizer",
+                messages=[
+                    {"role": "system", "content": meta_instructions},
+                    {"role": "user", "content": user_msg}
+                ],
+                max_tokens=2000
+            )
+
+            new_skill_text = response.choices[0].message.content.strip()
+
+            # Extract if wrapped in markdown
+            if "```markdown" in new_skill_text:
+                new_skill_text = new_skill_text.split("```markdown")[1].split("```")[0].strip()
+            elif "```" in new_skill_text:
+                # Try to extract the skill file from code block
+                parts = new_skill_text.split("```")
+                if len(parts) >= 3:
+                    new_skill_text = parts[1].strip()
+
+            # Validate structure
+            new_instructions = self._extract_section(new_skill_text, "## Instructions")
+            if not new_instructions:
+                log.warning("Rewritten skill missing Instructions section")
+                return None
+
+            # Check if instructions actually changed
+            if new_instructions.strip() == current_instructions.strip():
+                return None
+
+            # Increment version in frontmatter
+            parts = new_skill_text.split("---", 2)
+            if len(parts) >= 3:
+                fm = yaml.safe_load(parts[1])
+                fm["version"] = fm.get("version", 1) + 1
+                parts[1] = yaml.dump(fm, sort_keys=False)
+                new_skill_text = "---".join(parts)
+
+            return new_skill_text
+
+        except Exception as e:
+            log.error(f"Rewrite failed: {e}", exc_info=True)
+            return None
+
+    async def _add_auto_exemplars(self, skill_path: Path, text: str) -> str:
+        """FR-7: Add Top Examples section if skill is exemplar_eligible."""
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            return text
+
+        fm = yaml.safe_load(parts[1])
+        if not fm.get("exemplar_eligible", False):
+            return text
+
+        # Get top-scoring examples
+        top_examples = await self._get_execution_examples(
+            skill_path,
+            min_score=0.70,
+            limit=self.max_exemplars
+        )
+
+        # Sort by score descending
+        top_examples.sort(key=lambda x: x["score"], reverse=True)
+        top_examples = top_examples[:self.max_exemplars]
+
+        if len(top_examples) < 1:
+            # Not enough examples, don't add section
+            return text
+
+        # Build Top Examples section content (without header)
+        section_lines = ["<!-- Auto-managed by optimizer. Do not edit manually. -->"]
+
+        for i, ex in enumerate(top_examples, 1):
+            section_lines.append(f"### Example {i} (score: {ex['score']:.2f}, {ex['date']})")
+            section_lines.append(f"**Input:** {ex['input_slug']}")
+            section_lines.append("**Output:**")
+            section_lines.append(ex["output"])
+            section_lines.append("")
+
+        new_section_content = "\n".join(section_lines)
+
+        # Replace or insert section after Instructions
+        if "## Top Examples" in text:
+            text = self._replace_section(text, "## Top Examples", new_section_content)
+        else:
+            new_section = "## Top Examples\n" + new_section_content
+            # Insert after Instructions section
+            instructions_end = text.find("## Instructions")
+            if instructions_end >= 0:
+                # Find next section or end
+                next_section = text.find("\n## ", instructions_end + len("## Instructions"))
+                if next_section >= 0:
+                    text = text[:next_section] + "\n" + new_section + "\n" + text[next_section:]
+                else:
+                    text = text + "\n" + new_section + "\n"
+
+        return text
+
+    def _extract_section(self, text: str, section_header: str) -> Optional[str]:
+        """Extract a markdown section by header."""
+        pattern = rf'^{re.escape(section_header)}\n(.*?)(?=\n## |\Z)'
+        match = re.search(pattern, text, re.MULTILINE | re.DOTALL)
+        return match.group(1).strip() if match else None
+
+    def _replace_section(self, text: str, section_header: str, new_content: str) -> str:
+        """Replace a markdown section's content."""
+        pattern = rf'^({re.escape(section_header)}\n).*?((?=\n## )|\Z)'
+        replacement = rf'\1{new_content}\n\2'
+        return re.sub(pattern, replacement, text, flags=re.MULTILINE | re.DOTALL)
+
+    def _append_to_evolution_log(self, text: str, entry: str) -> str:
+        """Append an entry to the Evolution Log section."""
+        if "## Evolution Log" not in text:
+            text += f"\n## Evolution Log\n{entry}\n"
+        else:
+            # Find the end of Evolution Log section
+            evo_start = text.find("## Evolution Log")
+            next_section = text.find("\n## ", evo_start + len("## Evolution Log"))
+
+            if next_section >= 0:
+                text = text[:next_section] + "\n" + entry + "\n" + text[next_section:]
+            else:
+                text = text + "\n" + entry + "\n"
+
+        return text
+
+    def _get_version(self, text: str) -> int:
+        """Extract version number from frontmatter."""
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            return 1
+        fm = yaml.safe_load(parts[1])
+        return fm.get("version", 1)
+
+    def _atomic_write(self, path: Path, content: str):
+        """FR-11: Atomic file write using temp file + rename."""
+        tmp_path = path.with_suffix(".tmp")
+        tmp_path.write_text(content)
+        os.rename(tmp_path, path)

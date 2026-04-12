@@ -6,6 +6,8 @@ fallback_model: gemini/gemini-2.0-flash
 success_rate: null
 total_runs: 0
 last_optimized: null
+prev_version_avg_score: null
+exemplar_eligible: true
 ---
 
 ## Instructions

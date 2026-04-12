@@ -115,26 +115,36 @@ async def test_full_node_creates_execution_history_section_if_missing(skills_dir
 # --- Execution logging: watcher node writes to local JSONL ---
 
 async def test_watcher_writes_to_local_jsonl(executor_watcher, tmp_path):
-    local_log = tmp_path / "exec.jsonl"
+    brain_dir = tmp_path / "brain"
+    logs_dir = brain_dir / "logs"
+    logs_dir.mkdir(parents=True)
+
     mock_resp = MagicMock()
     mock_resp.choices[0].message.content = "output"
     with patch("skill_executor.acompletion", new=AsyncMock(return_value=mock_resp)), \
-         patch.object(se, "LOCAL_EXEC_LOG", local_log):
+         patch.object(se, "BRAIN_DIR", brain_dir):
         await executor_watcher.run({"url": "u", "title": "t", "content": "c"})
-    assert local_log.exists()
-    record = json.loads(local_log.read_text().strip())
+
+    # Find the log file (name includes hostname)
+    log_files = list(logs_dir.glob("*-execution-log.jsonl"))
+    assert len(log_files) == 1
+
+    record = json.loads(log_files[0].read_text().strip())
     assert record["skill"] == "summarize-webpage"
     assert "hostname" in record
     assert "date" in record
 
 
 async def test_watcher_does_not_modify_skill_file(executor_watcher, skills_dir, tmp_path):
-    local_log = tmp_path / "exec.jsonl"
+    brain_dir = tmp_path / "brain"
+    logs_dir = brain_dir / "logs"
+    logs_dir.mkdir(parents=True)
+
     original = (skills_dir / "summarize-webpage.md").read_text()
     mock_resp = MagicMock()
     mock_resp.choices[0].message.content = "output"
     with patch("skill_executor.acompletion", new=AsyncMock(return_value=mock_resp)), \
-         patch.object(se, "LOCAL_EXEC_LOG", local_log):
+         patch.object(se, "BRAIN_DIR", brain_dir):
         await executor_watcher.run({"url": "u", "title": "t", "content": "c"})
     assert (skills_dir / "summarize-webpage.md").read_text() == original
 

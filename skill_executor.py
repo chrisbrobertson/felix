@@ -12,11 +12,9 @@ log = logging.getLogger("skill-executor")
 
 DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
 ERROR_LOG = DEPLOY_DIR / "errors.log"
-# Watcher nodes write execution history here instead of the iCloud skill file.
-# The leader's optimizer can optionally ingest this on its daily pass (v0.2+).
-LOCAL_EXEC_LOG = DEPLOY_DIR / "execution-log.jsonl"
 
-SKILLS_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain/skills"
+BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
+SKILLS_DIR = BRAIN_DIR / "skills"
 
 
 class SkillExecutor:
@@ -25,6 +23,7 @@ class SkillExecutor:
         self.role = role  # "full" or "watcher"
         self.skill_path = SKILLS_DIR / f"{skill_name}.md"
         self._skill = self._load()
+        self._mtime = self.skill_path.stat().st_mtime if self.skill_path.exists() else 0
 
     def _load(self) -> dict:
         text = self.skill_path.read_text()
@@ -36,7 +35,20 @@ class SkillExecutor:
         instructions = instructions_match.group(1).strip() if instructions_match else ""
         return {"meta": meta, "instructions": instructions, "raw": text}
 
+    def _reload_if_modified(self):
+        """FR-14: Reload skill if file has been modified (optimizer rewrote it)."""
+        if not self.skill_path.exists():
+            return
+        current_mtime = self.skill_path.stat().st_mtime
+        if current_mtime > self._mtime:
+            log.info(f"Reloading {self.skill_name} (file modified)")
+            self._skill = self._load()
+            self._mtime = current_mtime
+
     async def run(self, inputs: dict, score=None):
+        # FR-14: Reload skill if optimizer has rewritten it
+        self._reload_if_modified()
+
         meta = self._skill["meta"]
         model = meta.get("preferred_model", "gemini/gemini-2.0-flash")
         user_msg = "\n".join(f"**{k}:**\n{v}" for k, v in inputs.items())
@@ -72,13 +84,18 @@ class SkillExecutor:
         if self.role == "watcher":
             # Watcher nodes must not write to the shared iCloud skill file.
             # Two machines appending simultaneously produces iCloud conflict copies.
-            # Log locally — optimizer can merge these in v0.2+.
+            # Log to iCloud logs dir — optimizer will merge on daily pass.
+            hostname = __import__("socket").gethostname()
+            logs_dir = BRAIN_DIR / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            watcher_log = logs_dir / f"{hostname}-execution-log.jsonl"
+
             record = {
                 "date": date, "skill": self.skill_name, "input_slug": slug,
                 "model": model, "score": score_str, "notes": notes,
-                "hostname": __import__("socket").gethostname()
+                "hostname": hostname
             }
-            with open(LOCAL_EXEC_LOG, "a") as f:
+            with open(watcher_log, "a") as f:
                 f.write(json.dumps(record) + "\n")
             return
 
