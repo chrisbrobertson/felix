@@ -407,6 +407,7 @@ DAEMON_FILES=(
     slack_scanner.py
     utils.py
     zoom_scanner.py
+    github_client.py
 )
 
 deployed=0
