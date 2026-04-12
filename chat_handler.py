@@ -30,7 +30,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("contact",        "Show contact by name or N"),
         ("projects",       "List code/work/person projects (optional category filter)"),
         ("project",        "Show project N from last list"),
-        ("events",         "List recent and upcoming calendar events"),
+        ("events",         "List upcoming calendar events (today + next N days, default 5)"),
         ("event",          "Show event N from last list"),
         ("meetings",       "List recent meeting transcripts"),
         ("meeting",        "Show meeting N from last list"),
@@ -253,6 +253,55 @@ class TelegramChatHandler:
             return config.get("display", {})
         except Exception:
             return {}
+
+    def _get_event_window(self):
+        """Return (window_start, window_end) as timezone-aware datetimes for event filtering.
+
+        Default: start of today → today + events_window_days (default 5).
+        Timezone follows display.timezone config if set; otherwise local system time.
+        """
+        from datetime import datetime, timedelta, timezone
+        display = self._get_display_config()
+        window_days = int(display.get("events_window_days", 5))
+        tz_name = display.get("timezone", "")
+
+        if tz_name:
+            try:
+                import zoneinfo
+                tz = zoneinfo.ZoneInfo(tz_name)
+                now = datetime.now(tz)
+            except Exception:
+                now = datetime.now().astimezone()
+        else:
+            now = datetime.now().astimezone()
+
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=window_days)
+        return start, end
+
+    def _parse_iso_dt(self, iso_str):
+        """Parse an ISO datetime string to a timezone-aware datetime, or None on failure."""
+        if not iso_str:
+            return None
+        from datetime import datetime
+        dt_str = str(iso_str).strip()
+        for pattern in (
+            "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M%z",
+            "%Y-%m-%dT%H:%M",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d",
+        ):
+            try:
+                dt = datetime.strptime(dt_str, pattern)
+                if dt.tzinfo is None:
+                    dt = dt.astimezone()
+                return dt
+            except ValueError:
+                continue
+        return None
 
     def _fmt_datetime(self, iso_str) -> str:
         """Format an ISO datetime string per display.date_format and display.timezone config."""
@@ -1386,24 +1435,36 @@ class TelegramChatHandler:
         except (ValueError, IndexError):
             limit = 10
 
+        window_start, window_end = self._get_event_window()
+        window_days = int(self._get_display_config().get("events_window_days", 5))
+
         files = list((BRAIN_DIR / "memories").glob("calendar-event-*.md"))
         events = []
         for f in files:
             fm = self._parse_frontmatter(f)
             if fm.get("type") != "calendar_event":
                 continue
-            events.append((f, fm))
+            dt = self._parse_iso_dt(fm.get("start_time"))
+            if dt is None:
+                continue
+            if window_start <= dt < window_end:
+                events.append((f, fm, dt))
 
         if not events:
-            await update.message.reply_text("No calendar events found.")
+            display_cfg = self._get_display_config()
+            tz_note = f" ({display_cfg['timezone']})" if display_cfg.get("timezone") else ""
+            await update.message.reply_text(
+                f"No calendar events in the next {window_days} days{tz_note}.\n"
+                "Use /settings events_window_days <N> to widen the window."
+            )
             return
 
-        events.sort(key=lambda x: x[1].get("start_time") or "", reverse=False)
+        events.sort(key=lambda x: x[2])
         events = events[:limit]
-        self._last_event_set = [f for f, _ in events]
+        self._last_event_set = [f for f, _, _ in events]
 
-        lines = [f"Calendar events ({len(events)} shown):"]
-        for i, (_, fm) in enumerate(events, 1):
+        lines = [f"Upcoming events — next {window_days} days ({len(events)} shown):"]
+        for i, (_, fm, _) in enumerate(events, 1):
             title = (fm.get("source_title") or "(no title)")[:50]
             start = self._fmt_datetime(fm.get("start_time") or "")
             duration = self._fmt_duration(fm.get("start_time"), fm.get("end_time"))
@@ -2198,15 +2259,16 @@ class TelegramChatHandler:
             await self._send_reply(update, f"Report failed: {e}")
 
     async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """View or change display settings: date_format, timezone.
+        """View or change display settings.
 
         Usage:
-          /settings                           — show current settings
+          /settings                                 — show current settings
           /settings date_format MM/DD/YYYY, HH:MM
           /settings date_format DD/MM/YYYY, HH:MM
           /settings date_format YYYY-MM-DD HH:MM
           /settings timezone America/Los_Angeles
           /settings timezone UTC
+          /settings events_window_days 7
         """
         if not self._check_auth(update):
             return
@@ -2223,13 +2285,14 @@ class TelegramChatHandler:
         VALID_DATE_FORMATS = {"MM/DD/YYYY, HH:MM", "DD/MM/YYYY, HH:MM", "YYYY-MM-DD HH:MM"}
 
         if not context.args:
-            # Show current settings
             fmt = display.get("date_format", "MM/DD/YYYY, HH:MM")
             tz = display.get("timezone", "(system default)")
+            window = display.get("events_window_days", 5)
             lines = [
                 "Display settings:",
                 f"  date_format: {fmt}",
                 f"  timezone: {tz}",
+                f"  events_window_days: {window}",
                 "",
                 "Change with:",
                 "  /settings date_format MM/DD/YYYY, HH:MM",
@@ -2237,12 +2300,12 @@ class TelegramChatHandler:
                 "  /settings date_format YYYY-MM-DD HH:MM",
                 "  /settings timezone America/Los_Angeles",
                 "  /settings timezone UTC",
+                "  /settings events_window_days 7",
             ]
             await update.message.reply_text("\n".join(lines))
             return
 
         key = context.args[0].lower()
-        # Rejoin remaining args to support values with spaces
         value = " ".join(context.args[1:]).strip()
 
         if not value:
@@ -2268,9 +2331,18 @@ class TelegramChatHandler:
                 )
                 return
             display["timezone"] = value
+        elif key == "events_window_days":
+            try:
+                days = int(value)
+                if days < 1 or days > 365:
+                    raise ValueError
+            except ValueError:
+                await update.message.reply_text("events_window_days must be an integer between 1 and 365.")
+                return
+            display["events_window_days"] = days
         else:
             await update.message.reply_text(
-                f"Unknown setting '{key}'. Available: date_format, timezone"
+                f"Unknown setting '{key}'. Available: date_format, timezone, events_window_days"
             )
             return
 
