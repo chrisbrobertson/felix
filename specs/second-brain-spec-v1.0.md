@@ -242,6 +242,14 @@ model_list:
     model_info:
       mode: chat
 
+  # Skill judge — fast/cheap scoring of execution history rows
+  - model_name: judge
+    litellm_params:
+      model: claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+    model_info:
+      mode: chat
+
   # Local fallback — Mac Studio
   - model_name: local
     litellm_params:

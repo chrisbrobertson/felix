@@ -133,6 +133,11 @@ model_list:
       model: claude-sonnet-4-20250514
       api_key: os.environ/ANTHROPIC_API_KEY
 
+  - model_name: judge
+    litellm_params:
+      model: claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+
 router_settings:
   num_retries: 2
 EOF

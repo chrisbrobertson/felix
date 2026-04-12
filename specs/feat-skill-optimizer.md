@@ -150,9 +150,9 @@ the current `DEPLOY_DIR/execution-log.jsonl` — see Files section.
 Before deciding whether to optimize a skill, score all execution history rows where
 `score` is `pending`. Scoring happens in a batch at the start of the daily run.
 
-**Judge model:** `summarize` route (Gemini Flash) — adequate for evaluating summary
-quality, significantly cheaper than the `optimizer` route reserved for critique/rewrite.
-Configurable via `judge_model` config key.
+**Judge model:** `judge` route (Claude Haiku 4.5) — fast and cheap while remaining
+in the Anthropic family for consistent instruction-following. Configurable via
+`judge_model` config key.
 
 **Judge prompt per execution row:**
 ```
@@ -526,7 +526,7 @@ skill_optimizer:
   max_exemplars: 2                  # top-N scoring traces to inject as examples
   max_history_rows: 100             # prune execution history beyond this
   max_skill_backups: 5              # rolling backup files to keep (.1 through .N)
-  judge_model: summarize            # LiteLLM route for judge calls (Gemini Flash)
+  judge_model: judge                # LiteLLM route for judge calls (Haiku 4.5)
   dry_run: false                    # log changes without writing files
 ```
 
@@ -538,7 +538,7 @@ Per daily run (N skills total, M skills needing optimization):
 
 | Call type | Model route | Count | Notes |
 |-----------|-------------|-------|-------|
-| Judge scoring | `summarize` (Flash) | ~20–30 | One per pending execution row |
+| Judge scoring | `judge` (Haiku 4.5) | ~20–30 | One per pending execution row |
 | Critique | `optimizer` (Sonnet) | M | Typically 0–2 per day |
 | Rewrite | `optimizer` (Sonnet) | M | Typically 0–2 per day |
 | **Total** | | **~24–34** | Mostly cheap Flash calls |

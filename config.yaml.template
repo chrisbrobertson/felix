@@ -46,9 +46,16 @@ litellm:
       models: [nemotron-cascade-2]
 
 skill_optimizer:
-  run_hour: 3                    # 3am daily
-  min_runs_before_optimize: 10   # don't optimize on sparse data
-  underperformance_threshold: 0.70
+  run_hour: 3                       # 3am daily
+  min_runs_before_optimize: 10      # don't optimize on sparse data
+  underperformance_threshold: 0.70  # optimize if success_rate < this
+  skip_above_threshold: 0.90        # skip if success_rate >= this
+  regression_tolerance: 0.05        # rollback if new avg drops more than this
+  max_exemplars: 2                  # top-N scoring traces to embed as few-shot examples
+  max_history_rows: 100             # prune execution history beyond this
+  max_skill_backups: 5              # rolling backup files to keep (.1 through .N)
+  judge_model: judge                # LiteLLM route for judge calls
+  dry_run: false                    # log changes without writing files
 
 memory:
   max_context_memories: 20       # max files loaded into chat context
