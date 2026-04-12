@@ -20,7 +20,7 @@ Ask questions like "What did I read about Rust async last week?" or "Who was on 
 
 **Build a living contact graph.** Every participant in every email, meeting, calendar event, or Slack thread becomes a contact with a relationship score, interaction history, and links to related threads. Search with `/contacts` or `/contact <name>`.
 
-**Control what gets captured.** Skip noisy domains with `/skip reddit.com`, purge unwanted memories with `/purge <domain>`, and manage your ignore list with `/skiplist` and `/unskip`.
+**Control what gets captured.** Skip noisy domains with `/skip reddit.com`, forget unwanted captures with `/forget <domain>`, and manage your ignore list with `/skiplist` and `/unskip`.
 
 **Get better summaries as the system learns.** Second Brain routes each captured page to a specialized summarizer — research papers, API docs, code repos, and video transcripts each get their own prompt. A nightly optimizer scores past runs, catches declining skills early, and rewrites the weakest ones. Check skill health any time with `/skill-health`.
 
@@ -130,8 +130,8 @@ Items with low confidence (0.5–0.69) show a ⚠️ indicator. The default thre
 ### Browsing recent activity
 
 ```
-/memories [N]            # list your N most recent web captures (default 10, max 50)
-/memory <N>              # show full detail of memory N from the last list
+/readings [N]            # list your N most recent web captures (default 10, max 50)
+/reading <N>             # show full detail of reading N from the last list
 
 /meetings [N]            # list meeting transcripts, newest first
 /meeting <N>             # show meeting detail: attendees, summary, transcript
@@ -167,10 +167,8 @@ Results are grouped by type with up to 5 per group. If a group has more than 5, 
 /skiplist                # show all skipped domains
 /unskip reddit.com       # remove domain from ignore list
 
-/purge reddit.com        # delete all memories whose URL contains "reddit.com"
-/purgeall                # delete memories for every domain on the skip list
-
-/delete 3                # delete memory #3 from the last list or search
+/forget <N>              # forget item N from your last list
+/forget reddit.com       # forget all captures from reddit.com
 ```
 
 The skip list is stored in `config.yaml` under `browser_watcher.skip_domains`. Changes take effect within 5 minutes (next watcher poll).
@@ -261,11 +259,12 @@ Muted state persists across daemon restarts. `/briefing` works even when muted �
 | `/missed` | Manually add a commitment the bot missed |
 | `/accuracy` | Show extraction precision per source type |
 | **Memory browsing** | |
-| `/memories [N]` | List N most recent web captures (default 10, max 50) |
+| `/readings [N]` | List N most recent web captures (default 10, max 50) |
 | `/search <query>` | Search across ALL memory types. Results grouped by type: Contacts, Commitments, Projects, Meetings, Email threads, Slack threads, Calendar events, Web memories. Up to 5 per group, overflow hint shows `/search <type> <query>`. |
 | `/search <type> <query>` | Filter to one type: `email`, `slack`, `meeting`, `project`, `commitment`, `event`, `contact`, `web` |
-| `/memory <N>` | Show full detail of item N from last list or search |
-| `/delete <N>` | Delete item N from last list or search |
+| `/reading <N>` | Show full detail of item N from last list or search |
+| `/forget <N>` | Forget item N from your last list |
+| `/forget <domain>` | Forget all web captures from a domain |
 | **Proactive notifications** | |
 | `/briefing` | Trigger today's briefing now (works even when muted): today's calendar, due/overdue commitments, new memories |
 | `/mute` | Suppress all proactive notifications (briefings, pre-meeting pushes, deadline alerts) |
@@ -274,8 +273,6 @@ Muted state persists across daemon restarts. `/briefing` works even when muted �
 | `/skip <domain>` | Add domain to ignore list (e.g. `/skip reddit.com`) |
 | `/unskip <domain>` | Remove domain from ignore list |
 | `/skiplist` | Show all currently skipped domains |
-| `/purge <domain>` | Delete all captured memories whose URL contains domain |
-| `/purgeall` | Delete memories for every domain on the skip list |
 
 ---
 

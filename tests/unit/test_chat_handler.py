@@ -406,98 +406,93 @@ async def test_cmd_skiplist_rejects_unauthorised(handler, brain_dir):
     update.message.reply_text.assert_not_called()
 
 
-# ── /purge command ────────────────────────────────────────────────────────────
+# ── /forget command ───────────────────────────────────────────────────────────
 
-async def test_cmd_purge_deletes_and_reports_count(handler, brain_dir):
+async def test_forget_numeric_with_active_list(handler, brain_dir):
+    """Test /forget N deletes item from active list."""
     m = brain_dir / "memories"
-    write_memory(m, "ex-aaa111", [], "Ex", source_url="https://example.com/x")
+    p = write_memory(m, "test-aaa111", [], "Test Page")
+    handler._active_list = [p]
+    update, ctx = _make_update(12345, ["1"])
+    await handler.cmd_forget(update, ctx)
+    assert not p.exists()
+    assert "Forgotten:" in update.message.reply_text.call_args[0][0]
+    assert p not in handler._active_list
+
+
+async def test_forget_numeric_no_list(handler, brain_dir):
+    """Test /forget N with empty active list."""
+    handler._active_list = []
+    update, ctx = _make_update(12345, ["1"])
+    await handler.cmd_forget(update, ctx)
+    assert "Run a list command first" in update.message.reply_text.call_args[0][0]
+
+
+async def test_forget_domain(handler, brain_dir):
+    """Test /forget <domain> deletes all captures from that domain."""
+    m = brain_dir / "memories"
+    write_memory(m, "ex1-aaa111", [], "Ex1", source_url="https://example.com/page1")
+    write_memory(m, "ex2-bbb222", [], "Ex2", source_url="https://example.com/page2")
+    write_memory(m, "other-ccc333", [], "Other", source_url="https://other.com/page")
     update, ctx = _make_update(12345, ["example.com"])
-    await handler.cmd_purge(update, ctx)
+    await handler.cmd_forget(update, ctx)
     reply = update.message.reply_text.call_args[0][0]
-    assert "Deleted 1" in reply
-    assert not (m / "2026-04-11-ex-aaa111.md").exists()
+    assert "Forgotten 2" in reply
+    assert not (m / "2026-04-11-ex1-aaa111.md").exists()
+    assert not (m / "2026-04-11-ex2-bbb222.md").exists()
+    assert (m / "2026-04-11-other-ccc333.md").exists()
 
 
-async def test_cmd_purge_no_matches(handler, brain_dir):
+async def test_forget_domain_no_matches(handler, brain_dir):
+    """Test /forget <domain> with no matching captures."""
     update, ctx = _make_update(12345, ["nowhere.com"])
-    await handler.cmd_purge(update, ctx)
-    assert "No memories found" in update.message.reply_text.call_args[0][0]
+    await handler.cmd_forget(update, ctx)
+    assert "No captures found" in update.message.reply_text.call_args[0][0]
 
 
-async def test_cmd_purge_no_args(handler, brain_dir):
+async def test_forget_no_args(handler, brain_dir):
+    """Test /forget with no arguments shows usage."""
     update, ctx = _make_update(12345, [])
-    await handler.cmd_purge(update, ctx)
-    assert "Usage" in update.message.reply_text.call_args[0][0]
-
-
-async def test_cmd_purge_rejects_unauthorised(handler, brain_dir):
-    update, ctx = _make_update(99999, ["example.com"])
-    await handler.cmd_purge(update, ctx)
-    update.message.reply_text.assert_not_called()
-
-
-# ── /purgeall command ─────────────────────────────────────────────────────────
-
-async def test_cmd_purgeall_reports_per_domain(handler, brain_dir):
-    m = brain_dir / "memories"
-    write_memory(m, "g-aaa111", [], "G", source_url="https://google.com/search")
-    write_memory(m, "f-bbb222", [], "F", source_url="https://facebook.com/feed")
-    update, ctx = _make_update(12345)
-    await handler.cmd_purgeall(update, ctx)
+    await handler.cmd_forget(update, ctx)
     reply = update.message.reply_text.call_args[0][0]
-    assert "google.com" in reply
-    assert "facebook.com" in reply
-    assert "1 deleted" in reply
-    assert len(list(m.glob("*.md"))) == 0
+    assert "Usage:" in reply
+    assert "/forget <N>" in reply
+    assert "/forget <domain>" in reply
 
 
-async def test_cmd_purgeall_empty_skip_list(handler, brain_dir):
-    config = yaml.safe_load((brain_dir / "config.yaml").read_text())
-    config["browser_watcher"]["skip_domains"] = []
-    (brain_dir / "config.yaml").write_text(yaml.dump(config))
-    update, ctx = _make_update(12345)
-    await handler.cmd_purgeall(update, ctx)
-    assert "empty" in update.message.reply_text.call_args[0][0]
+# ── /readings command ─────────────────────────────────────────────────────────
 
-
-async def test_cmd_purgeall_rejects_unauthorised(handler, brain_dir):
-    update, ctx = _make_update(99999)
-    await handler.cmd_purgeall(update, ctx)
-    update.message.reply_text.assert_not_called()
-
-
-# ── /memories command ─────────────────────────────────────────────────────────
-
-async def test_cmd_memories_lists_recent(handler, brain_dir):
+async def test_cmd_readings_lists_recent(handler, brain_dir):
     m = brain_dir / "memories"
     write_memory(m, "one-aaa111", [], "Article One", created="2026-04-10T10:00:00")
     write_memory(m, "two-bbb222", [], "Article Two", created="2026-04-11T10:00:00")
     update, ctx = _make_update(12345)
-    await handler.cmd_memories(update, ctx)
+    await handler.cmd_readings(update, ctx)
     reply = update.message.reply_text.call_args[0][0]
     assert "Article One" in reply
     assert "Article Two" in reply
     assert len(handler._last_results) == 2
+    assert len(handler._active_list) == 2
 
 
-async def test_cmd_memories_custom_count(handler, brain_dir):
+async def test_cmd_readings_custom_count(handler, brain_dir):
     m = brain_dir / "memories"
     for i in range(5):
         write_memory(m, f"p{i}-{'a' * 5}{i}", [], f"Page {i}")
     update, ctx = _make_update(12345, ["3"])
-    await handler.cmd_memories(update, ctx)
+    await handler.cmd_readings(update, ctx)
     assert len(handler._last_results) == 3
 
 
-async def test_cmd_memories_empty(handler, brain_dir):
+async def test_cmd_readings_empty(handler, brain_dir):
     update, ctx = _make_update(12345)
-    await handler.cmd_memories(update, ctx)
+    await handler.cmd_readings(update, ctx)
     assert "No memories" in update.message.reply_text.call_args[0][0]
 
 
-async def test_cmd_memories_rejects_unauthorised(handler, brain_dir):
+async def test_cmd_readings_rejects_unauthorised(handler, brain_dir):
     update, ctx = _make_update(99999)
-    await handler.cmd_memories(update, ctx)
+    await handler.cmd_readings(update, ctx)
     update.message.reply_text.assert_not_called()
 
 
@@ -632,75 +627,38 @@ async def test_cmd_search_memory_N_resolves_across_groups(handler, brain_dir):
     assert any("email" in n for n in paths)
 
 
-# ── /memory command ───────────────────────────────────────────────────────────
+# ── /reading command ──────────────────────────────────────────────────────────
 
-async def test_cmd_memory_shows_details(handler, brain_dir):
+async def test_cmd_reading_shows_details(handler, brain_dir):
     m = brain_dir / "memories"
     write_memory(m, "litellm-aaa111", ["litellm"], "LiteLLM Router",
                  source_url="https://litellm.ai", summary="A great router.")
-    handler._last_results = list(m.glob("*.md"))
+    handler._active_list = list(m.glob("*.md"))
     update, ctx = _make_update(12345, ["1"])
-    await handler.cmd_memory(update, ctx)
+    await handler.cmd_reading(update, ctx)
     reply = update.message.reply_text.call_args[0][0]
     assert "LiteLLM Router" in reply
     assert "https://litellm.ai" in reply
     assert "A great router." in reply
 
 
-async def test_cmd_memory_invalid_index(handler, brain_dir):
-    handler._last_results = []
+async def test_cmd_reading_invalid_index(handler, brain_dir):
+    handler._active_list = []
     update, ctx = _make_update(12345, ["5"])
-    await handler.cmd_memory(update, ctx)
+    await handler.cmd_reading(update, ctx)
     assert "Invalid index" in update.message.reply_text.call_args[0][0]
 
 
-async def test_cmd_memory_no_results(handler, brain_dir):
-    handler._last_results = []
+async def test_cmd_reading_no_results(handler, brain_dir):
+    handler._active_list = []
     update, ctx = _make_update(12345, ["1"])
-    await handler.cmd_memory(update, ctx)
+    await handler.cmd_reading(update, ctx)
     assert "Invalid index" in update.message.reply_text.call_args[0][0]
 
 
-async def test_cmd_memory_rejects_unauthorised(handler, brain_dir):
+async def test_cmd_reading_rejects_unauthorised(handler, brain_dir):
     update, ctx = _make_update(99999, ["1"])
-    await handler.cmd_memory(update, ctx)
-    update.message.reply_text.assert_not_called()
-
-
-# ── /delete command ───────────────────────────────────────────────────────────
-
-async def test_cmd_delete_removes_file(handler, brain_dir):
-    m = brain_dir / "memories"
-    p = write_memory(m, "litellm-aaa111", [], "LiteLLM Router")
-    handler._last_results = [p]
-    update, ctx = _make_update(12345, ["1"])
-    await handler.cmd_delete(update, ctx)
-    assert not p.exists()
-    assert "Deleted" in update.message.reply_text.call_args[0][0]
-    assert "LiteLLM Router" in update.message.reply_text.call_args[0][0]
-
-
-async def test_cmd_delete_updates_last_results(handler, brain_dir):
-    m = brain_dir / "memories"
-    p1 = write_memory(m, "one-aaa111", [], "Article One")
-    p2 = write_memory(m, "two-bbb222", [], "Article Two")
-    handler._last_results = [p1, p2]
-    update, ctx = _make_update(12345, ["1"])
-    await handler.cmd_delete(update, ctx)
-    assert p1 not in handler._last_results
-    assert p2 in handler._last_results
-
-
-async def test_cmd_delete_invalid_index(handler, brain_dir):
-    handler._last_results = []
-    update, ctx = _make_update(12345, ["99"])
-    await handler.cmd_delete(update, ctx)
-    assert "Invalid index" in update.message.reply_text.call_args[0][0]
-
-
-async def test_cmd_delete_rejects_unauthorised(handler, brain_dir):
-    update, ctx = _make_update(99999, ["1"])
-    await handler.cmd_delete(update, ctx)
+    await handler.cmd_reading(update, ctx)
     update.message.reply_text.assert_not_called()
 
 
@@ -1206,131 +1164,86 @@ def test_migrate_idempotent(tmp_path):
     assert fm["category"] == "code"
 
 
-# ── /clean command ────────────────────────────────────────────────────────────
+# ── /bug command ──────────────────────────────────────────────────────────────
 
-def _make_calendar_memory(memories_dir: Path, slug: str) -> Path:
-    """Write a minimal calendar_event memory file."""
-    f = memories_dir / f"calendar-event-2026-04-12-{slug}-aabbccdd.md"
-    f.write_text(
-        f"---\ntype: calendar_event\nsource_title: {slug}\n---\n\nBody\n"
+async def test_bug_creates_memory_file(handler, brain_dir):
+    """Test /bug creates a feature_request file with kind=bug."""
+    update, ctx = _make_update(12345, ["login", "fails"])
+    await handler.cmd_bug(update, ctx)
+    m = brain_dir / "memories"
+    files = list(m.glob("feature-request-*.md"))
+    assert len(files) == 1
+    fm = handler._parse_frontmatter(files[0])
+    assert fm["kind"] == "bug"
+    assert fm["type"] == "feature_request"
+    text = files[0].read_text()
+    assert "## Bug" in text
+    assert "## Expected" in text
+    assert "## Steps to reproduce" in text
+
+
+# ── /features kind filter tests ──────────────────────────────────────────────
+
+async def test_features_kind_filter_bug(handler, brain_dir):
+    """Test /features bug shows only bugs."""
+    m = brain_dir / "memories"
+    # Create one bug and one feature
+    bug_path = m / "feature-request-bug-aaa111.md"
+    bug_path.write_text(
+        "---\ntitle: Bug item\ntype: feature_request\nkind: bug\n"
+        "status: new\npriority: medium\ncreated: '2026-04-11T10:00:00'\n"
+        "tags: []\nshort_id: aaa111\n---\n\n## Bug\nSomething broke"
     )
-    return f
-
-
-def _make_email_memory(memories_dir: Path, slug: str) -> Path:
-    f = memories_dir / f"email-thread-{slug}-aabbccdd.md"
-    f.write_text(
-        f"---\ntype: email_thread\nsource_title: {slug}\n---\n\nBody\n"
+    feat_path = m / "feature-request-feat-bbb222.md"
+    feat_path.write_text(
+        "---\ntitle: Feature item\ntype: feature_request\nkind: feature\n"
+        "status: new\npriority: medium\ncreated: '2026-04-11T10:00:00'\n"
+        "tags: []\nshort_id: bbb222\n---\n\n## Request\nNew thing"
     )
-    return f
+    update, ctx = _make_update(12345, ["bug"])
+    await handler.cmd_features(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert len(handler._last_feature_set) == 1
+    assert handler._last_feature_set[0] == bug_path
 
 
-def _make_update(user_id=12345, args=None):
-    update = MagicMock()
-    update.effective_user.id = user_id
-    update.effective_chat.id = 99999
-    update.message = AsyncMock()
-    context = MagicMock()
-    context.args = args or []
-    return update, context
-
-
-@pytest.mark.asyncio
-async def test_clean_no_args_shows_help(handler, brain_dir):
-    update, context = _make_update()
-    await handler.cmd_clean(update, context)
-    text = update.message.reply_text.call_args[0][0]
-    assert "Usage" in text
-    assert "calendar" in text
-    assert "all" in text
-
-
-@pytest.mark.asyncio
-async def test_clean_unknown_type(handler, brain_dir):
-    update, context = _make_update(args=["bogustype"])
-    await handler.cmd_clean(update, context)
-    text = update.message.reply_text.call_args[0][0]
-    assert "Unknown type" in text
-
-
-@pytest.mark.asyncio
-async def test_clean_preview_shows_count_no_deletion(handler, brain_dir):
-    """Running /clean calendar without confirm shows count and does not delete."""
+async def test_features_kind_filter_feature(handler, brain_dir):
+    """Test /features feature shows only features."""
     m = brain_dir / "memories"
-    _make_calendar_memory(m, "standup")
-    _make_calendar_memory(m, "review")
+    bug_path = m / "feature-request-bug-aaa111.md"
+    bug_path.write_text(
+        "---\ntitle: Bug item\ntype: feature_request\nkind: bug\n"
+        "status: new\npriority: medium\ncreated: '2026-04-11T10:00:00'\n"
+        "tags: []\nshort_id: aaa111\n---\n\n## Bug\nSomething"
+    )
+    feat_path = m / "feature-request-feat-bbb222.md"
+    feat_path.write_text(
+        "---\ntitle: Feature item\ntype: feature_request\nkind: feature\n"
+        "status: new\npriority: medium\ncreated: '2026-04-11T10:00:00'\n"
+        "tags: []\nshort_id: bbb222\n---\n\n## Request\nNew"
+    )
+    update, ctx = _make_update(12345, ["feature"])
+    await handler.cmd_features(update, ctx)
+    assert len(handler._last_feature_set) == 1
+    assert handler._last_feature_set[0] == feat_path
 
-    update, context = _make_update(args=["calendar"])
-    with patch.object(ch, "BRAIN_DIR", brain_dir):
-        await handler.cmd_clean(update, context)
 
-    text = update.message.reply_text.call_args[0][0]
-    assert "2 file(s)" in text
-    assert "confirm" in text.lower()
-    # Files must NOT be deleted
-    assert len(list(m.glob("calendar-event-*.md"))) == 2
-
-
-@pytest.mark.asyncio
-async def test_clean_confirm_deletes_files_and_resets_state(handler, brain_dir, tmp_path):
-    """Running /clean calendar confirm deletes files and resets the state file."""
+async def test_bugs_alias_lists_bugs_only(handler, brain_dir):
+    """Test /bugs (alias) lists only bugs."""
     m = brain_dir / "memories"
-    _make_calendar_memory(m, "standup")
-    _make_calendar_memory(m, "review")
-
-    deploy_dir = tmp_path / "deploy"
-    deploy_dir.mkdir()
-    state_file = deploy_dir / "calendar-scanner-state.json"
-    state_file.write_text('{"processed": {"foo.md": "2026-04-12T10:00:00"}}')
-
-    update, context = _make_update(args=["calendar", "confirm"])
-    with patch.object(ch, "BRAIN_DIR", brain_dir), \
-         patch.object(ch, "DEPLOY_DIR", deploy_dir):
-        await handler.cmd_clean(update, context)
-
-    text = update.message.reply_text.call_args[0][0]
-    assert "2 memory file(s) deleted" in text
-    # Files gone
-    assert len(list(m.glob("calendar-event-*.md"))) == 0
-    # State reset to {}
-    assert state_file.read_text().strip() == "{}"
-
-
-@pytest.mark.asyncio
-async def test_clean_confirm_only_deletes_matching_type(handler, brain_dir, tmp_path):
-    """Cleaning calendar does not touch email-thread files."""
-    m = brain_dir / "memories"
-    cal = _make_calendar_memory(m, "standup")
-    email = _make_email_memory(m, "newsletter")
-
-    deploy_dir = tmp_path / "deploy"
-    deploy_dir.mkdir()
-
-    update, context = _make_update(args=["calendar", "confirm"])
-    with patch.object(ch, "BRAIN_DIR", brain_dir), \
-         patch.object(ch, "DEPLOY_DIR", deploy_dir):
-        await handler.cmd_clean(update, context)
-
-    assert not cal.exists()
-    assert email.exists()
-
-
-@pytest.mark.asyncio
-async def test_clean_all_confirm_deletes_all_types(handler, brain_dir, tmp_path):
-    """Cleaning all removes every registered type."""
-    m = brain_dir / "memories"
-    cal = _make_calendar_memory(m, "standup")
-    email = _make_email_memory(m, "thread")
-
-    deploy_dir = tmp_path / "deploy"
-    deploy_dir.mkdir()
-
-    update, context = _make_update(args=["all", "confirm"])
-    with patch.object(ch, "BRAIN_DIR", brain_dir), \
-         patch.object(ch, "DEPLOY_DIR", deploy_dir):
-        await handler.cmd_clean(update, context)
-
-    assert not cal.exists()
-    assert not email.exists()
-    text = update.message.reply_text.call_args[0][0]
-    assert "deleted" in text
+    bug_path = m / "feature-request-bug-aaa111.md"
+    bug_path.write_text(
+        "---\ntitle: Bug item\ntype: feature_request\nkind: bug\n"
+        "status: new\npriority: medium\ncreated: '2026-04-11T10:00:00'\n"
+        "tags: []\nshort_id: aaa111\n---\n\n## Bug\nSomething"
+    )
+    feat_path = m / "feature-request-feat-bbb222.md"
+    feat_path.write_text(
+        "---\ntitle: Feature item\ntype: feature_request\nkind: feature\n"
+        "status: new\npriority: medium\ncreated: '2026-04-11T10:00:00'\n"
+        "tags: []\nshort_id: bbb222\n---\n\n## Request\nNew"
+    )
+    update, ctx = _make_update(12345)
+    await handler.cmd_bugs(update, ctx)
+    assert len(handler._last_feature_set) == 1
+    assert handler._last_feature_set[0] == bug_path

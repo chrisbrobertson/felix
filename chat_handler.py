@@ -13,73 +13,24 @@ from skill_executor import SkillExecutor
 log = logging.getLogger("chat-handler")
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
-DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
 MAX_CONTEXT_CHARS = 80_000
 TG_MAX_CHARS = 4096  # Telegram hard limit per message
-
-# ── /clean type registry ──────────────────────────────────────────────────────
-# Each entry: label, glob pattern in memories/, optional type frontmatter filter,
-# optional state file in DEPLOY_DIR to reset so the scanner reprocesses from scratch.
-_CLEAN_TYPES: dict = {
-    "calendar": {
-        "label": "Calendar events",
-        "glob": "calendar-event-*.md",
-        "type_filter": "calendar_event",
-        "state_file": "calendar-scanner-state.json",
-    },
-    "meetings": {
-        "label": "Meeting transcripts",
-        "glob": "meeting-*.md",
-        "type_filter": "meeting_transcript",
-        "state_file": "zoom-scanner-state.json",
-    },
-    "email": {
-        "label": "Email threads",
-        "glob": "email-thread-*.md",
-        "type_filter": "email_thread",
-        "state_file": "email-scanner-state.json",
-    },
-    "slack": {
-        "label": "Slack threads",
-        "glob": "slack-thread-*.md",
-        "type_filter": "slack_thread",
-        "state_file": "slack-scanner-state.json",
-    },
-    "contacts": {
-        "label": "Contacts",
-        "glob": "contact-*.md",
-        "type_filter": None,
-        "state_file": "contact-tracker-state.json",
-    },
-    "commitments": {
-        "label": "Commitments",
-        "glob": "commitment-*.md",
-        "type_filter": None,
-        "state_file": "commitment-scanner-state.json",
-    },
-    "projects": {
-        "label": "Project memories",
-        "glob": "project-*.md",
-        "type_filter": "project",
-        "state_file": None,
-    },
-}
 
 # Single source of truth for all Telegram commands and their descriptions.
 # /help iterates this to render the grouped help text.
 # A test enforces that every CommandHandler registration appears here.
 COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
     "Knowledge listings": [
-        ("memories",       "List recent web memories"),
+        ("readings",       "List recent web captures"),
         ("search",         "Keyword search — grouped by type. /search <type> <query> to filter"),
-        ("memory",         "Show memory N from last list"),
-        ("delete",         "Delete memory N from last list"),
+        ("reading",        "Show reading N from last list"),
+        ("forget",         "Forget item N from your last list, or all captures from a domain"),
         ("people",         "List contacts (alias of /contacts)"),
         ("contacts",       "List people you've interacted with"),
         ("contact",        "Show contact by name or N"),
         ("projects",       "List code/work/person projects (optional category filter)"),
         ("project",        "Show project N from last list"),
-        ("events",         "List upcoming calendar events (today + next N days, default 5)"),
+        ("events",         "List recent and upcoming calendar events"),
         ("event",          "Show event N from last list"),
         ("meetings",       "List recent meeting transcripts"),
         ("meeting",        "Show meeting N from last list"),
@@ -107,13 +58,13 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("skip",     "Add a domain to the ignore list"),
         ("unskip",   "Remove a domain from the ignore list"),
         ("skiplist", "Show currently skipped domains"),
-        ("purge",    "Delete all memories for a domain"),
-        ("purgeall", "Delete memories for every skipped domain"),
     ],
     "Feature Requests": [
         ("feature",          "Capture a new feature request"),
         ("feature_new",      "Alias of /feature"),
-        ("features",         "List feature requests (optional status filter)"),
+        ("bug",              "Capture a new bug report"),
+        ("bugs",             "List bug reports (alias of /features bug)"),
+        ("features",         "List feature requests. Filter: bug|feature|<status>|all"),
         ("feature_detail",   "Show feature N from last list"),
         ("fdetail",          "Alias of /feature-detail"),
         ("feature_priority", "Set priority of feature N (low/medium/high/critical)"),
@@ -140,9 +91,6 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("report_resume",  "Resume paused report N"),
         ("report_run",     "Run report N immediately"),
     ],
-    "Maintenance": [
-        ("clean", "Delete & reprocess memories for a data type. /clean <type|all> [confirm]"),
-    ],
     "Meta": [
         ("help",     "Show this list"),
         ("commands", "Alias of /help"),
@@ -164,12 +112,10 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("skip", self.cmd_skip))
         self.app.add_handler(CommandHandler("unskip", self.cmd_unskip))
         self.app.add_handler(CommandHandler("skiplist", self.cmd_skiplist))
-        self.app.add_handler(CommandHandler("purge", self.cmd_purge))
-        self.app.add_handler(CommandHandler("purgeall", self.cmd_purgeall))
-        self.app.add_handler(CommandHandler("memories", self.cmd_memories))
+        self.app.add_handler(CommandHandler("readings", self.cmd_readings))
         self.app.add_handler(CommandHandler("search", self.cmd_search))
-        self.app.add_handler(CommandHandler("memory", self.cmd_memory))
-        self.app.add_handler(CommandHandler("delete", self.cmd_delete))
+        self.app.add_handler(CommandHandler("reading", self.cmd_reading))
+        self.app.add_handler(CommandHandler("forget", self.cmd_forget))
         self.app.add_handler(CommandHandler("commitments", self.cmd_commitments))
         self.app.add_handler(CommandHandler("complete", self.cmd_complete))
         self.app.add_handler(CommandHandler("dismiss", self.cmd_dismiss))
@@ -194,13 +140,14 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("help", self.cmd_help))
         self.app.add_handler(CommandHandler("commands", self.cmd_help))
         self.app.add_handler(CommandHandler("settings", self.cmd_settings))
-        self.app.add_handler(CommandHandler("clean", self.cmd_clean))
         self.app.add_handler(CommandHandler("briefing", self.cmd_briefing))
         self.app.add_handler(CommandHandler("mute", self.cmd_mute))
         self.app.add_handler(CommandHandler("unmute", self.cmd_unmute))
         # Feature tracker
         self.app.add_handler(CommandHandler("feature", self.cmd_feature))
         self.app.add_handler(CommandHandler("feature_new", self.cmd_feature))
+        self.app.add_handler(CommandHandler("bug", self.cmd_bug))
+        self.app.add_handler(CommandHandler("bugs", self.cmd_bugs))
         self.app.add_handler(CommandHandler("features", self.cmd_features))
         self.app.add_handler(CommandHandler("feature_detail", self.cmd_feature_detail))
         self.app.add_handler(CommandHandler("fdetail", self.cmd_feature_detail))
@@ -228,8 +175,10 @@ class TelegramChatHandler:
         # Cache: path -> (mtime, header_text). Invalidated when mtime changes.
         # Avoids reading every file on every chat message.
         self._header_cache: dict = {}
-        # Last /memories or /search result set — used by /memory <N> and /delete <N>.
+        # Last /readings or /search result set — used by /reading <N>.
         self._last_results: list = []
+        # Set by each list command; /forget N indexes this
+        self._active_list: list = []
         # Last /commitments result set — used by /complete <N> and /dismiss <N>.
         self._last_commitment_set: list = []
         # Last /contacts result set — used by /contact <N>.
@@ -306,55 +255,6 @@ class TelegramChatHandler:
             return config.get("display", {})
         except Exception:
             return {}
-
-    def _get_event_window(self):
-        """Return (window_start, window_end) as timezone-aware datetimes for event filtering.
-
-        Default: start of today → today + events_window_days (default 5).
-        Timezone follows display.timezone config if set; otherwise local system time.
-        """
-        from datetime import datetime, timedelta, timezone
-        display = self._get_display_config()
-        window_days = int(display.get("events_window_days", 5))
-        tz_name = display.get("timezone", "")
-
-        if tz_name:
-            try:
-                import zoneinfo
-                tz = zoneinfo.ZoneInfo(tz_name)
-                now = datetime.now(tz)
-            except Exception:
-                now = datetime.now().astimezone()
-        else:
-            now = datetime.now().astimezone()
-
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        end = start + timedelta(days=window_days)
-        return start, end
-
-    def _parse_iso_dt(self, iso_str):
-        """Parse an ISO datetime string to a timezone-aware datetime, or None on failure."""
-        if not iso_str:
-            return None
-        from datetime import datetime
-        dt_str = str(iso_str).strip()
-        for pattern in (
-            "%Y-%m-%dT%H:%M:%S%z",
-            "%Y-%m-%dT%H:%M:%S",
-            "%Y-%m-%dT%H:%M%z",
-            "%Y-%m-%dT%H:%M",
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%d %H:%M",
-            "%Y-%m-%d",
-        ):
-            try:
-                dt = datetime.strptime(dt_str, pattern)
-                if dt.tzinfo is None:
-                    dt = dt.astimezone()
-                return dt
-            except ValueError:
-                continue
-        return None
 
     def _fmt_datetime(self, iso_str) -> str:
         """Format an ISO datetime string per display.date_format and display.timezone config."""
@@ -498,6 +398,15 @@ class TelegramChatHandler:
         os.rename(tmp, config_path)
         return None
 
+    def _url_matches_domain(self, url: str, domain: str) -> bool:
+        """Check if a URL's hostname matches the given domain."""
+        from urllib.parse import urlparse
+        try:
+            host = urlparse(url).hostname or ""
+            return host == domain or host.endswith("." + domain)
+        except Exception:
+            return False
+
     def _purge_domain(self, domain: str) -> int:
         """Delete all memory files whose source_url frontmatter contains domain.
 
@@ -506,7 +415,8 @@ class TelegramChatHandler:
         deleted = 0
         for f in (BRAIN_DIR / "memories").glob("*.md"):
             fm = self._parse_frontmatter(f)
-            if domain in (fm.get("source_url") or ""):
+            url = fm.get("source_url", "")
+            if url and self._url_matches_domain(url, domain):
                 f.unlink()
                 deleted += 1
         return deleted
@@ -566,32 +476,6 @@ class TelegramChatHandler:
         lines = "\n".join(f"{i + 1}. {d}" for i, d in enumerate(domains))
         await update.message.reply_text(f"Skipped domains:\n{lines}")
 
-    async def cmd_purge(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self._check_auth(update):
-            return
-        if not context.args:
-            await update.message.reply_text("Usage: /purge <domain>")
-            return
-        domain = context.args[0].lower()
-        count = self._purge_domain(domain)
-        if count:
-            await update.message.reply_text(f"Deleted {count} memories from {domain}.")
-        else:
-            await update.message.reply_text(f"No memories found for {domain}.")
-
-    async def cmd_purgeall(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self._check_auth(update):
-            return
-        config = yaml.safe_load((BRAIN_DIR / "config.yaml").read_text())
-        domains = config.get("browser_watcher", {}).get("skip_domains", [])
-        if not domains:
-            await update.message.reply_text("Skip list is empty — nothing to purge.")
-            return
-        lines = ["Purge complete:"]
-        for domain in domains:
-            count = self._purge_domain(domain)
-            lines.append(f"• {domain} — {count} deleted" if count else f"• {domain} — 0 found")
-        await update.message.reply_text("\n".join(lines))
 
     # ── Memory management helpers ─────────────────────────────────────────────
 
@@ -610,13 +494,13 @@ class TelegramChatHandler:
             return {}
 
     def _resolve_index(self, n: str) -> Path:
-        """Convert 1-based index string to a Path from _last_results, or None."""
+        """Convert 1-based index string to a Path from _active_list, or None."""
         try:
             idx = int(n) - 1
         except (ValueError, TypeError):
             return None
-        if 0 <= idx < len(self._last_results):
-            return self._last_results[idx]
+        if 0 <= idx < len(self._active_list):
+            return self._active_list[idx]
         return None
 
     def _fmt_memory_line(self, i: int, fm: dict) -> str:
@@ -624,9 +508,9 @@ class TelegramChatHandler:
         date = (fm.get("created") or "")[:10]
         return f"{i}. {title}  ({date})"
 
-    # ── /memories command ─────────────────────────────────────────────────────
+    # ── /readings command ─────────────────────────────────────────────────────
 
-    async def cmd_memories(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def cmd_readings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
         try:
@@ -644,6 +528,7 @@ class TelegramChatHandler:
         files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         files = files[:limit]
         self._last_results = files
+        self._active_list = files
 
         lines = [f"Your {len(files)} most recent memories:"]
         for i, f in enumerate(files, 1):
@@ -779,12 +664,13 @@ class TelegramChatHandler:
         if type_filter is not None:
             # Flat list for filtered mode
             self._last_results = [f for _, _, f in matches]
+            self._active_list = self._last_results
             lines = [f"Search results for \"{query}\" ({filter_keyword}) — {len(matches)} match{'es' if len(matches) != 1 else ''}:"]
             for i, (_, _, f) in enumerate(matches, 1):
                 fm = self._parse_frontmatter(f)
                 mem_type = fm.get("type") or None
                 lines.append(self._fmt_search_line(i, fm, mem_type))
-            lines.append("\nUse /memory N for detail on any item.")
+            lines.append("\nUse /reading N for detail on any item.")
             await self._send_reply(update, "\n".join(lines))
             return
 
@@ -828,23 +714,24 @@ class TelegramChatHandler:
                 ordered_paths.append(f)
 
         self._last_results = ordered_paths
-        lines.append("\nUse /memory N for detail on any item.")
+        self._active_list = ordered_paths
+        lines.append("\nUse /reading N for detail on any item.")
 
         await self._send_reply(update, "\n".join(lines))
 
-    # ── /memory command ───────────────────────────────────────────────────────
+    # ── /reading command ──────────────────────────────────────────────────────
 
-    async def cmd_memory(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def cmd_reading(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
         if not context.args:
-            await update.message.reply_text("Usage: /memory <N>")
+            await update.message.reply_text("Usage: /reading <N>")
             return
 
         path = self._resolve_index(context.args[0])
         if path is None:
             await update.message.reply_text(
-                "Invalid index. Run /memories or /search first."
+                "Invalid index. Run /readings or /search first."
             )
             return
 
@@ -859,37 +746,43 @@ class TelegramChatHandler:
         lines = [f"{title}", f"{url}", f"Date: {date}{tag_str}", "", summary]
         await update.message.reply_text("\n".join(lines))
 
-    # ── /delete command ───────────────────────────────────────────────────────
+    # ── /forget command ───────────────────────────────────────────────────────
 
-    async def cmd_delete(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def cmd_forget(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
         if not context.args:
-            await update.message.reply_text("Usage: /delete <N>")
-            return
-
-        path = self._resolve_index(context.args[0])
-        if path is None:
             await update.message.reply_text(
-                "Invalid index. Run /memories or /search first."
+                "Usage:\n"
+                "  /forget <N>        — forget item N from your last list\n"
+                "  /forget <domain>   — forget all web captures from a domain"
             )
             return
-
-        fm = self._parse_frontmatter(path)
-        title = fm.get("source_title") or path.name
-
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass  # already gone
-
-        # Remove from result list so subsequent indices still work
-        try:
-            self._last_results.remove(path)
-        except ValueError:
-            pass
-
-        await update.message.reply_text(f"Deleted: {title}")
+        arg = context.args[0]
+        if arg.isdigit():
+            path = self._resolve_index(arg)
+            if path is None:
+                await update.message.reply_text("Invalid N. Run a list command first.")
+                return
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title") or fm.get("title") or path.name
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            try:
+                self._active_list.remove(path)
+            except ValueError:
+                pass
+            await update.message.reply_text(f"Forgotten: {title}")
+            return
+        # Non-numeric → domain purge
+        domain = arg.lower()
+        count = self._purge_domain(domain)
+        if count:
+            await update.message.reply_text(f"Forgotten {count} captures from {domain}.")
+        else:
+            await update.message.reply_text(f"No captures found for {domain}.")
 
     # ── /commitments command ──────────────────────────────────────────────────
 
@@ -937,6 +830,7 @@ class TelegramChatHandler:
             return
 
         self._last_commitment_set = [f for f, _ in items]
+        self._active_list = self._last_commitment_set
         total = len(items)
         lines = [f"Active commitments ({total} total):"]
 
@@ -1247,6 +1141,7 @@ class TelegramChatHandler:
         )
         contacts = contacts[:limit]
         self._last_contact_set = [f for f, _ in contacts]
+        # contacts are aggregated — /forget N not supported for this list
 
         total = len(list((BRAIN_DIR / "memories").glob("contact-*.md")))
         lines = [f"Contacts ({total} total):"]
@@ -1424,6 +1319,7 @@ class TelegramChatHandler:
         projects.sort(key=lambda x: x[1].get("last_scanned") or "", reverse=True)
         projects = projects[:limit]
         self._last_project_set = [f for f, _ in projects]
+        # projects are aggregated — /forget N not supported for this list
 
         lines = [f"Projects ({len(projects)} shown):"]
         for i, (_, fm) in enumerate(projects, 1):
@@ -1488,36 +1384,25 @@ class TelegramChatHandler:
         except (ValueError, IndexError):
             limit = 10
 
-        window_start, window_end = self._get_event_window()
-        window_days = int(self._get_display_config().get("events_window_days", 5))
-
         files = list((BRAIN_DIR / "memories").glob("calendar-event-*.md"))
         events = []
         for f in files:
             fm = self._parse_frontmatter(f)
             if fm.get("type") != "calendar_event":
                 continue
-            dt = self._parse_iso_dt(fm.get("start_time"))
-            if dt is None:
-                continue
-            if window_start <= dt < window_end:
-                events.append((f, fm, dt))
+            events.append((f, fm))
 
         if not events:
-            display_cfg = self._get_display_config()
-            tz_note = f" ({display_cfg['timezone']})" if display_cfg.get("timezone") else ""
-            await update.message.reply_text(
-                f"No calendar events in the next {window_days} days{tz_note}.\n"
-                "Use /settings events_window_days <N> to widen the window."
-            )
+            await update.message.reply_text("No calendar events found.")
             return
 
-        events.sort(key=lambda x: x[2])
+        events.sort(key=lambda x: x[1].get("start_time") or "", reverse=False)
         events = events[:limit]
-        self._last_event_set = [f for f, _, _ in events]
+        self._last_event_set = [f for f, _ in events]
+        self._active_list = self._last_event_set
 
-        lines = [f"Upcoming events — next {window_days} days ({len(events)} shown):"]
-        for i, (_, fm, _) in enumerate(events, 1):
+        lines = [f"Calendar events ({len(events)} shown):"]
+        for i, (_, fm) in enumerate(events, 1):
             title = (fm.get("source_title") or "(no title)")[:50]
             start = self._fmt_datetime(fm.get("start_time") or "")
             duration = self._fmt_duration(fm.get("start_time"), fm.get("end_time"))
@@ -1546,9 +1431,7 @@ class TelegramChatHandler:
         end = fm.get("end_time") or ""
         all_day = fm.get("all_day", False)
         location = fm.get("location") or ""
-        # Support both new calendar_names (list) and old calendar_name (str)
-        cal_field = fm.get("calendar_names") or fm.get("calendar_name") or ""
-        cal = ", ".join(cal_field) if isinstance(cal_field, list) else str(cal_field)
+        cal = fm.get("calendar_name") or ""
         participants = fm.get("participants") or []
         summary = fm.get("summary") or ""
 
@@ -1560,12 +1443,7 @@ class TelegramChatHandler:
             duration = self._fmt_duration(start, end)
             dur_str = f" ({duration})" if duration else ""
             time_str = f"{start_fmt} – {end_fmt}{dur_str}"
-        # Participants may be list of dicts (new) or list of strings (old)
-        def _part_name(p):
-            if isinstance(p, dict):
-                return p.get("name") or p.get("email") or ""
-            return str(p)
-        parts_str = ", ".join(filter(None, (_part_name(p) for p in participants[:10]))) or "none listed"
+        parts_str = ", ".join(participants[:10]) if participants else "none listed"
         lines = [
             title,
             f"When: {time_str}",
@@ -1612,6 +1490,7 @@ class TelegramChatHandler:
         meetings.sort(key=lambda x: x[1].get("start_time") or x[1].get("created") or "", reverse=True)
         meetings = meetings[:limit]
         self._last_meeting_set = [f for f, _ in meetings]
+        self._active_list = self._last_meeting_set
 
         lines = [f"Meeting transcripts ({len(meetings)} shown):"]
         for i, (_, fm) in enumerate(meetings, 1):
@@ -1762,6 +1641,7 @@ class TelegramChatHandler:
         comms.sort(key=_sort_key, reverse=True)
         comms = comms[:limit]
         self._last_comms_set = [f for f, _, _ in comms]
+        self._active_list = self._last_comms_set
 
         lines = [f"Communications ({len(comms)} shown):"]
         for i, (_, fm, mem_type) in enumerate(comms, 1):
@@ -1883,6 +1763,7 @@ class TelegramChatHandler:
         fm = {
             "title": clean_desc[:100],
             "type": "feature_request",
+            "kind": "feature",
             "status": "new",
             "priority": "medium",
             "created": datetime.now().isoformat(),
@@ -1899,12 +1780,71 @@ class TelegramChatHandler:
 
         await self._send_reply(update, f"Feature captured: '{clean_desc[:60]}' (ID: {id_hash})\nUse /features to view all.")
 
+    async def cmd_bug(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await self._send_reply(update, "Usage: /bug <description>")
+            return
+
+        description = " ".join(context.args)
+        tags = [t[1:].lower() for t in re.findall(r'#\w+', description)]
+        clean_desc = re.sub(r'#\w+', '', description).strip()
+        title = " ".join(clean_desc.split()[:8])
+
+        import hashlib, os
+        from datetime import datetime
+        memories_dir = BRAIN_DIR / "memories"
+        memories_dir.mkdir(parents=True, exist_ok=True)
+        slug = re.sub(r'[^a-z0-9]+', '-', title.lower())[:40].strip('-')
+        id_hash = hashlib.sha1(f"{description}{datetime.now().isoformat()}".encode()).hexdigest()[:6]
+        filename = f"feature-request-{slug}-{id_hash}.md"
+
+        fm = {
+            "title":    clean_desc[:100],
+            "type":     "feature_request",
+            "kind":     "bug",
+            "status":   "new",
+            "priority": "medium",
+            "created":  datetime.now().isoformat(),
+            "tags":     tags,
+            "short_id": id_hash,
+        }
+        body = (
+            f"## Bug\n\n{clean_desc}\n\n"
+            f"## Expected\n\n\n\n"
+            f"## Actual\n\n\n\n"
+            f"## Steps to reproduce\n\n\n\n"
+            f"## Notes\n\nCaptured via /bug at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n"
+        )
+        content = f"---\n{yaml.dump(fm, sort_keys=False, allow_unicode=True)}---\n\n{body}"
+        target = memories_dir / filename
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(content)
+        os.rename(tmp, target)
+        await self._send_reply(update, f"Bug captured: '{clean_desc[:60]}' (ID: {id_hash})\nUse /features bug to view all.")
+
+    async def cmd_bugs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Alias for /features bug."""
+        context.args = ["bug"]
+        await self.cmd_features(update, context)
+
     async def cmd_features(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
 
-        status_filter = context.args[0].lower() if context.args else None
-        show_all = status_filter == "all"
+        arg = context.args[0].lower() if context.args else None
+        kind_filter: str | None = None
+        status_filter: str | None = None
+        show_all = False
+        if arg in ("bug", "bugs"):
+            kind_filter = "bug"
+        elif arg in ("feature", "features"):
+            kind_filter = "feature"
+        elif arg == "all":
+            show_all = True
+        elif arg:
+            status_filter = arg
 
         memories_dir = BRAIN_DIR / "memories"
         files = sorted(memories_dir.glob("feature-request-*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -1915,6 +1855,11 @@ class TelegramChatHandler:
             if fm.get("type") != "feature_request":
                 continue
             status = fm.get("status", "new")
+            item_kind = fm.get("kind", "feature")
+            # Kind filter
+            if kind_filter and item_kind != kind_filter:
+                continue
+            # Status filter
             if not show_all:
                 if status_filter:
                     if status != status_filter:
@@ -1937,7 +1882,9 @@ class TelegramChatHandler:
             priority = fm.get("priority", "medium")
             title = fm.get("title", f.stem)[:60]
             created = fm.get("created", "")[:10]
-            lines.append(f"{i}. [{status}] [{priority}] {title} ({created})")
+            item_kind = fm.get("kind", "feature")
+            kind_tag = f"[{item_kind[:4]}] " if not kind_filter else ""
+            lines.append(f"{i}. {kind_tag}[{status}] [{priority}] {title} ({created})")
 
         await self._send_reply(update, "\n".join(lines))
 
@@ -2319,16 +2266,15 @@ class TelegramChatHandler:
             await self._send_reply(update, f"Report failed: {e}")
 
     async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """View or change display settings.
+        """View or change display settings: date_format, timezone.
 
         Usage:
-          /settings                                 — show current settings
+          /settings                           — show current settings
           /settings date_format MM/DD/YYYY, HH:MM
           /settings date_format DD/MM/YYYY, HH:MM
           /settings date_format YYYY-MM-DD HH:MM
           /settings timezone America/Los_Angeles
           /settings timezone UTC
-          /settings events_window_days 7
         """
         if not self._check_auth(update):
             return
@@ -2345,14 +2291,13 @@ class TelegramChatHandler:
         VALID_DATE_FORMATS = {"MM/DD/YYYY, HH:MM", "DD/MM/YYYY, HH:MM", "YYYY-MM-DD HH:MM"}
 
         if not context.args:
+            # Show current settings
             fmt = display.get("date_format", "MM/DD/YYYY, HH:MM")
             tz = display.get("timezone", "(system default)")
-            window = display.get("events_window_days", 5)
             lines = [
                 "Display settings:",
                 f"  date_format: {fmt}",
                 f"  timezone: {tz}",
-                f"  events_window_days: {window}",
                 "",
                 "Change with:",
                 "  /settings date_format MM/DD/YYYY, HH:MM",
@@ -2360,12 +2305,12 @@ class TelegramChatHandler:
                 "  /settings date_format YYYY-MM-DD HH:MM",
                 "  /settings timezone America/Los_Angeles",
                 "  /settings timezone UTC",
-                "  /settings events_window_days 7",
             ]
             await update.message.reply_text("\n".join(lines))
             return
 
         key = context.args[0].lower()
+        # Rejoin remaining args to support values with spaces
         value = " ".join(context.args[1:]).strip()
 
         if not value:
@@ -2391,18 +2336,9 @@ class TelegramChatHandler:
                 )
                 return
             display["timezone"] = value
-        elif key == "events_window_days":
-            try:
-                days = int(value)
-                if days < 1 or days > 365:
-                    raise ValueError
-            except ValueError:
-                await update.message.reply_text("events_window_days must be an integer between 1 and 365.")
-                return
-            display["events_window_days"] = days
         else:
             await update.message.reply_text(
-                f"Unknown setting '{key}'. Available: date_format, timezone, events_window_days"
+                f"Unknown setting '{key}'. Available: date_format, timezone"
             )
             return
 
@@ -2411,128 +2347,6 @@ class TelegramChatHandler:
         tmp.write_text(yaml.dump(config, default_flow_style=False))
         os.rename(tmp, config_path)
         await update.message.reply_text(f"Updated {key} to: {value}")
-
-    # ── /clean helpers ────────────────────────────────────────────────────────
-
-    def _clean_collect_files(self, cfg: dict) -> list:
-        """Return all memory files matching this clean-type config."""
-        files = list((BRAIN_DIR / "memories").glob(cfg["glob"]))
-        if cfg.get("type_filter"):
-            files = [f for f in files
-                     if self._parse_frontmatter(f).get("type") == cfg["type_filter"]]
-        return files
-
-    def _clean_reset_state(self, state_filename: str):
-        """Overwrite a scanner state file with {} so it reprocesses from scratch."""
-        state_path = DEPLOY_DIR / state_filename
-        if not state_path.exists():
-            return
-        tmp = state_path.with_suffix(".tmp")
-        tmp.write_text("{}")
-        os.rename(tmp, state_path)
-
-    async def cmd_clean(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Delete and reprocess memories for one data type (or all scanner types).
-
-        Usage:
-          /clean                       — list available types
-          /clean <type>                — preview: show what would be deleted
-          /clean <type> confirm        — execute after preview (step 2 of 2)
-          /clean all                   — preview all scanner types
-          /clean all confirm           — execute all
-        """
-        if not self._check_auth(update):
-            return
-
-        valid_types = list(_CLEAN_TYPES.keys())
-
-        if not context.args:
-            lines = [
-                "Usage: /clean <type> [confirm]",
-                "",
-                "Available types:",
-            ]
-            for key, cfg in _CLEAN_TYPES.items():
-                lines.append(f"  {key:<12} — {cfg['label']}")
-            lines += [
-                "  all          — all of the above",
-                "",
-                "Run /clean <type> to preview what will be deleted, then",
-                "/clean <type> confirm to execute.",
-            ]
-            await update.message.reply_text("\n".join(lines))
-            return
-
-        type_key = context.args[0].lower()
-        confirmed = len(context.args) > 1 and context.args[1].lower() == "confirm"
-
-        if type_key not in valid_types and type_key != "all":
-            await update.message.reply_text(
-                f"Unknown type '{type_key}'.\n"
-                f"Valid types: {', '.join(valid_types)}, all"
-            )
-            return
-
-        types_to_clean = valid_types if type_key == "all" else [type_key]
-
-        # Collect counts for the preview
-        file_map: dict = {}  # type_key -> list[Path]
-        total = 0
-        for t in types_to_clean:
-            files = self._clean_collect_files(_CLEAN_TYPES[t])
-            file_map[t] = files
-            total += len(files)
-
-        if not confirmed:
-            # ── Step 1: preview ─────────────────────────────────────────────
-            lines = [
-                f"{'WARNING: ' if type_key == 'all' else ''}This will permanently delete "
-                f"{total} memory file(s) and reset scanner state:",
-                "",
-            ]
-            for t in types_to_clean:
-                cfg = _CLEAN_TYPES[t]
-                n = len(file_map[t])
-                state_note = " + state reset" if cfg.get("state_file") else ""
-                lines.append(f"  {cfg['label']}: {n} file(s){state_note}")
-            lines += [
-                "",
-                "Scanners will reprocess from scratch on their next scheduled cycle.",
-                "",
-                f"To confirm, run:  /clean {type_key} confirm",
-                "(This is step 1 of 2 — you must send the confirm command to proceed.)",
-            ]
-            await update.message.reply_text("\n".join(lines))
-            return
-
-        # ── Step 2: execute ──────────────────────────────────────────────────
-        deleted = 0
-        states_reset = []
-        errors = []
-
-        for t in types_to_clean:
-            cfg = _CLEAN_TYPES[t]
-            for f in file_map[t]:
-                try:
-                    f.unlink()
-                    deleted += 1
-                except Exception as e:
-                    errors.append(f.name)
-                    log.warning("Failed to delete %s: %s", f, e)
-            if cfg.get("state_file"):
-                try:
-                    self._clean_reset_state(cfg["state_file"])
-                    states_reset.append(cfg["state_file"])
-                except Exception as e:
-                    log.warning("Failed to reset state %s: %s", cfg["state_file"], e)
-
-        lines = [f"Done. {deleted} memory file(s) deleted."]
-        if states_reset:
-            lines.append(f"State reset: {', '.join(states_reset)}")
-        lines.append("Scanners will reprocess on their next scheduled cycle.")
-        if errors:
-            lines.append(f"\nWarning: could not delete {len(errors)} file(s): {', '.join(errors[:5])}")
-        await update.message.reply_text("\n".join(lines))
 
     async def _send_reply(self, update: Update, text: str):
         """Chunk response into ≤4096-char messages to respect Telegram's hard limit."""

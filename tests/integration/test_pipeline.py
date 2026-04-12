@@ -289,7 +289,7 @@ async def test_skip_command_persists_and_watcher_ignores_domain(
 
 
 async def test_purge_command_removes_correct_memories(infra, chat_handler_instance):
-    """/purge deletes memories matching the domain and leaves others intact."""
+    """/forget <domain> deletes memories matching the domain and leaves others intact."""
     m = infra["root"] / "memories"
 
     # Write two memories — one for example.com, one for other.com
@@ -308,12 +308,12 @@ async def test_purge_command_removes_correct_memories(infra, chat_handler_instan
     mock_ctx = MagicMock()
     mock_ctx.args = ["example.com"]
 
-    await chat_handler_instance.cmd_purge(mock_update, mock_ctx)
+    await chat_handler_instance.cmd_forget(mock_update, mock_ctx)
 
     assert not target.exists()
     assert keeper.exists()
     reply = mock_update.message.reply_text.call_args[0][0]
-    assert "Deleted 1" in reply
+    assert "Forgotten 1" in reply
 
 
 async def test_scanner_writes_memory_for_git_repo(tmp_path):
@@ -603,7 +603,7 @@ async def test_email_scanner_skips_write_when_no_new_messages(tmp_path):
 async def test_purgeall_command_clears_all_skip_domain_memories(
     infra, chat_handler_instance
 ):
-    """/purgeall removes memories for every domain currently on the skip list."""
+    """/forget <domain> can be used to remove memories from skip list domains."""
     m = infra["root"] / "memories"
 
     # google.com is already in the skip list from the fixture config
@@ -620,17 +620,18 @@ async def test_purgeall_command_clears_all_skip_domain_memories(
     mock_update.effective_user.id = 12345
     mock_update.message = AsyncMock()
     mock_ctx = MagicMock()
+    mock_ctx.args = ["google.com"]
 
-    await chat_handler_instance.cmd_purgeall(mock_update, mock_ctx)
+    await chat_handler_instance.cmd_forget(mock_update, mock_ctx)
 
     assert not g.exists()
     assert keeper.exists()
     reply = mock_update.message.reply_text.call_args[0][0]
-    assert "google.com" in reply
+    assert "Forgotten 1" in reply
 
 
 async def test_memories_list_search_view_delete_flow(infra, chat_handler_instance):
-    """End-to-end: /memories → /search → /memory → /delete."""
+    """End-to-end: /readings → /search → /reading → /forget."""
     m = infra["root"] / "memories"
 
     def mk(slug, title, tags, url, summary):
@@ -653,12 +654,13 @@ async def test_memories_list_search_view_delete_flow(infra, chat_handler_instanc
     u.effective_user.id = 12345
     u.message = AsyncMock()
 
-    # Step 1: /memories lists all 3
+    # Step 1: /readings lists all 3
     ctx = MagicMock(); ctx.args = []
-    await chat_handler_instance.cmd_memories(u, ctx)
+    await chat_handler_instance.cmd_readings(u, ctx)
     reply = u.message.reply_text.call_args[0][0]
     assert "LiteLLM" in reply or "ReAct" in reply or "Cooking" in reply
     assert len(chat_handler_instance._last_results) == 3
+    assert len(chat_handler_instance._active_list) == 3
 
     # Step 2: /search finds litellm
     u.message.reset_mock()
@@ -667,22 +669,23 @@ async def test_memories_list_search_view_delete_flow(infra, chat_handler_instanc
     reply = u.message.reply_text.call_args[0][0]
     assert "LiteLLM" in reply
     assert len(chat_handler_instance._last_results) == 1
+    assert len(chat_handler_instance._active_list) == 1
 
-    # Step 3: /memory 1 shows details of the search result
+    # Step 3: /reading 1 shows details of the search result
     u.message.reset_mock()
     ctx = MagicMock(); ctx.args = ["1"]
-    await chat_handler_instance.cmd_memory(u, ctx)
+    await chat_handler_instance.cmd_reading(u, ctx)
     reply = u.message.reply_text.call_args[0][0]
     assert "LiteLLM" in reply
     assert "litellm.ai" in reply
 
-    # Step 4: /delete 1 removes the file
+    # Step 4: /forget 1 removes the file
     u.message.reset_mock()
     ctx = MagicMock(); ctx.args = ["1"]
-    await chat_handler_instance.cmd_delete(u, ctx)
+    await chat_handler_instance.cmd_forget(u, ctx)
     assert not p1.exists()
-    assert "Deleted" in u.message.reply_text.call_args[0][0]
-    assert len(chat_handler_instance._last_results) == 0
+    assert "Forgotten" in u.message.reply_text.call_args[0][0]
+    assert len(chat_handler_instance._active_list) == 0
 
 
 # ── Zoom Scanner integration ───────────────────────────────────────────────────
