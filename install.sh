@@ -265,6 +265,7 @@ ok "$DEPLOY_DIR"
 echo ""
 echo "Setting up Python virtual environment..."
 
+VENV_RECREATED=0
 if [ -f "$VENV/bin/python3" ]; then
     VENV_MAJOR="$("$VENV/bin/python3" -c 'import sys; print(sys.version_info.major)')"
     VENV_MINOR="$("$VENV/bin/python3" -c 'import sys; print(sys.version_info.minor)')"
@@ -278,17 +279,20 @@ if [ -f "$VENV/bin/python3" ]; then
         rm -rf "$VENV" "$DEPLOY_DIR/.requirements-hash"
         "$SYS_PYTHON" -m venv --copies "$VENV"
         PYTHON="$VENV/bin/python3"
+        VENV_RECREATED=1
         ok "Venv recreated at $VENV  (Python $PY_MAJOR.$PY_MINOR)"
     else
         info "Recreating venv with --copies (needed for Full Disk Access)"
         rm -rf "$VENV" "$DEPLOY_DIR/.requirements-hash"
         "$SYS_PYTHON" -m venv --copies "$VENV"
         PYTHON="$VENV/bin/python3"
+        VENV_RECREATED=1
         ok "Venv recreated at $VENV  (Python $PY_MAJOR.$PY_MINOR)"
     fi
 else
     "$SYS_PYTHON" -m venv --copies "$VENV"
     PYTHON="$VENV/bin/python3"
+    VENV_RECREATED=1
     ok "Venv created at $VENV  (Python $PY_MAJOR.$PY_MINOR)"
 fi
 
@@ -527,23 +531,37 @@ if [ "$ROLE" = "full" ]; then
     # by launchd) is the true test: it runs the binary directly and will have
     # FDA if the binary was added to the list.
     #
-    # Instead, check whether the Envelope Index is accessible from this process.
-    # If this terminal has FDA (e.g. Terminal.app is in the FDA list), we can
-    # confirm. If not, we show instructions and trust that launchd will have access.
+    # If the venv was recreated this run, the new python3 binary is a different
+    # inode from the one previously granted FDA — macOS tracks FDA by binary
+    # identity, so the old grant no longer applies. Always prompt for re-grant.
 
     ENVELOPE_INDEX="$(ls "$HOME/Library/Mail"/V*/Envelope\ Index 2>/dev/null | sort -V | tail -1)"
 
-    if [ -n "$ENVELOPE_INDEX" ] && [ -r "$ENVELOPE_INDEX" ]; then
+    if [ "$VENV_RECREATED" = "1" ]; then
+        # Venv was just (re)created — the binary is new, any prior FDA grant is stale.
+        printf "${YELLOW}  !${NC}  python3 binary replaced — Full Disk Access must be re-granted.\n"
+        echo "     macOS tracks FDA by binary identity; the old grant no longer applies."
+        echo ""
+        echo "     1. Open: System Settings → Privacy & Security → Full Disk Access"
+        echo "     2. Remove any existing python3 entry"
+        echo "     3. In Finder press Cmd+Shift+G and paste:"
+        echo "          $VENV/bin/"
+        echo "     4. Drag python3 from that window into the FDA list"
+        echo "     5. Restart the daemon:"
+        echo "          launchctl unload ~/Library/LaunchAgents/com.chrisrobertson.secondbrain.plist"
+        echo "          launchctl load  ~/Library/LaunchAgents/com.chrisrobertson.secondbrain.plist"
+        # Open System Settings to the FDA pane automatically
+        open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" 2>/dev/null || true
+        open "$VENV/bin" 2>/dev/null || true
+    elif [ -n "$ENVELOPE_INDEX" ] && [ -r "$ENVELOPE_INDEX" ]; then
         ok "Envelope Index readable — Full Disk Access confirmed"
     elif [ -n "$ENVELOPE_INDEX" ]; then
-        # Path exists but not readable from this terminal — may still work from launchd
-        printf "${YELLOW}  –${NC}  Envelope Index found but not readable from this terminal.\n"
-        echo "     If you already added python3 to Full Disk Access, the daemon"
-        echo "     (run by launchd) will have access — check the logs after restart:"
-        echo "       tail -f ~/secondbrain/logs/error.log | grep email"
-        echo "     If no FDA yet, grant it now:"
-        echo "       System Settings → Privacy & Security → Full Disk Access"
-        echo "       Drag $VENV/bin/python3 into the list"
+        # Path exists but not readable — FDA may be missing entirely
+        printf "${YELLOW}  !${NC}  Envelope Index not readable — Full Disk Access required.\n"
+        echo "     System Settings → Privacy & Security → Full Disk Access"
+        echo "     Drag $VENV/bin/python3 into the list, then restart the daemon."
+        open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" 2>/dev/null || true
+        open "$VENV/bin" 2>/dev/null || true
     else
         printf "${YELLOW}  –${NC}  No Envelope Index found — Mail.app may not be set up.\n"
         echo "     The email scanner will use the AppleScript fallback (requires Mail.app open)."
