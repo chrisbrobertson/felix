@@ -43,7 +43,7 @@ async def main():
         from calendar_scanner import CalendarScanner
         from notification_manager import NotificationManager
         chat = TelegramChatHandler()
-        optimizer = SkillOptimizer()
+        optimizer = SkillOptimizer(config)
         indexer = IndexBuilder()
         scanner = ProjectScanner(role=role)
         email_scanner = EmailScanner(role=role)
