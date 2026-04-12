@@ -811,25 +811,31 @@ The scanner is skipped gracefully (one WARNING logged) if any credential is miss
 
 ### Slack Scanner
 
-The Slack scanner requires a **Slack bot token** and your **user ID**.
+The Slack scanner uses a **user token** so it automatically sees every channel you're a member of — no `/invite` step per channel.
 
 1. Create a Slack app at [api.slack.com/apps](https://api.slack.com/apps)
-2. Add bot token scopes: `channels:history`, `groups:history`, `users:read`
+2. Under **OAuth & Permissions**, add these **User Token Scopes** (not bot scopes):
+   - `channels:history`, `channels:read` — public channels
+   - `groups:history`, `groups:read` — private channels
+   - `users:read` — resolve display names
 3. Install the app to your workspace
-4. Copy the **Bot User OAuth Token** (starts with `xoxb-`)
-5. Get your user ID: send a message in Slack, right-click your name, "Copy member ID"
-6. Run `./install.sh` — it prompts for `SLACK_BOT_TOKEN` and `SLACK_USER_ID` and writes them to the launchd plist
+4. Copy the **User OAuth Token** (starts with `xoxp-`, not `xoxb-`)
+5. Run `./install.sh` — it prompts for `SLACK_USER_TOKEN` and writes it to the launchd plist
 
-Configure monitored channels in `config.yaml`:
+The scanner enumerates your channels on every scan cycle via `users.conversations`. To exclude noisy channels, add them to `slack_scanner.channel_exclude` in `config.yaml`:
 
 ```yaml
 slack_scanner:
-  channels:
-    - engineering
-    - product
+  channel_exclude:
+    - random
+    - memes
 ```
 
-The scanner is skipped gracefully if credentials are missing.
+`channel_include` (optional) restricts capture to a whitelist if you'd rather opt in explicitly.
+
+**Migrating from the old bot-token setup:** replace your `xoxb-` token with an `xoxp-` user token from the same app (add user scopes under OAuth & Permissions and reinstall to workspace). Re-run `./install.sh`; it detects the old token and re-prompts.
+
+The scanner is skipped gracefully if the token is missing.
 
 ---
 

@@ -129,8 +129,8 @@ EXISTING_TELEGRAM_USER_ID=""
 EXISTING_ZOOM_ACCOUNT_ID=""
 EXISTING_ZOOM_CLIENT_ID=""
 EXISTING_ZOOM_CLIENT_SECRET=""
+EXISTING_SLACK_USER_TOKEN=""
 EXISTING_SLACK_BOT_TOKEN=""
-EXISTING_SLACK_USER_ID=""
 EXISTING_GITHUB_PAT=""
 EXISTING_GITHUB_REPO=""
 
@@ -141,8 +141,8 @@ if [ -f "$PLIST_DEST" ]; then
     EXISTING_ZOOM_ACCOUNT_ID="$(_plist_env_val ZOOM_ACCOUNT_ID)"
     EXISTING_ZOOM_CLIENT_ID="$(_plist_env_val ZOOM_CLIENT_ID)"
     EXISTING_ZOOM_CLIENT_SECRET="$(_plist_env_val ZOOM_CLIENT_SECRET)"
+    EXISTING_SLACK_USER_TOKEN="$(_plist_env_val SLACK_USER_TOKEN)"
     EXISTING_SLACK_BOT_TOKEN="$(_plist_env_val SLACK_BOT_TOKEN)"
-    EXISTING_SLACK_USER_ID="$(_plist_env_val SLACK_USER_ID)"
     EXISTING_GITHUB_PAT="$(_plist_env_val GITHUB_PAT)"
     EXISTING_GITHUB_REPO="$(_plist_env_val GITHUB_REPO)"
 fi
@@ -263,26 +263,30 @@ if [ "$ROLE" = "full" ]; then
 fi
 
 # ── 4c. Slack credentials (full role only, optional) ──────────────────────────
-SLACK_BOT_TOKEN=""
-SLACK_USER_ID=""
+SLACK_USER_TOKEN=""
 if [ "$ROLE" = "full" ]; then
-    if [ -n "$EXISTING_SLACK_BOT_TOKEN" ] && [ -n "$EXISTING_SLACK_USER_ID" ]; then
-        ok "Slack credentials (from existing config)"
-        SLACK_BOT_TOKEN="$EXISTING_SLACK_BOT_TOKEN"
-        SLACK_USER_ID="$EXISTING_SLACK_USER_ID"
-    elif [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_USER_ID:-}" ]; then
-        ok "Slack credentials (from environment)"
+    # Migration detection: if old bot token exists but no user token, force re-prompt
+    FORCE_SLACK_PROMPT=false
+    if [ -n "$EXISTING_SLACK_BOT_TOKEN" ] && [ -z "$EXISTING_SLACK_USER_TOKEN" ]; then
+        printf "${YELLOW}  ⚠${NC}  Slack scanner now uses a user token (xoxp-...) instead of a bot token. Re-prompting.\n"
+        FORCE_SLACK_PROMPT=true
+    fi
+
+    if [ "$FORCE_SLACK_PROMPT" = "false" ] && [ -n "$EXISTING_SLACK_USER_TOKEN" ]; then
+        ok "Slack user token (from existing config)"
+        SLACK_USER_TOKEN="$EXISTING_SLACK_USER_TOKEN"
+    elif [ "$FORCE_SLACK_PROMPT" = "false" ] && [ -n "${SLACK_USER_TOKEN:-}" ]; then
+        ok "Slack user token (from environment)"
     else
         echo ""
         echo "Slack (optional — leave blank to skip Slack thread scanning)"
         echo "────────────────────────────────────────────────────────────"
         echo "  Create a Slack app at https://api.slack.com/apps"
-        echo "  Required scopes: channels:read, groups:read, channels:history,"
-        echo "                   groups:history, users:read"
+        echo "  Required user scopes: channels:history, channels:read, groups:history,"
+        echo "                        groups:read, users:read"
         echo ""
-        read -r -p "  Slack Bot Token (xoxb-..., Enter to skip): " SLACK_BOT_TOKEN
-        if [ -n "$SLACK_BOT_TOKEN" ]; then
-            read -r -p "  Your Slack User ID (U01234567): " SLACK_USER_ID
+        read -r -p "  Slack User Token (xoxp-..., Enter to skip): " SLACK_USER_TOKEN
+        if [ -n "$SLACK_USER_TOKEN" ]; then
             ok "Slack credentials configured"
         else
             skip "Slack credentials skipped — thread scanning disabled"
@@ -553,10 +557,8 @@ cat > "$PLIST_TMP" << PLIST_EOF
     <string>${ZOOM_CLIENT_ID}</string>
     <key>ZOOM_CLIENT_SECRET</key>
     <string>${ZOOM_CLIENT_SECRET}</string>
-    <key>SLACK_BOT_TOKEN</key>
-    <string>${SLACK_BOT_TOKEN}</string>
-    <key>SLACK_USER_ID</key>
-    <string>${SLACK_USER_ID}</string>
+    <key>SLACK_USER_TOKEN</key>
+    <string>${SLACK_USER_TOKEN}</string>
     <key>GITHUB_PAT</key>
     <string>${GITHUB_PAT}</string>
     <key>GITHUB_REPO</key>
