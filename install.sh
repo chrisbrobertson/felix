@@ -329,6 +329,7 @@ echo "Deploying source files to $DEPLOY_DIR..."
 DAEMON_FILES=(
     daemon.py
     browser_watcher.py
+    calendar_scanner.py
     chat_handler.py
     commitment_tracker.py
     email_scanner.py
@@ -551,6 +552,18 @@ if [ "$ROLE" = "full" ]; then
         printf "${YELLOW}  –${NC}  No Envelope Index found — Mail.app may not be set up.\n"
         echo "     The email scanner will use the AppleScript fallback (requires Mail.app open)."
     fi
+
+    # ── Calendar.app Automation permission ───────────────────────────────────────
+    echo ""
+    echo "Checking Calendar.app Automation permission..."
+    echo ""
+    echo "  The calendar scanner reads Apple Calendar.app data."
+    echo "  Primary path: SQLite cache at ~/Library/Calendars/Calendar Cache (no permission needed)"
+    echo "  Fallback: AppleScript → requires Automation permission to Calendar.app"
+    echo ""
+    printf "${YELLOW}  !${NC}  If prompted, grant Automation permission to Terminal/iTerm in:\n"
+    echo "     System Settings → Privacy & Security → Automation → Terminal/iTerm → Calendar"
+    echo ""
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────

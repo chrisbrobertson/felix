@@ -8,7 +8,7 @@ Automatically captures and summarizes everything you read on the web. Stores sum
 
 ## How it works
 
-A daemon runs eight async loops:
+A daemon runs nine async loops:
 
 1. **Browser Watcher** — polls Chrome/Firefox history every 5 minutes, fetches pages you spent time on, summarizes them with Gemini Flash, writes a `.md` file to iCloud
 2. **Telegram Bot** — answers questions about what you've read by loading relevant memory files into context
@@ -18,6 +18,7 @@ A daemon runs eight async loops:
 6. **Email Scanner** — reads Apple Mail.app data every 5 minutes, writes a living `email-thread-*.md` memory file per conversation thread. Requires Full Disk Access (see below).
 7. **Zoom Scanner** — polls Zoom Cloud Recordings every 5 minutes, downloads VTT transcripts, parses speaker-attributed segments, generates a summary, writes `meeting-*.md` memory files. Requires Zoom Server-to-Server OAuth credentials (see below).
 8. **Commitment Tracker** — scans meeting and email memory files every 5 minutes, uses LLM to extract commitments and waiting-on items, writes one `commitment-*.md` file per extracted item. Surface via `/commitments` in Telegram.
+9. **Calendar Scanner** — reads Apple Calendar.app data every 5 minutes, writes a living `calendar-event-*.md` memory file per event in a rolling ±7-day window. No special permissions required for SQLite path; AppleScript fallback requires Automation permission to Calendar.app (see below).
 
 ---
 
@@ -232,13 +233,29 @@ To force a full re-scan of all email threads (e.g. after granting FDA for the fi
 
 ---
 
+## Calendar Scanner: Automation Permission
+
+The calendar scanner reads Apple Calendar.app data to create memory files for events in a rolling ±7-day window.
+
+**Primary path:** SQLite Calendar Cache at `~/Library/Calendars/Calendar Cache` — no permissions required.
+
+**Fallback:** AppleScript to Calendar.app when the SQLite database is absent. This requires **Automation permission** for Calendar.app.
+
+If prompted during first run, grant Automation permission in **System Settings → Privacy & Security → Automation → Terminal (or iTerm) → Calendar**.
+
+The scanner logs a warning if the AppleScript path is taken without permission. If you see "Calendar.app Automation permission denied (error -1743)" in logs, grant the permission and the scanner will work on the next cycle.
+
+**Configuration:** Set `skip_calendars: ["Birthdays", "Holidays"]` in `config.yaml` under `calendar_scanner:` to exclude noise calendars. Events in skipped calendars are never written to memory files.
+
+---
+
 ## Multi-machine setup
 
 The system supports two roles. Set `SECOND_BRAIN_ROLE` in each machine's launchd plist — do not set it in `config.yaml` (that file syncs via iCloud and would apply to all machines).
 
 | Role | What runs | API keys needed |
 |------|-----------|-----------------|
-| `full` | All eight loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
+| `full` | All nine loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
 | `watcher` | Browser watcher only | `GEMINI_API_KEY` only |
 
 Run `full` on your always-on machine (Mac Studio / Mac Mini). Run `watcher` on your MacBook — it captures pages you read while traveling and syncs memories to iCloud automatically.

@@ -91,3 +91,10 @@ commitment_tracker:
     - meeting_transcript
     - email_thread
     # - slack_thread             # uncomment when slack scanner is implemented
+
+calendar_scanner:
+  interval_seconds: 300          # scan every 5 minutes
+  lookback_days: 7               # events up to N days in the past
+  forward_days: 7                # events up to N days in the future
+  skip_calendars: []             # calendar names to exclude (e.g. ["Birthdays", "Holidays"])
+  max_events_per_cycle: 50
