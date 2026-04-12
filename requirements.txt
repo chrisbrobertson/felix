@@ -5,3 +5,4 @@ pyyaml>=6.0
 beautifulsoup4>=4.12
 lxml>=5.0
 watchdog>=4.0
+pyobjc-framework-EventKit>=9.0

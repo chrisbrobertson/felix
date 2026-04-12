@@ -76,7 +76,7 @@ def _event_hash(external_id: str, title: str, start_time: str) -> str:
 # ── Data source base ──────────────────────────────────────────────────────────
 
 class CalendarDataSource:
-    """Abstract base. Concrete subclasses: CalendarCacheSource, AppleScriptSource."""
+    """Abstract base. Concrete subclasses: CalendarCacheSource, EventKitSource, AppleScriptSource."""
 
     @classmethod
     def detect(cls):
@@ -84,9 +84,13 @@ class CalendarDataSource:
         src = CalendarCacheSource.create()
         if src:
             return src
+        log.debug("Calendar Cache unavailable — trying EventKit")
+        src = EventKitSource.create()
+        if src:
+            return src
         log.warning(
-            "Calendar Cache unavailable — falling back to AppleScript. "
-            "Ensure Calendar.app has local calendars configured."
+            "EventKit unavailable — falling back to AppleScript. "
+            "Grant Calendar access in System Settings → Privacy & Security → Calendars."
         )
         return AppleScriptSource()
 
@@ -234,6 +238,123 @@ class CalendarCacheSource(CalendarDataSource):
                         tmp_ext.unlink()
             except Exception:
                 pass
+
+
+# ── EventKit (PyObjC) ─────────────────────────────────────────────────────────
+
+class EventKitSource(CalendarDataSource):
+    """Uses EventKit framework via PyObjC. Requires pyobjc-framework-EventKit and
+    Calendar permission granted in System Settings → Privacy & Security → Calendars."""
+
+    def __init__(self, store):
+        self._store = store
+
+    @classmethod
+    def create(cls):
+        """Return an EventKitSource if EventKit is available and authorized, else None."""
+        try:
+            import EventKit as EK
+        except ImportError:
+            log.debug("pyobjc-framework-EventKit not installed")
+            return None
+
+        status = EK.EKEventStore.authorizationStatusForEntityType_(EK.EKEntityTypeEvent)
+        # 0=not determined, 1=restricted, 2=denied, 3=authorized, 4=full access (macOS 14+)
+        if status == 0:
+            # Request access synchronously (blocks briefly; shows dialog on first call)
+            import threading
+            store = EK.EKEventStore.alloc().init()
+            result = {}
+            done = threading.Event()
+
+            def completion(granted, error):
+                result["granted"] = granted
+                done.set()
+
+            store.requestFullAccessToEventsWithCompletion_(completion)
+            done.wait(timeout=30)
+            if not result.get("granted"):
+                log.warning(
+                    "EventKit Calendar access denied. "
+                    "Grant in System Settings → Privacy & Security → Calendars."
+                )
+                return None
+            return cls(store)
+        elif status in (3, 4):
+            store = EK.EKEventStore.alloc().init()
+            return cls(store)
+        else:
+            log.debug("EventKit Calendar access denied (status %d)", status)
+            return None
+
+    def get_events(self, start_date: datetime, end_date: datetime, skip_calendars: set):
+        """Fetch events via EventKit."""
+        try:
+            import EventKit as EK
+            import Foundation
+        except ImportError:
+            return []
+
+        ns_start = Foundation.NSDate.dateWithTimeIntervalSince1970_(start_date.timestamp())
+        ns_end = Foundation.NSDate.dateWithTimeIntervalSince1970_(end_date.timestamp())
+
+        predicate = self._store.predicateForEventsWithStartDate_endDate_calendars_(
+            ns_start, ns_end, None
+        )
+        ek_events = self._store.eventsMatchingPredicate_(predicate) or []
+
+        skip_lower = {c.lower() for c in skip_calendars}
+        events = []
+        for ev in ek_events:
+            try:
+                cal_name = str(ev.calendar().title()) if ev.calendar() else "Unknown"
+                if cal_name.lower() in skip_lower:
+                    continue
+
+                title = str(ev.title() or "Untitled Event")
+                start_ts = float(ev.startDate().timeIntervalSince1970())
+                end_ts = float(ev.endDate().timeIntervalSince1970())
+                start_time = datetime.fromtimestamp(start_ts)
+                end_time = datetime.fromtimestamp(end_ts)
+                modified_ts = float(ev.lastModifiedDate().timeIntervalSince1970()) if ev.lastModifiedDate() else start_ts
+                modified_time = datetime.fromtimestamp(modified_ts)
+
+                location = str(ev.location() or "")
+                notes = str(ev.notes() or "")
+                all_day = bool(ev.isAllDay())
+                ext_id = str(ev.eventIdentifier() or "")
+
+                # Attendees
+                participants = []
+                attendees = ev.attendees() or []
+                for att in attendees:
+                    try:
+                        name = str(att.name() or "")
+                        # Email is in the URL: mailto:address@example.com
+                        url = att.URL()
+                        email = str(url).replace("mailto:", "") if url else ""
+                        participants.append({"name": name, "email": email})
+                    except Exception:
+                        pass
+
+                events.append({
+                    "pk": 0,
+                    "title": title,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "modified_time": modified_time,
+                    "location": location,
+                    "notes": notes,
+                    "all_day": all_day,
+                    "recurring": bool(ev.hasRecurrenceRules()),
+                    "calendar_name": cal_name,
+                    "external_id": ext_id,
+                    "participants": participants,
+                })
+            except Exception as e:
+                log.debug("EventKit: error reading event: %s", e)
+
+        return events
 
 
 # ── AppleScript fallback ──────────────────────────────────────────────────────
