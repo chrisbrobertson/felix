@@ -531,6 +531,103 @@ async def test_cmd_search_rejects_unauthorised(handler, brain_dir):
     update.message.reply_text.assert_not_called()
 
 
+def _write_typed_memory(memories_dir, slug, title, mem_type, extra_fm="", body="content"):
+    """Write a memory with an explicit type frontmatter field."""
+    path = memories_dir / f"2026-04-11-{slug}.md"
+    path.write_text(
+        f"---\nsource_title: {title}\ntype: {mem_type}\ntags: []\ncreated: '2026-04-11'\n{extra_fm}---\n\n{body}"
+    )
+    return path
+
+
+async def test_cmd_search_grouped_by_type(handler, brain_dir):
+    """Grouped search shows type headers when results span multiple types."""
+    m = brain_dir / "memories"
+    write_memory(m, "web-abc111", ["tom"], "Tom Jones Article")
+    _write_typed_memory(m, "email-abc222", "Tom Jones project thread", "email_thread")
+    _write_typed_memory(m, "commit-abc333", "Deliver proposal to Tom", "commitment",
+                        extra_fm="commitment_type: outbound\n")
+    update, ctx = _make_update(12345, ["tom", "jones"])
+    await handler.cmd_search(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Commitments" in reply
+    assert "Email threads" in reply
+    assert "Web memories" in reply
+    # Global indices assigned — all three items accessible
+    assert len(handler._last_results) == 3
+
+
+async def test_cmd_search_grouped_omits_empty_groups(handler, brain_dir):
+    """Groups with zero results don't appear in the reply."""
+    m = brain_dir / "memories"
+    _write_typed_memory(m, "email-xyz", "Tom Jones email", "email_thread")
+    update, ctx = _make_update(12345, ["tom"])
+    await handler.cmd_search(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Email threads" in reply
+    assert "Meetings" not in reply
+    assert "Projects" not in reply
+
+
+async def test_cmd_search_grouped_overflow_hint(handler, brain_dir):
+    """Groups with > 5 items show 'and N more' hint with type-filter syntax."""
+    m = brain_dir / "memories"
+    for i in range(7):
+        _write_typed_memory(m, f"email-{i}", f"Tom email {i}", "email_thread")
+    update, ctx = _make_update(12345, ["tom"])
+    await handler.cmd_search(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "… and 2 more" in reply
+    assert "/search email tom" in reply
+    # All 7 in _last_results despite only 5 shown
+    assert len(handler._last_results) == 7
+
+
+async def test_cmd_search_type_filter_email(handler, brain_dir):
+    """'/search email tom' returns only email_thread results in flat list."""
+    m = brain_dir / "memories"
+    _write_typed_memory(m, "email-1", "Tom Jones thread", "email_thread")
+    _write_typed_memory(m, "commit-1", "Follow up with Tom", "commitment")
+    update, ctx = _make_update(12345, ["email", "tom"])
+    await handler.cmd_search(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Tom Jones thread" in reply
+    assert "Follow up" not in reply
+    assert "(email)" in reply
+
+
+async def test_cmd_search_type_filter_no_query(handler, brain_dir):
+    """'/search email' with no second arg returns usage hint."""
+    update, ctx = _make_update(12345, ["email"])
+    await handler.cmd_search(update, ctx)
+    assert "Usage" in update.message.reply_text.call_args[0][0]
+
+
+async def test_cmd_search_type_filter_no_matches(handler, brain_dir):
+    """'/search meeting tom' with no meeting files returns specific empty message."""
+    m = brain_dir / "memories"
+    _write_typed_memory(m, "email-1", "Tom email", "email_thread")
+    update, ctx = _make_update(12345, ["meeting", "tom"])
+    await handler.cmd_search(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "meeting" in reply.lower()
+    assert "match" in reply.lower()
+
+
+async def test_cmd_search_memory_N_resolves_across_groups(handler, brain_dir):
+    """After a grouped search, /memory N resolves items from any group."""
+    m = brain_dir / "memories"
+    _write_typed_memory(m, "contact-1", "Tom Jones", "contact")
+    _write_typed_memory(m, "email-1", "Tom Jones thread", "email_thread")
+    update, ctx = _make_update(12345, ["tom"])
+    await handler.cmd_search(update, ctx)
+    # Both items are in _last_results; /memory 2 should reach the email
+    assert len(handler._last_results) == 2
+    paths = {p.name for p in handler._last_results}
+    assert any("contact" in n for n in paths)
+    assert any("email" in n for n in paths)
+
+
 # ── /memory command ───────────────────────────────────────────────────────────
 
 async def test_cmd_memory_shows_details(handler, brain_dir):

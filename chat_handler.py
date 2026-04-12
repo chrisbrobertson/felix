@@ -22,7 +22,7 @@ TG_MAX_CHARS = 4096  # Telegram hard limit per message
 COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
     "Knowledge listings": [
         ("memories",       "List recent web memories"),
-        ("search",         "Keyword search across ALL memory types"),
+        ("search",         "Keyword search — grouped by type. /search <type> <query> to filter"),
         ("memory",         "Show memory N from last list"),
         ("delete",         "Delete memory N from last list"),
         ("people",         "List contacts (alias of /contacts)"),
@@ -377,16 +377,102 @@ class TelegramChatHandler:
 
     # ── /search command ───────────────────────────────────────────────────────
 
+    # Maps type-filter keyword → set of frontmatter `type` values (None = no type field)
+    _SEARCH_TYPE_FILTERS: dict = {
+        "email":      {"email_thread"},
+        "slack":      {"slack_thread"},
+        "meeting":    {"meeting_transcript"},
+        "project":    {"project"},
+        "commitment": {"commitment"},
+        "event":      {"calendar_event"},
+        "contact":    {"contact"},
+        "web":        {None},
+    }
+
+    # Display order for grouped search results
+    _SEARCH_GROUP_ORDER: list = [
+        ("contact",        "Contacts"),
+        ("commitment",     "Commitments"),
+        ("project",        "Projects"),
+        ("meeting_transcript", "Meetings"),
+        ("email_thread",   "Email threads"),
+        ("slack_thread",   "Slack threads"),
+        ("calendar_event", "Calendar events"),
+        (None,             "Web memories"),
+    ]
+
+    _SEARCH_TYPE_TO_KEYWORD: dict = {
+        "email_thread":      "email",
+        "slack_thread":      "slack",
+        "meeting_transcript":"meeting",
+        "project":           "project",
+        "commitment":        "commitment",
+        "calendar_event":    "event",
+        "contact":           "contact",
+    }
+
+    def _fmt_search_line(self, i: int, fm: dict, mem_type) -> str:
+        """Format a single search result line based on memory type."""
+        if mem_type == "contact":
+            name = (fm.get("name") or fm.get("source_title") or "Unknown")[:50]
+            last = fm.get("last_interaction", "")
+            last_str = f" · last seen {str(last)[:10]}" if last else ""
+            return f"  {i}. {name}{last_str}"
+        if mem_type == "commitment":
+            title = (fm.get("title") or fm.get("source_title") or "Untitled")[:55]
+            ctype = fm.get("commitment_type", "")
+            tag = f"[{ctype}] " if ctype else ""
+            return f"  {i}. {tag}{title}"
+        if mem_type == "project":
+            name = (fm.get("name") or fm.get("source_title") or "Untitled")[:40]
+            cat = fm.get("category", "")
+            last_commit = str(fm.get("last_commit", ""))[:10]
+            cat_str = f" [{cat}]" if cat else ""
+            date_str = f" · last commit {last_commit}" if last_commit else ""
+            return f"  {i}. {name}{cat_str}{date_str}"
+        if mem_type == "meeting_transcript":
+            title = (fm.get("source_title") or "Untitled")[:45]
+            date = str(fm.get("meeting_date") or fm.get("created") or "")[:10]
+            return f"  {i}. {title} · {date}"
+        if mem_type in ("email_thread", "slack_thread"):
+            title = (fm.get("source_title") or fm.get("subject") or "Untitled")[:45]
+            date = str(fm.get("last_message") or fm.get("last_reply") or fm.get("created") or "")[:10]
+            return f"  {i}. {title} · {date}"
+        if mem_type == "calendar_event":
+            title = (fm.get("source_title") or "Untitled")[:45]
+            start = str(fm.get("start_time") or fm.get("created") or "")[:10]
+            return f"  {i}. {title} · {start}"
+        # Web memory / default
+        title = (fm.get("source_title") or "(no title)")[:55]
+        date = str(fm.get("created") or "")[:10]
+        return f"  {i}. {title}  ({date})"
+
     async def cmd_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
         if not context.args:
-            await update.message.reply_text("Usage: /search <query>")
+            await update.message.reply_text(
+                "Usage: /search <query>\n"
+                "       /search <type> <query>  (types: email, slack, meeting, project, commitment, event, contact, web)"
+            )
             return
 
-        query = " ".join(context.args)
-        files = list((BRAIN_DIR / "memories").glob("*.md"))
+        # Detect optional type-filter prefix
+        type_filter: set | None = None
+        filter_keyword: str | None = None
+        if context.args[0].lower() in self._SEARCH_TYPE_FILTERS:
+            if len(context.args) < 2:
+                await update.message.reply_text(
+                    f"Usage: /search {context.args[0].lower()} <query>"
+                )
+                return
+            filter_keyword = context.args[0].lower()
+            type_filter = self._SEARCH_TYPE_FILTERS[filter_keyword]
+            query = " ".join(context.args[1:])
+        else:
+            query = " ".join(context.args)
 
+        files = list((BRAIN_DIR / "memories").glob("*.md"))
         scored = [
             (self._score_relevance(f, query), f.stat().st_mtime, f)
             for f in files
@@ -394,19 +480,81 @@ class TelegramChatHandler:
         matches = sorted(
             [(s, mt, f) for s, mt, f in scored if s > 0],
             key=lambda t: (t[0], t[1]),
-            reverse=True
-        )[:10]
+            reverse=True,
+        )[:50]
 
         if not matches:
             await update.message.reply_text(f"No memories match '{query}'.")
             return
 
-        self._last_results = [f for _, _, f in matches]
-        lines = [f"Search results for \"{query}\":"]
-        for i, (score, _, f) in enumerate(matches, 1):
+        # Apply type filter if specified
+        if type_filter is not None:
+            def _matches_type(f):
+                fm = self._parse_frontmatter(f)
+                t = fm.get("type") or None
+                return t in type_filter
+            matches = [(s, mt, f) for s, mt, f in matches if _matches_type(f)]
+            if not matches:
+                await update.message.reply_text(
+                    f"No {filter_keyword} memories match '{query}'."
+                )
+                return
+
+        if type_filter is not None:
+            # Flat list for filtered mode
+            self._last_results = [f for _, _, f in matches]
+            lines = [f"Search results for \"{query}\" ({filter_keyword}) — {len(matches)} match{'es' if len(matches) != 1 else ''}:"]
+            for i, (_, _, f) in enumerate(matches, 1):
+                fm = self._parse_frontmatter(f)
+                mem_type = fm.get("type") or None
+                lines.append(self._fmt_search_line(i, fm, mem_type))
+            lines.append("\nUse /memory N for detail on any item.")
+            await self._send_reply(update, "\n".join(lines))
+            return
+
+        # Grouped mode: assign global indices in group-display order
+        # Build lookup: path → (score, mtime, fm, type)
+        path_data: dict = {}
+        for s, mt, f in matches:
             fm = self._parse_frontmatter(f)
-            lines.append(self._fmt_memory_line(i, fm) + f" [score: {score}]")
-        await update.message.reply_text("\n".join(lines))
+            path_data[f] = (s, mt, fm, fm.get("type") or None)
+
+        # Bucket by type
+        buckets: dict = {key: [] for key, _ in self._SEARCH_GROUP_ORDER}
+        for f, (s, mt, fm, mem_type) in path_data.items():
+            if mem_type in buckets:
+                buckets[mem_type].append((s, mt, f, fm))
+            else:
+                buckets[None].append((s, mt, f, fm))
+
+        # Build ordered result list and reply
+        ordered_paths: list = []
+        lines = [f"Search results for \"{query}\" — {len(matches)} match{'es' if len(matches) != 1 else ''}:"]
+
+        MAX_PER_GROUP = 5
+        for type_key, group_label in self._SEARCH_GROUP_ORDER:
+            items = buckets.get(type_key, [])
+            if not items:
+                continue
+            items.sort(key=lambda t: (t[0], t[1]), reverse=True)
+            lines.append(f"\n{group_label} ({len(items)})")
+            shown = items[:MAX_PER_GROUP]
+            for s, mt, f, fm in shown:
+                idx = len(ordered_paths) + 1
+                ordered_paths.append(f)
+                lines.append(self._fmt_search_line(idx, fm, type_key))
+            if len(items) > MAX_PER_GROUP:
+                overflow = len(items) - MAX_PER_GROUP
+                kw = self._SEARCH_TYPE_TO_KEYWORD.get(type_key, "web") if type_key else "web"
+                lines.append(f"  … and {overflow} more — /search {kw} {query}")
+            # Add overflow items to _last_results even though not shown
+            for _, _, f, _ in items[MAX_PER_GROUP:]:
+                ordered_paths.append(f)
+
+        self._last_results = ordered_paths
+        lines.append("\nUse /memory N for detail on any item.")
+
+        await self._send_reply(update, "\n".join(lines))
 
     # ── /memory command ───────────────────────────────────────────────────────
 

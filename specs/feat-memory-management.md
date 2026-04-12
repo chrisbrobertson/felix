@@ -2,7 +2,7 @@
 specmas: 3.0
 kind: feature
 id: feat-memory-management
-version: 1.1.0
+version: 1.2.0
 created: 2026-04-11
 status: draft
 complexity: low
@@ -85,28 +85,82 @@ entry from a domain is unwanted.
 
 ---
 
-### FR-2: Search memories
+### FR-2: Search memories — grouped by knowledge area
 **Priority:** Critical
-**Command:** `/search <query>`
+**Command:** `/search <query>` or `/search <type> <query>`
 
 **Behaviour:**
-- Reuses `_score_relevance(path, query)` for keyword intersection scoring
-  against the cached 500-char file headers
-- Returns up to 10 results with score > 0, sorted by score descending then
-  mtime descending as tiebreaker
-- Sets `self._last_results` to the matching paths in reply order
-- Reply format (same as `/memories` but with score):
+
+**Default (unfiltered) — `/search <query>`:**
+- Keyword intersection scoring via `_score_relevance` against cached 500-char headers, same as before
+- Returns up to 50 matches (raised from 10) with score > 0, sorted by score desc then mtime desc
+- Sets `self._last_results` to all matching paths in global index order (1-based; `/memory N` still works)
+- Results are **grouped by memory type** in the reply, with a fixed display order:
+  1. Contacts (`type: contact`)
+  2. Commitments (`type: commitment`)
+  3. Projects (`type: project`)
+  4. Meetings (`type: meeting_transcript`)
+  5. Email threads (`type: email_thread`)
+  6. Slack threads (`type: slack_thread`)
+  7. Calendar events (`type: calendar_event`)
+  8. Web memories (everything else / no `type` field)
+- Each group shows up to **5 items** with their global index numbers. If a group has more than 5 matches, a hint line is shown: `  … and N more — /search email <query>`
+- Global index numbers are assigned across all groups in the fixed group order, not score order within a group. Within each group, items are sorted by score desc then mtime desc.
+- Scores are **not shown** in the grouped view (they were noise for users; kept internally for sorting).
+- Reply format example:
   ```
-  Search results for "react prompting":
-  1. ReAct Prompting | Prompt Engineering Guide  (2026-04-11) [score: 3]
-  2. ...
+  Search results for "tom jones" — 14 matches
+
+  Contacts (1)
+    1. Tom Jones — last seen 3 days ago
+
+  Commitments (2)
+    2. [outbound] Deliver Q2 proposal to Tom Jones
+    3. [waiting] Contract renewal — Tom Jones
+
+  Email threads (4)
+    4. Re: Project Alpha — Tom Jones · Apr 8
+    5. RE: Q2 Budget — Tom Jones · Apr 2
+    6. Intro: Tom Jones & Sarah · Mar 20
+    7. Fwd: Contract — Tom Jones · Mar 15
+    … and 1 more — /search email tom jones
+
+  Meetings (2)
+    8. Q1 Review — Apr 5 — Tom Jones +3 others
+    9. Strategy call — Mar 28
+
+  Projects (1)
+    10. project-alpha [code] · last commit Apr 8
+
+  Use /memory N for detail on any item.
   ```
 - If no matches: `"No memories match '<query>'."`
 
+**Type-filtered — `/search <type> <query>`:**
+- First arg is one of: `email`, `slack`, `meeting`, `project`, `commitment`, `event`, `contact`, `web`
+- Filters to that memory type only; shows all matches (up to 50) in a flat list (same as old flat format but without scores)
+- Uses same `_last_results` so `/memory N` works on filtered results
+- "and N more" hints in the grouped view use this syntax to provide easy drill-down
+
+**Type keyword → `type` field mapping:**
+| Keyword | `type` value(s) |
+|---------|-----------------|
+| `email` | `email_thread` |
+| `slack` | `slack_thread` |
+| `meeting` | `meeting_transcript` |
+| `project` | `project` |
+| `commitment` | `commitment` |
+| `event` | `calendar_event` |
+| `contact` | `contact` |
+| `web` | no `type` field or unrecognised type |
+
 **Acceptance Criteria:**
 - Query with no args returns usage hint
-- Score shown as integer (word-match count)
-- `_last_results` updated after every call
+- `_last_results` updated after every call; `/memory N` resolves correctly for grouped results
+- Groups with zero matches are omitted from the reply
+- Type filter keyword must be the exact first token to trigger filtered mode; ambiguous queries like `/search email` with no second arg return usage hint
+- "… and N more" only shown when a group exceeds 5 items
+- Scores not shown to the user (internal only)
 
 ---
 
@@ -269,6 +323,20 @@ self.app.add_handler(CommandHandler("delete",   self.cmd_delete))
 ---
 
 ## Changelog
+
+### v1.2.0 — 2026-04-11
+
+**Updated FRs:**
+
+#### FR-2: Search — grouped results + type filter
+
+`/search <query>` now groups results by memory type (contacts, commitments, projects, meetings, emails, slack, events, web) instead of a flat scored list. Up to 5 items per group are shown; a "… and N more — /search <type> <query>" hint appears when a group overflows. Global 1-based index numbering across all groups; `/memory N` still resolves any item.
+
+`/search <type> <query>` is a new filtered mode: first arg must be one of `email`, `slack`, `meeting`, `project`, `commitment`, `event`, `contact`, `web`. Returns a flat list for that type only. The "and N more" hints in grouped view use this syntax for one-tap drill-down.
+
+Result cap raised from 10 to 50. Scores no longer shown to users.
+
+---
 
 ### v1.1.0 — 2026-04-11
 
