@@ -42,6 +42,8 @@ async def main():
         from slack_scanner import SlackScanner
         from calendar_scanner import CalendarScanner
         from notification_manager import NotificationManager
+        from skill_creator import SkillCreator
+        from report_scheduler import ReportScheduler
         chat = TelegramChatHandler()
         optimizer = SkillOptimizer(config)
         indexer = IndexBuilder()
@@ -59,9 +61,26 @@ async def main():
         notification_mgr = NotificationManager(bot=chat.app.bot, deploy_dir=DEPLOY_DIR)
         chat.notification_manager = notification_mgr
 
+        # Skill creator — wired into browser_watcher and chat_handler
+        skill_creator = SkillCreator(config)
+        skill_creator._notification_callback = notification_mgr.send_message
+        watcher.skill_creator = skill_creator
+        watcher.skill_optimizer = optimizer
+        chat.skill_creator = skill_creator
+
+        # Report scheduler — 13th loop
+        report_scheduler = ReportScheduler(
+            config=config,
+            bot=chat.app.bot,
+            chat_id_getter=notification_mgr.get_chat_id,
+            deploy_dir=DEPLOY_DIR,
+        )
+        chat.report_scheduler = report_scheduler
+
         tasks += [
             chat.poll_loop,
             optimizer.run_loop,
+            optimizer.run_urgent_loop,
             indexer.run_loop,
             scanner.run_loop,
             email_scanner.run_loop,
@@ -71,6 +90,7 @@ async def main():
             slack_scanner.run_loop,
             calendar_scanner.run_loop,
             notification_mgr.run_loop,
+            report_scheduler.run_loop,
         ]
 
     stop_event = asyncio.Event()

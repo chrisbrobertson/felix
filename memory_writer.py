@@ -58,6 +58,8 @@ class MemoryWriter:
             "browser": entry.get("browser", "unknown"),
             "hostname": __import__("socket").gethostname(),
         }
+        if "content_type" in entry:
+            frontmatter["content_type"] = entry["content_type"]
 
         content = f"---\n{yaml.dump(frontmatter, sort_keys=False)}---\n\n{body}\n"
 

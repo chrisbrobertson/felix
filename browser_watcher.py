@@ -6,12 +6,14 @@ import sqlite3
 import yaml
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 import httpx
 from bs4 import BeautifulSoup
 
 from memory_writer import MemoryWriter
 from skill_executor import SkillExecutor
+from skill_router import detect_content_type, SKILL_REGISTRY
 
 log = logging.getLogger("browser-watcher")
 
@@ -24,19 +26,53 @@ CONFIG_PATH = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second
 
 class BrowserWatcher:
     def __init__(self, role: str = "full"):
-        self.executor = SkillExecutor("summarize-webpage", role=role)
+        self._executor_pool: dict[str, SkillExecutor] = {}
+        self._default_executor = SkillExecutor("summarize-webpage", role=role)
         self.writer = MemoryWriter()
         self.seen_urls: set = self._load_seen_urls()
+        # References set by daemon.py after construction
+        self.skill_creator = None   # SkillCreator instance
+        self.skill_optimizer = None  # SkillOptimizer instance
 
     def _load_seen_urls(self) -> set:
         if SEEN_URLS_FILE.exists():
             return set(SEEN_URLS_FILE.read_text().splitlines())
         return set()
 
+    def _get_executor(self, skill_name: str) -> SkillExecutor:
+        """Return cached SkillExecutor for skill_name, creating it if needed.
+        Falls back to default summarize-webpage executor on FileNotFoundError."""
+        if skill_name in self._executor_pool:
+            return self._executor_pool[skill_name]
+        try:
+            executor = SkillExecutor(skill_name)
+            self._executor_pool[skill_name] = executor
+            log.debug(f"Created executor for skill: {skill_name}")
+            return executor
+        except FileNotFoundError:
+            log.warning(f"Skill file {skill_name}.md not found, falling back to default")
+            # Cache under the original name so we don't retry FileNotFoundError on every URL
+            self._executor_pool[skill_name] = self._default_executor
+            return self._default_executor
+
     def save_seen_urls(self):
         # Called on shutdown — persists seen set so restarts don't reprocess
         SEEN_URLS_FILE.write_text("\n".join(self.seen_urls))
         log.info(f"Persisted {len(self.seen_urls)} seen URLs")
+
+    def _check_heuristics(self, output: str) -> Optional[str]:
+        """Fast synchronous quality check. Returns flag reason or None."""
+        if len(output) < 100:
+            return "too_short"
+        error_phrases = ["I cannot", "I'm unable", "Error:", "Failed to", "I don't have access"]
+        if any(p in output for p in error_phrases):
+            return "error_output"
+        has_structure = any(marker in output for marker in ["#", "- ", "**", "1.", "2.", "3."])
+        if not has_structure and len(output) < 300:
+            return "unstructured"
+        # verbatim_copy: unique chars in output that aren't in input is < 15% of output length
+        # (Only check if we have input to compare — skip for safety if output is short)
+        return None
 
     def _copy_db(self, src: Path) -> Path:
         # Chrome locks its SQLite DB while running — must copy before reading
@@ -126,18 +162,62 @@ class BrowserWatcher:
             log.debug(f"Skipping {entry['url']} — insufficient content")
             return
 
-        memory_body = await self.executor.run({
+        # Detect content type and route to appropriate skill
+        content_type = detect_content_type(
+            url=entry["url"],
+            content=content[:3000],
+        )
+        skill_name = SKILL_REGISTRY.get(content_type, "summarize-webpage")
+        executor = self._get_executor(skill_name)
+
+        # If we fell back to default for a non-default type, signal gap to skill_creator
+        if content_type != "default" and executor is self._default_executor and self.skill_creator:
+            asyncio.create_task(
+                self.skill_creator.handle_gap(content_type, entry["url"], content[:500])
+            )
+
+        # Add content_type to entry metadata for memory_writer
+        entry = {**entry, "content_type": content_type}
+
+        memory_body = await executor.run({
             "url": entry["url"],
             "title": entry["title"],
             "content": content
         })
 
-        if memory_body:
+        if not memory_body:
+            return
+
+        # FR-15: Heuristic pre-filter — check quality before writing
+        flag = self._check_heuristics(memory_body)
+        if flag and self.skill_optimizer:
+            self.skill_optimizer.add_to_urgent_queue({
+                "skill_name": skill_name,
+                "execution_timestamp": datetime.now().isoformat(),
+                "flag_reason": flag,
+                "input_snippet": content[:200],
+                "output_snippet": memory_body[:200],
+            })
+
+        # Check if skill is in probation — shadow mode (run but don't write)
+        in_probation = False
+        if self.skill_creator and skill_name != "summarize-webpage":
+            registry = self.skill_creator._load_registry()
+            skill_entry = registry.get("skills", {}).get(skill_name, {})
+            if skill_entry.get("status") == "probation":
+                in_probation = True
+                self.skill_creator.increment_probation(skill_name)
+                log.debug(f"Shadow execution (probation): {skill_name} for {entry['url'][:60]}")
+
+        if not in_probation:
             await self.writer.write(entry, memory_body)
             self.seen_urls.add(entry["url"])
-            # Persist after every successful write — survive restarts
             self.save_seen_urls()
-            log.info(f"Memory written: {entry['title'][:60]}")
+            log.info(f"Memory written: {entry['title'][:60]} [{content_type}]")
+        else:
+            # Still mark as seen so we don't re-process on next cycle
+            self.seen_urls.add(entry["url"])
+            self.save_seen_urls()
 
     async def run_loop(self, stop_event: asyncio.Event):
         while not stop_event.is_set():

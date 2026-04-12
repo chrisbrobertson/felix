@@ -42,6 +42,12 @@ class SkillOptimizer:
         self.judge_model = self.config.get("judge_model", "judge")
         self.dry_run = self.config.get("dry_run", False)
 
+        # FR-15 through FR-20: Real-time reflection
+        self.realtime_judge = self.config.get("realtime_judge", False)
+        self._urgent_queue: list[dict] = []  # populated by browser_watcher heuristic pre-filter
+        self._judge_calls_this_hour: list[float] = []  # timestamps of recent judge calls
+        self._skill_creator = None  # set by daemon.py if available
+
     async def run_loop(self, stop_event: asyncio.Event):
         """Main loop: schedule daily optimization passes at run_hour."""
         while not stop_event.is_set():
@@ -132,6 +138,13 @@ class SkillOptimizer:
                 continue
 
         log.info("Daily optimization pass complete")
+
+        # Trigger probation graduation check if skill_creator is wired in
+        if self._skill_creator is not None:
+            try:
+                await self._skill_creator.run_probation_check(self)
+            except Exception as e:
+                log.error(f"Probation check failed: {e}")
 
     async def _merge_watcher_logs(self):
         """FR-2: Merge watcher node JSONL logs into skill execution history tables."""
@@ -530,6 +543,10 @@ Respond with JSON only:
         if len(parts) < 3:
             return False, "invalid frontmatter"
 
+        # Skip probation skills — their executions are the training signal, not noise
+        if "status: probation" in text or "status: failed" in text:
+            return False, "skill is in probation or failed state"
+
         fm = yaml.safe_load(parts[1])
         success_rate = fm.get("success_rate")
         total_runs = fm.get("total_runs", 0)
@@ -913,6 +930,179 @@ Please rewrite the skill file following the meta-skill instructions."""
             return 1
         fm = yaml.safe_load(parts[1])
         return fm.get("version", 1)
+
+    def add_to_urgent_queue(self, entry: dict):
+        """Called by BrowserWatcher after heuristic pre-filter flags an output.
+
+        entry keys: skill_name, execution_timestamp, flag_reason, input_snippet, output_snippet
+        """
+        if len(self._urgent_queue) >= 20:
+            # Only add entries for skills already in the queue
+            existing_skills = {e["skill_name"] for e in self._urgent_queue}
+            if entry["skill_name"] not in existing_skills:
+                log.debug(f"Urgent queue capped, skipping new skill: {entry['skill_name']}")
+                return
+
+        self._urgent_queue.append(entry)
+        log.info(f"Urgent queue: {entry['skill_name']} flagged as {entry['flag_reason']} "
+                 f"(queue size: {len(self._urgent_queue)})")
+
+        # Optionally fire judge call
+        if self.realtime_judge:
+            import asyncio
+            asyncio.create_task(self._realtime_judge_call(entry))
+
+    async def run_urgent_loop(self, stop_event: asyncio.Event):
+        """Hourly processor: rewrites skills with ≥2 flagged executions in the urgent queue."""
+        while not stop_event.is_set():
+            # Sleep 60 minutes, but wake on stop_event
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=3600)
+                break  # stop_event was set
+            except asyncio.TimeoutError:
+                pass
+
+            if stop_event.is_set():
+                break
+
+            await self._process_urgent_queue(stop_event)
+
+    async def _process_urgent_queue(self, stop_event: asyncio.Event):
+        """Process skills in the urgent queue, rewriting those with ≥2 flags."""
+        if not self._urgent_queue:
+            return
+
+        log.info(f"Processing urgent queue: {len(self._urgent_queue)} entries")
+
+        # Group by skill name
+        by_skill: dict[str, list[dict]] = {}
+        for entry in self._urgent_queue:
+            by_skill.setdefault(entry["skill_name"], []).append(entry)
+
+        rewrote_count = 0
+        processed_skills = []
+
+        for skill_name, entries in by_skill.items():
+            if stop_event.is_set():
+                break
+            if rewrote_count >= 3:
+                log.info("Urgent queue: rewrite cap (3 skills/tick) reached")
+                break
+
+            skill_path = SKILLS_DIR / f"{skill_name}.md"
+            if not skill_path.exists():
+                log.warning(f"Urgent queue: skill file not found: {skill_name}")
+                processed_skills.append(skill_name)
+                continue
+
+            # Check if skill is in probation — skip probation skills
+            try:
+                text = skill_path.read_text()
+                if "status: probation" in text:
+                    log.debug(f"Urgent queue: skipping probation skill {skill_name}")
+                    processed_skills.append(skill_name)
+                    continue
+            except Exception:
+                pass
+
+            should_rewrite = len(entries) >= 2
+
+            if not should_rewrite:
+                # Single entry: only rewrite if the same flag appeared in nightly history
+                flag = entries[0]["flag_reason"]
+                should_rewrite = self._appeared_in_nightly_history(skill_path, flag)
+
+            if should_rewrite:
+                try:
+                    log.info(f"Urgent rewrite: {skill_name} ({len(entries)} flags: "
+                             f"{[e['flag_reason'] for e in entries]})")
+                    await self._optimize_skill(skill_path, stop_event)
+                    rewrote_count += 1
+                except Exception as e:
+                    log.error(f"Urgent rewrite failed for {skill_name}: {e}")
+
+            processed_skills.append(skill_name)
+
+        # Remove processed entries from queue
+        self._urgent_queue = [
+            e for e in self._urgent_queue
+            if e["skill_name"] not in processed_skills
+        ]
+        log.info(f"Urgent queue processed: {rewrote_count} rewrites, "
+                 f"{len(self._urgent_queue)} entries remaining")
+
+    def _appeared_in_nightly_history(self, skill_path: Path, flag_reason: str) -> bool:
+        """Check if this flag_reason appeared in the skill's nightly score history.
+        Returns True if the skill has low-scored executions in its history."""
+        try:
+            text = skill_path.read_text()
+            # Check execution history for low scores — proxy for the same failure pattern
+            history_match = re.search(r'## Execution History.*?(?=\n##|\Z)', text, re.DOTALL)
+            if not history_match:
+                return False
+            history = history_match.group(0)
+            # Find rows with score < 0.5
+            low_score_rows = re.findall(r'\|\s*[\d-]+\s*\|[^|]+\|[^|]+\|\s*(0\.[0-4]\d*)\s*\|', history)
+            return len(low_score_rows) >= 1
+        except Exception:
+            return False
+
+    async def _realtime_judge_call(self, entry: dict):
+        """Optional async judge call for flagged executions. Rate-limited to 5/hour."""
+        import time
+        now = time.time()
+        # Prune old timestamps
+        self._judge_calls_this_hour = [t for t in self._judge_calls_this_hour if now - t < 3600]
+
+        if len(self._judge_calls_this_hour) >= 5:
+            log.warning(f"Realtime judge rate limit reached (5/hour), skipping for {entry['skill_name']}")
+            return
+
+        self._judge_calls_this_hour.append(now)
+
+        prompt = f"""You are evaluating the quality of a skill output.
+
+Skill: {entry['skill_name']}
+Output:
+{entry['output_snippet']}
+
+Rate this output on a scale of 1 to 5:
+- 5: Excellent — well-structured, complete, useful
+- 4: Good — minor issues, still useful
+- 3: Acceptable — some problems but salvageable
+- 2: Poor — missing key content or badly structured
+- 1: Failed — junk, empty, or seriously wrong
+
+Respond with JSON only: {{"score": 1, "reasoning": "one sentence"}}"""
+
+        try:
+            response = await acompletion(
+                model=self.judge_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=100,
+            )
+            text = response.choices[0].message.content.strip()
+            data = json.loads(text)
+            score = int(data.get("score", 3))
+
+            log.info(f"Realtime judge: {entry['skill_name']} score={score} ({data.get('reasoning', '')})")
+
+            if score <= 2:
+                # Force add to queue (bypass the normal rules)
+                if len(self._urgent_queue) < 20:
+                    self._urgent_queue.append(entry)
+                    log.info(f"Judge score {score} — forced queue add: {entry['skill_name']}")
+            elif score >= 4:
+                # False positive — remove from queue if present
+                self._urgent_queue = [
+                    e for e in self._urgent_queue
+                    if not (e["skill_name"] == entry["skill_name"] and
+                            e["execution_timestamp"] == entry["execution_timestamp"])
+                ]
+                log.info(f"Judge score {score} — false positive, removed from queue: {entry['skill_name']}")
+
+        except Exception as e:
+            log.warning(f"Realtime judge call failed for {entry['skill_name']}: {e}")
 
     def _atomic_write(self, path: Path, content: str):
         """FR-11: Atomic file write using temp file + rename."""

@@ -2,8 +2,9 @@
 specmas: 3.0
 kind: feature
 id: feat-skill-optimizer
-version: 1.0.0
+version: 1.1.0
 created: 2026-04-11
+updated: 2026-04-12
 status: draft
 complexity: moderate
 maturity: 1
@@ -57,11 +58,11 @@ optimization).
 - Dry-run mode for safe testing
 
 **Out of Scope:**
-- Real-time or inline scoring during skill execution (remains batch)
 - Multi-objective optimization (accuracy vs. latency vs. cost)
 - A/B testing of candidate rewrites before committing (PromptBreeder pattern)
 - Cross-skill learning (each skill optimized independently)
 - Automatic skill creation (the optimizer only improves existing skills)
+- Online learning or reinforcement learning approaches (RLHF)
 
 ### Success Metrics
 
@@ -512,12 +513,198 @@ reload `self._skill`.
 
 ---
 
+### FR-15: Heuristic Pre-filter (Real-time, Synchronous)
+
+After every skill execution, run a fast synchronous quality check BEFORE writing
+the memory file. No LLM call — pure heuristics on the output text.
+
+**Heuristic rules:**
+- **`too_short`**: Output length < 100 chars
+- **`error_output`**: Output contains any of: "I cannot", "I'm unable", "Error:", 
+  "Failed to", "I don't have access"
+- **`unstructured`**: Output has no markdown structure (no `#`, no `-`, no `**`, 
+  no numbered list) AND length < 300
+- **`verbatim_copy`**: Output is >90% identical to the input (copy-paste, not 
+  summarization). Quick char-level check: if `len(set(output_chars) - set(input_chars)) / len(output) < 0.15`
+
+**Action on flag:**
+- Append execution to an in-memory `_urgent_queue` list (managed by `SkillOptimizer` instance)
+- Queue entry structure: `{skill_name, execution_timestamp, flag_reason, input_snippet (first 200 chars), output_snippet (first 200 chars)}`
+- Do NOT suppress the memory write — still write the memory file (don't break the pipeline)
+
+**Queue capping:**
+- Cap the queue at 20 entries total
+- Once capped, only add entries for skills already in the queue (don't add new skills)
+- This prevents a bad URL from flooding the queue
+
+**Validation criteria:**
+- Flagged executions appear in `_urgent_queue` within 1 second of execution
+- Memory file is still written after flag (pipeline not broken)
+- Queue never exceeds 20 entries
+- After cap, new skills are not added (only existing skills accumulate more entries)
+
+---
+
+### FR-16: Urgent Rewrite Queue
+
+An in-memory list `_urgent_queue` on the `SkillOptimizer` instance, populated by FR-15.
+
+**Structure per entry:**
+```python
+{
+  "skill_name": str,
+  "execution_timestamp": str,  # ISO format
+  "flag_reason": str,          # too_short | error_output | unstructured | verbatim_copy
+  "input_snippet": str,        # first 200 chars
+  "output_snippet": str        # first 200 chars
+}
+```
+
+**Capacity:** 20 entries total
+
+**Validation criteria:**
+- Queue is accessible to both the heuristic pre-filter (append) and the hourly processor (read/clear)
+- Queue persists across hourly ticks (not cleared between runs)
+- Entries are timestamped for later analysis
+
+---
+
+### FR-17: Hourly Queue Processor
+
+`SkillOptimizer` gains a second async loop `run_urgent_loop()` that runs every 60 minutes
+(not just nightly).
+
+**Processing logic per tick:**
+1. If `_urgent_queue` is empty: skip
+2. Group queue entries by skill name
+3. For skills with ≥2 flagged executions in the queue: trigger an immediate rewrite cycle
+   (same path as the nightly rewrite, just scoped to those skills)
+4. For skills with exactly 1 flagged execution: check if that same execution pattern 
+   appeared in the last nightly run's history too — if so, trigger rewrite; otherwise wait
+5. After processing, clear processed entries from `_urgent_queue`
+6. Rewrite is capped at 3 skills per hourly tick to avoid LLM cost spikes
+
+**Scheduling:**
+- Sleep exactly 60 minutes using `asyncio.wait_for(stop_event.wait(), timeout=3600)`
+- On stop event, terminate gracefully without waiting for the full hour
+- First tick runs 60 minutes after `daemon.py` startup (not immediately)
+
+**Validation criteria:**
+- Hourly loop runs every 60 minutes ± 10 seconds
+- Skills with ≥2 flagged executions are rewritten within one hourly tick
+- No more than 3 skills rewritten per hourly tick (cost cap)
+- Processed entries removed from queue after successful rewrite
+- Loop respects `stop_event` (can be stopped mid-sleep)
+
+---
+
+### FR-18: Optional Per-execution Judge Call
+
+Config flag `optimizer.realtime_judge: false` (default off). When enabled, after a
+heuristic flag (FR-15), additionally call the `judge` model route with a short prompt
+asking "Is this a good summary? Rate 1-5." on the flagged output.
+
+**Judge prompt (real-time variant):**
+```
+You are evaluating the quality of a skill output.
+
+Skill: {skill_name}
+Output:
+{output_text}
+
+Rate this output on a scale of 1 to 5:
+- 5: Excellent — well-structured, complete, useful
+- 4: Good — minor issues, still useful
+- 3: Acceptable — some problems but salvageable
+- 2: Poor — missing key content or badly structured
+- 1: Failed — junk, empty, or seriously wrong
+
+Respond with JSON only:
+{"score": 1, "reasoning": "one sentence explanation"}
+```
+
+**Judge call behaviour:**
+- If judge score ≤ 2: immediately add to urgent queue even if this is the first failure
+- If judge score ≥ 4: remove the heuristic flag (it was a false positive), do not add to queue
+- If judge score = 3: keep the heuristic flag, add to queue using normal rules (FR-15)
+- Judge call is async (fire-and-forget, not blocking the BrowserWatcher loop) — use `asyncio.create_task`
+- Cap judge calls at 5/hour to limit API cost
+
+**Cost control:**
+- Track judge call count per hour using a sliding window
+- If 5 calls already made in the last 60 minutes: skip the judge call, use heuristic flag only
+- Log WARNING when judge calls are rate-limited
+
+**Validation criteria:**
+- Judge call does not block the BrowserWatcher loop (fire-and-forget)
+- Judge score ≤ 2 → immediate queue add
+- Judge score ≥ 4 → heuristic flag removed, no queue add
+- No more than 5 judge calls per hour
+- Judge call failure (timeout, parse error) logs WARNING and falls back to heuristic flag
+
+---
+
+### FR-19: Reflection Metadata in Execution History
+
+The execution history table appended to skill files (already defined in v1.0) gains two
+new columns: `heuristic_flag` and `judge_score`. Both are empty string for normal executions.
+Populated when FR-15/FR-18 fire.
+
+**Updated table format:**
+```markdown
+| date | input_slug | model | score | heuristic_flag | judge_score | notes |
+|------|-----------|-------|-------|----------------|-------------|-------|
+| 2026-04-14 | great-article-abc12 | gemini-2.0-flash | 0.95 | | | excellent |
+| 2026-04-13 | news-item-def34 | gemini-2.0-flash | 0.55 | too_short | 2 | missing content |
+```
+
+**Columns:**
+- `heuristic_flag`: one of `too_short`, `error_output`, `unstructured`, `verbatim_copy`, 
+  or empty string if no flag
+- `judge_score`: integer 1-5 if FR-18 fired, empty string otherwise
+
+**Backward compatibility:**
+- Existing skill files without these columns: append columns with empty string defaults
+- Parser must handle both old (5 columns) and new (7 columns) table formats
+
+**Validation criteria:**
+- New executions write 7 columns (including the new metadata columns)
+- Flagged executions have `heuristic_flag` populated
+- Real-time judge calls (if enabled) populate `judge_score`
+- Parser handles old 5-column format without crashing
+
+---
+
+### FR-20: `daemon.py` Integration
+
+`daemon.py` must start the `run_urgent_loop()` coroutine alongside the existing nightly
+`run_loop()`. Both are gathered in the same `asyncio.gather()` call that starts all loops.
+
+**Guard:** Only start urgent loop if `optimizer.enabled: true` (same guard as nightly).
+
+**Updated daemon.py gather call structure:**
+```python
+if daemon_role == "full":
+    skill_optimizer = SkillOptimizer(...)
+    tasks.append(skill_optimizer.run_loop())      # nightly
+    tasks.append(skill_optimizer.run_urgent_loop())  # hourly
+```
+
+**Validation criteria:**
+- Both loops run when `optimizer.enabled: true`
+- Neither loop runs when `optimizer.enabled: false`
+- Stopping the daemon (Ctrl+C) terminates both loops gracefully
+- Hourly loop does not interfere with nightly loop (separate sleep cycles)
+
+---
+
 ## Config
 
 Full `skill_optimizer` section for `config.yaml.template`:
 
 ```yaml
 skill_optimizer:
+  enabled: true                     # enable optimizer (both nightly and hourly loops)
   run_hour: 3                       # hour to run daily (0–23, local time)
   min_runs_before_optimize: 10      # minimum numeric scores before optimizing
   underperformance_threshold: 0.70  # optimize if success_rate < this
@@ -528,6 +715,7 @@ skill_optimizer:
   max_skill_backups: 5              # rolling backup files to keep (.1 through .N)
   judge_model: judge                # LiteLLM route for judge calls (Haiku 4.5)
   dry_run: false                    # log changes without writing files
+  realtime_judge: false             # enable optional per-execution judge calls (FR-18)
 ```
 
 ---
@@ -547,6 +735,62 @@ For a system with 10 skills running ~20 total executions per day:
 - Scoring: 20 Flash calls ≈ $0.002
 - Critique + rewrite (2 skills): 4 Sonnet calls ≈ $0.01
 - **Daily total: ~$0.012**
+
+**v1.1.0 real-time reflection additions:**
+- Heuristic pre-filter: zero cost (synchronous checks)
+- Optional real-time judge calls: 5/hour max = 120/day ≈ $0.012 (if enabled)
+- Hourly urgent rewrites: ~3 skills/day = 6 Sonnet calls ≈ $0.015
+
+**Total with real-time reflection enabled: ~$0.039/day**
+
+---
+
+## Module Design
+
+### Real-time Reflection Architecture (v1.1.0)
+
+Data flow from skill execution through real-time reflection to urgent rewrite:
+
+```
+BrowserWatcher.run()
+      ↓
+SkillExecutor.run() → output
+      ↓
+Heuristic Check (FR-15)
+      ├─ too_short / error_output / unstructured / verbatim_copy?
+      │       ↓ YES
+      │  [Optional] Async Judge Call (FR-18, if enabled)
+      │       ↓
+      │  Add to SkillOptimizer._urgent_queue (FR-16)
+      │       ↓
+      └─ NO → continue
+      ↓
+Write memory file (normal pipeline)
+
+[Every 60 minutes]
+SkillOptimizer.run_urgent_loop() (FR-17)
+      ↓
+Group _urgent_queue by skill
+      ↓
+Skills with ≥2 flagged executions → immediate rewrite
+Skills with 1 flagged execution + nightly history match → rewrite
+      ↓
+Critique + Rewrite (same as nightly, scoped to flagged skills)
+      ↓
+Clear processed entries from _urgent_queue
+```
+
+**Key design decisions:**
+1. **Heuristics first, judge optional**: Fast synchronous checks catch obvious failures 
+   without blocking the BrowserWatcher loop. LLM judge only fires if enabled.
+2. **Fire-and-forget judge**: Judge call is `asyncio.create_task()`, not `await` — 
+   never blocks memory write.
+3. **Queue capping prevents flood**: 20-entry cap + existing-skills-only rule prevents 
+   a single bad URL from triggering infinite rewrites.
+4. **Hourly not instant**: Rewrite cycle is expensive; batching at 60-min intervals 
+   balances responsiveness vs. cost.
+5. **Reuse nightly rewrite logic**: Hourly processor calls the same critique+edit path, 
+   just scoped to flagged skills — no code duplication.
 
 ---
 
@@ -603,10 +847,11 @@ Two-sentence summary of the article.
 
 ## Execution History
 
-| date | input_slug | model | score | notes |
-|------|-----------|-------|-------|-------|
-| 2026-04-14 | great-article-abc12 | claude-haiku-4-5-20251001 | 0.95 | excellent |
-| 2026-04-13 | news-item-def34 | claude-haiku-4-5-20251001 | 0.55 | missing entity ExampleCorp |
+| date | input_slug | model | score | heuristic_flag | judge_score | notes |
+|------|-----------|-------|-------|----------------|-------------|-------|
+| 2026-04-14 | great-article-abc12 | gemini-2.0-flash | 0.95 | | | excellent |
+| 2026-04-13 | news-item-def34 | gemini-2.0-flash | 0.55 | too_short | 2 | missing entity ExampleCorp |
+| 2026-04-12 | old-post-ghi78 | gemini-2.0-flash | 0.88 | | | |
 ```
 
 **Backup files** (iCloud `skills/` directory, alongside the skill file):
@@ -672,6 +917,27 @@ summarize-webpage.md.5       ← oldest backup kept
 | `test_dry_run_no_files_written` | dry_run: true → no file modifications |
 | `test_dry_run_logs_proposed_changes` | dry_run: true → INFO logs show what would change |
 | `test_executor_reload_on_modify` | SkillExecutor picks up new Instructions after optimizer write |
+| `test_heuristic_too_short_flags` | Output < 100 chars → flagged as too_short |
+| `test_heuristic_error_output_flags` | Output contains "I cannot" → flagged as error_output |
+| `test_heuristic_unstructured_flags` | No markdown + < 300 chars → flagged as unstructured |
+| `test_heuristic_verbatim_copy_flags` | >90% char overlap → flagged as verbatim_copy |
+| `test_heuristic_adds_to_urgent_queue` | Flag → entry added to _urgent_queue |
+| `test_heuristic_does_not_suppress_write` | Flagged execution still writes memory file |
+| `test_urgent_queue_caps_at_20` | Queue never exceeds 20 entries |
+| `test_urgent_queue_capped_only_existing_skills` | After cap, only skills already in queue can add entries |
+| `test_hourly_loop_schedules_60min` | run_urgent_loop() sleeps ~3600 seconds |
+| `test_hourly_loop_processes_2plus_flags` | Skill with ≥2 flags → immediate rewrite |
+| `test_hourly_loop_single_flag_plus_history` | 1 flag + nightly history match → rewrite |
+| `test_hourly_loop_caps_3_skills_per_tick` | No more than 3 skills rewritten per hourly tick |
+| `test_hourly_loop_clears_processed_entries` | After rewrite, processed entries removed from queue |
+| `test_realtime_judge_score_2_immediate_add` | Judge score ≤ 2 → immediate queue add |
+| `test_realtime_judge_score_4_removes_flag` | Judge score ≥ 4 → heuristic flag removed, no queue add |
+| `test_realtime_judge_rate_limited_5_per_hour` | 6th judge call in 60 min → skipped, WARNING logged |
+| `test_realtime_judge_async_no_blocking` | Judge call does not block BrowserWatcher loop |
+| `test_execution_history_7_columns` | New executions write 7 columns (including heuristic_flag, judge_score) |
+| `test_execution_history_backward_compat` | Parser handles old 5-column format |
+| `test_daemon_starts_both_loops` | daemon.py starts both run_loop() and run_urgent_loop() |
+| `test_daemon_guard_enabled_false` | optimizer.enabled: false → neither loop starts |
 
 ---
 
@@ -684,3 +950,49 @@ summarize-webpage.md.5       ← oldest backup kept
 | `test_optimizer_backup_created` | After rewrite → `.1` backup exists with prior content |
 | `test_optimizer_rollback_on_regression` | Pre-populate prev_version_avg_score > new avg → optimizer restores backup |
 | `test_watcher_log_merged_before_scoring` | Write JSONL to iCloud logs dir → rows appear in history |
+| `test_heuristic_flags_trigger_hourly_rewrite` | Seed _urgent_queue with 2 flags → hourly loop rewrites skill |
+| `test_realtime_judge_prevents_false_positive` | Heuristic flag + judge score 4 → no queue add |
+
+---
+
+## Changelog
+
+### v1.1.0 (2026-04-12) — Real-time Reflection
+
+Adds real-time quality checks and hourly urgent rewrites to catch systematic failures
+faster than the nightly batch cycle.
+
+**New functional requirements:**
+- **FR-15**: Heuristic pre-filter — synchronous quality checks after every execution 
+  (too_short, error_output, unstructured, verbatim_copy) with zero LLM cost
+- **FR-16**: Urgent rewrite queue — in-memory list of flagged executions, capped at 
+  20 entries to prevent flood
+- **FR-17**: Hourly queue processor — second async loop that rewrites skills with ≥2 
+  flagged executions, capped at 3 skills/hour for cost control
+- **FR-18**: Optional per-execution judge call — async LLM call to validate or override 
+  heuristic flags, rate-limited to 5/hour
+- **FR-19**: Reflection metadata in execution history — two new columns (`heuristic_flag`, 
+  `judge_score`) create training signal for nightly optimizer
+- **FR-20**: daemon.py integration — starts both nightly and hourly loops under the 
+  same `optimizer.enabled` guard
+
+**Architecture changes:**
+- Moved real-time scoring from "Out of Scope" to in-scope with nuanced heuristic-first approach
+- Added Real-time Reflection Architecture diagram showing data flow from execution → 
+  heuristic → judge → queue → rewrite
+- Updated skill file format to 7-column execution history table (backward compatible)
+
+**Cost impact:**
+- Heuristics: zero cost
+- Real-time judge (if enabled): ~$0.012/day (120 calls max)
+- Hourly urgent rewrites: ~$0.015/day (3 skills × 2 calls)
+- Total daily cost with reflection enabled: ~$0.039 (3.25× the v1.0 baseline, still < $0.04)
+
+**Testing additions:**
+- 21 new unit tests covering heuristic checks, queue management, hourly loop, judge rate limiting
+- 2 new integration tests for end-to-end reflection pipeline
+
+### v1.0.0 (2026-04-11) — Initial Spec
+
+Nightly batch optimizer with LLM-as-judge scoring, OPRO-style critique-edit rewrite,
+regression rollback, and auto-exemplar injection.

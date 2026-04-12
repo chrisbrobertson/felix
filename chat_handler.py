@@ -61,6 +61,36 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("purge",    "Delete all memories for a domain"),
         ("purgeall", "Delete memories for every skipped domain"),
     ],
+    "Feature Requests": [
+        ("feature",          "Capture a new feature request"),
+        ("feature_new",      "Alias of /feature"),
+        ("features",         "List feature requests (optional status filter)"),
+        ("feature_detail",   "Show feature N from last list"),
+        ("fdetail",          "Alias of /feature-detail"),
+        ("feature_priority", "Set priority of feature N (low/medium/high/critical)"),
+        ("feature_plan",     "Mark feature N as planned"),
+        ("feature_start",    "Mark feature N as in-progress"),
+        ("feature_done",     "Mark feature N as done (optional closing note)"),
+        ("feature_wont_do",  "Mark feature N as won't do (optional reason)"),
+        ("feature_note",     "Append a timestamped note to feature N"),
+    ],
+    "Skill Management": [
+        ("skill_drafts",    "List pending skill drafts awaiting approval"),
+        ("skill_draft",     "Show full draft N from last list"),
+        ("approve_skill",   "Approve skill draft N and enter probation"),
+        ("reject_skill",    "Reject skill draft N"),
+        ("skill_approval",  "Toggle HITL mode: /skill-approval on|off|status"),
+        ("skill_health",    "Show all skills with utility scores and trends"),
+    ],
+    "Reports": [
+        ("reports",        "List all configured reports"),
+        ("report",         "Show report N detail from last list"),
+        ("report_add",     "Add a new report: /report-add <schedule> <type> <sources...>"),
+        ("report_remove",  "Remove runtime report N"),
+        ("report_pause",   "Pause report N"),
+        ("report_resume",  "Resume paused report N"),
+        ("report_run",     "Run report N immediately"),
+    ],
     "Meta": [
         ("help",     "Show this list"),
         ("commands", "Alias of /help"),
@@ -113,6 +143,33 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("briefing", self.cmd_briefing))
         self.app.add_handler(CommandHandler("mute", self.cmd_mute))
         self.app.add_handler(CommandHandler("unmute", self.cmd_unmute))
+        # Feature tracker
+        self.app.add_handler(CommandHandler("feature", self.cmd_feature))
+        self.app.add_handler(CommandHandler("feature_new", self.cmd_feature))
+        self.app.add_handler(CommandHandler("features", self.cmd_features))
+        self.app.add_handler(CommandHandler("feature_detail", self.cmd_feature_detail))
+        self.app.add_handler(CommandHandler("fdetail", self.cmd_feature_detail))
+        self.app.add_handler(CommandHandler("feature_priority", self.cmd_feature_priority))
+        self.app.add_handler(CommandHandler("feature_plan", self.cmd_feature_plan))
+        self.app.add_handler(CommandHandler("feature_start", self.cmd_feature_start))
+        self.app.add_handler(CommandHandler("feature_done", self.cmd_feature_done))
+        self.app.add_handler(CommandHandler("feature_wont_do", self.cmd_feature_wont_do))
+        self.app.add_handler(CommandHandler("feature_note", self.cmd_feature_note))
+        # Skill management
+        self.app.add_handler(CommandHandler("skill_drafts", self.cmd_skill_drafts))
+        self.app.add_handler(CommandHandler("skill_draft", self.cmd_skill_draft))
+        self.app.add_handler(CommandHandler("approve_skill", self.cmd_approve_skill))
+        self.app.add_handler(CommandHandler("reject_skill", self.cmd_reject_skill))
+        self.app.add_handler(CommandHandler("skill_approval", self.cmd_skill_approval))
+        self.app.add_handler(CommandHandler("skill_health", self.cmd_skill_health))
+        # Reports
+        self.app.add_handler(CommandHandler("reports", self.cmd_reports))
+        self.app.add_handler(CommandHandler("report", self.cmd_report))
+        self.app.add_handler(CommandHandler("report_add", self.cmd_report_add))
+        self.app.add_handler(CommandHandler("report_remove", self.cmd_report_remove))
+        self.app.add_handler(CommandHandler("report_pause", self.cmd_report_pause))
+        self.app.add_handler(CommandHandler("report_resume", self.cmd_report_resume))
+        self.app.add_handler(CommandHandler("report_run", self.cmd_report_run))
         # Cache: path -> (mtime, header_text). Invalidated when mtime changes.
         # Avoids reading every file on every chat message.
         self._header_cache: dict = {}
@@ -130,8 +187,17 @@ class TelegramChatHandler:
         self._last_meeting_set: list = []
         # Last /comms result set — used by /comm <N>.
         self._last_comms_set: list = []
+        # Last /features result set
+        self._last_feature_set: list = []
+        # Last /skill-drafts result set
+        self._last_skill_draft_set: list = []
+        # Last /reports result set
+        self._last_report_set: list = []
         # Notification manager reference (set by daemon.py)
         self.notification_manager = None
+        # Skill creator and report scheduler (set by daemon.py)
+        self.skill_creator = None
+        self.report_scheduler = None
 
     async def start(self):
         await self.app.initialize()
@@ -1358,6 +1424,52 @@ class TelegramChatHandler:
             return self._last_comms_set[idx]
         return None
 
+    def _resolve_feature_index(self, args, update: Update):
+        """Convert 1-based index from args to a Path from _last_feature_set, or None with error reply."""
+        if not args:
+            return None
+        try:
+            n = int(args[0])
+            idx = n - 1
+        except (ValueError, TypeError):
+            return None
+        if 0 <= idx < len(self._last_feature_set):
+            return self._last_feature_set[idx]
+        return None
+
+    def _rewrite_feature_frontmatter(self, path: Path, updates: dict):
+        """Update specific frontmatter keys in a feature request file. Preserves body."""
+        import os
+        text = path.read_text()
+        # Split into frontmatter and body
+        if not text.startswith("---"):
+            return
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            return
+        _, fm_text, body = parts
+        fm = yaml.safe_load(fm_text) or {}
+        fm.update(updates)
+        new_text = f"---\n{yaml.dump(fm, sort_keys=False, allow_unicode=True)}---{body}"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(new_text)
+        os.rename(tmp, path)
+
+    def _append_feature_note(self, path: Path, note: str):
+        """Append a timestamped note to the ## Notes section."""
+        import os
+        from datetime import datetime
+        text = path.read_text()
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        note_line = f"- {timestamp}: {note}\n"
+        if "## Notes" in text:
+            text = text.replace("## Notes\n", f"## Notes\n{note_line}", 1)
+        else:
+            text += f"\n## Notes\n{note_line}"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(text)
+        os.rename(tmp, path)
+
     async def cmd_comms(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
@@ -1504,6 +1616,469 @@ class TelegramChatHandler:
         state["muted"] = False
         _save_state(state)
         await update.message.reply_text("Proactive notifications resumed.")
+
+    # ── Feature Tracker commands ──────────────────────────────────────────────
+
+    async def cmd_feature(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await self._send_reply(update, "Usage: /feature <description>")
+            return
+
+        description = " ".join(context.args)
+        # Extract #hashtags as tags
+        tags = [t[1:].lower() for t in re.findall(r'#\w+', description)]
+        clean_desc = re.sub(r'#\w+', '', description).strip()
+        title = " ".join(clean_desc.split()[:8])  # first 8 words as title
+
+        # Write memory file
+        import hashlib, os
+        from datetime import datetime
+        memories_dir = BRAIN_DIR / "memories"
+        memories_dir.mkdir(parents=True, exist_ok=True)
+
+        slug = re.sub(r'[^a-z0-9]+', '-', title.lower())[:40].strip('-')
+        id_hash = hashlib.sha1(f"{description}{datetime.now().isoformat()}".encode()).hexdigest()[:6]
+        filename = f"feature-request-{slug}-{id_hash}.md"
+
+        fm = {
+            "title": clean_desc[:100],
+            "type": "feature_request",
+            "status": "new",
+            "priority": "medium",
+            "created": datetime.now().isoformat(),
+            "tags": tags,
+            "short_id": id_hash,
+        }
+        body = f"## Request\n\n{clean_desc}\n\n## Context\n\nCaptured via /feature command at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n\n## Notes\n\n"
+        content = f"---\n{yaml.dump(fm, sort_keys=False, allow_unicode=True)}---\n\n{body}"
+
+        target = memories_dir / filename
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(content)
+        os.rename(tmp, target)
+
+        await self._send_reply(update, f"Feature captured: '{clean_desc[:60]}' (ID: {id_hash})\nUse /features to view all.")
+
+    async def cmd_features(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+
+        status_filter = context.args[0].lower() if context.args else None
+        show_all = status_filter == "all"
+
+        memories_dir = BRAIN_DIR / "memories"
+        files = sorted(memories_dir.glob("feature-request-*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+        results = []
+        for f in files:
+            fm = self._parse_frontmatter(f)
+            if fm.get("type") != "feature_request":
+                continue
+            status = fm.get("status", "new")
+            if not show_all:
+                if status_filter:
+                    if status != status_filter:
+                        continue
+                else:
+                    # Default: show new and planned only
+                    if status in ("done", "wont-do"):
+                        continue
+            results.append((f, fm))
+
+        self._last_feature_set = [f for f, _ in results]
+
+        if not results:
+            await self._send_reply(update, "No feature requests found.")
+            return
+
+        lines = [f"Feature requests ({len(results)}):"]
+        for i, (f, fm) in enumerate(results, 1):
+            status = fm.get("status", "new")
+            priority = fm.get("priority", "medium")
+            title = fm.get("title", f.stem)[:60]
+            created = fm.get("created", "")[:10]
+            lines.append(f"{i}. [{status}] [{priority}] {title} ({created})")
+
+        await self._send_reply(update, "\n".join(lines))
+
+    async def cmd_feature_detail(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        path = self._resolve_feature_index(context.args, update)
+        if path is None:
+            await self._send_reply(update, "Invalid N. Run /features first.")
+            return
+
+        fm = self._parse_frontmatter(path)
+        text = path.read_text()
+        # Strip frontmatter for body
+        parts = text.split("---", 2)
+        body = parts[2].strip() if len(parts) >= 3 else text
+
+        lines = [
+            f"**{fm.get('title', path.stem)}**",
+            f"Status: {fm.get('status', '?')} | Priority: {fm.get('priority', '?')}",
+            f"Created: {fm.get('created', '?')[:16]}",
+            f"Tags: {', '.join(fm.get('tags', []))}",
+            "",
+            body[:1500],
+        ]
+        await self._send_reply(update, "\n".join(lines))
+
+    async def cmd_feature_plan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        path = self._resolve_feature_index(context.args, update)
+        if path is None:
+            await self._send_reply(update, "Invalid N. Run /features first.")
+            return
+        fm = self._parse_frontmatter(path)
+        self._rewrite_feature_frontmatter(path, {"status": "planned"})
+        await self._send_reply(update, f"Feature '{fm.get('title','?')[:50]}' marked as planned.")
+
+    async def cmd_feature_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        path = self._resolve_feature_index(context.args, update)
+        if path is None:
+            await self._send_reply(update, "Invalid N. Run /features first.")
+            return
+        fm = self._parse_frontmatter(path)
+        self._rewrite_feature_frontmatter(path, {"status": "in-progress"})
+        await self._send_reply(update, f"Feature '{fm.get('title','?')[:50]}' is now in progress.")
+
+    async def cmd_feature_done(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        path = self._resolve_feature_index(context.args[:1], update)
+        if path is None:
+            await self._send_reply(update, "Invalid N. Run /features first.")
+            return
+        fm = self._parse_frontmatter(path)
+        note = " ".join(context.args[1:]) if len(context.args) > 1 else None
+        self._rewrite_feature_frontmatter(path, {"status": "done"})
+        if note:
+            self._append_feature_note(path, note)
+        await self._send_reply(update, f"Feature '{fm.get('title','?')[:50]}' marked as done.")
+
+    async def cmd_feature_wont_do(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        path = self._resolve_feature_index(context.args[:1], update)
+        if path is None:
+            await self._send_reply(update, "Invalid N. Run /features first.")
+            return
+        fm = self._parse_frontmatter(path)
+        reason = " ".join(context.args[1:]) if len(context.args) > 1 else None
+        self._rewrite_feature_frontmatter(path, {"status": "wont-do"})
+        if reason:
+            self._append_feature_note(path, f"Won't do: {reason}")
+        await self._send_reply(update, f"Feature '{fm.get('title','?')[:50]}' marked as won't do.")
+
+    async def cmd_feature_priority(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if len(context.args) < 2:
+            await self._send_reply(update, "Usage: /feature-priority <N> <low|medium|high|critical>")
+            return
+        path = self._resolve_feature_index(context.args[:1], update)
+        if path is None:
+            await self._send_reply(update, "Invalid N. Run /features first.")
+            return
+        priority = context.args[1].lower()
+        if priority not in ("low", "medium", "high", "critical"):
+            await self._send_reply(update, "Priority must be: low, medium, high, or critical")
+            return
+        fm = self._parse_frontmatter(path)
+        self._rewrite_feature_frontmatter(path, {"priority": priority})
+        await self._send_reply(update, f"Priority updated: '{fm.get('title','?')[:50]}' is now {priority}.")
+
+    async def cmd_feature_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if len(context.args) < 2:
+            await self._send_reply(update, "Usage: /feature-note <N> <text>")
+            return
+        path = self._resolve_feature_index(context.args[:1], update)
+        if path is None:
+            await self._send_reply(update, "Invalid N. Run /features first.")
+            return
+        fm = self._parse_frontmatter(path)
+        note = " ".join(context.args[1:])
+        self._append_feature_note(path, note)
+        await self._send_reply(update, f"Note added to '{fm.get('title','?')[:50]}'.")
+
+    # ── Skill Management commands ─────────────────────────────────────────────
+
+    async def cmd_skill_drafts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if self.skill_creator is None:
+            await self._send_reply(update, "Skill creator not available.")
+            return
+        drafts = self.skill_creator.list_pending_drafts()
+        if not drafts:
+            await self._send_reply(update, "No pending skill drafts.")
+            return
+        self._last_skill_draft_set = drafts
+        lines = ["Pending skill drafts:"]
+        for i, d in enumerate(drafts, 1):
+            types = ", ".join(d.get("content_types", []))
+            created = d.get("created", "")[:10]
+            lines.append(f"{i}. {d['skill_name']} — type: {types} ({created})")
+        await self._send_reply(update, "\n".join(lines))
+
+    async def cmd_skill_draft(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await self._send_reply(update, "Usage: /skill-draft <N>")
+            return
+        try:
+            n = int(context.args[0])
+            draft = self._last_skill_draft_set[n - 1]
+        except (ValueError, IndexError):
+            await self._send_reply(update, "Invalid N. Run /skill-drafts first.")
+            return
+        path = Path(draft.get("draft_path", ""))
+        if not path.exists():
+            await self._send_reply(update, f"Draft file not found: {path}")
+            return
+        content = path.read_text()
+        await self._send_reply(update, f"```\n{content[:3800]}\n```")
+
+    async def cmd_approve_skill(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await self._send_reply(update, "Usage: /approve-skill <N>")
+            return
+        try:
+            n = int(context.args[0])
+            draft = self._last_skill_draft_set[n - 1]
+        except (ValueError, IndexError):
+            await self._send_reply(update, "Invalid N. Run /skill-drafts first.")
+            return
+        skill_name = draft["skill_name"]
+        if self.skill_creator and self.skill_creator.approve_draft(skill_name):
+            await self._send_reply(update, f"Skill '{skill_name}' approved and entering probation.")
+        else:
+            await self._send_reply(update, f"Could not approve '{skill_name}'. Draft may have been removed.")
+
+    async def cmd_reject_skill(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await self._send_reply(update, "Usage: /reject-skill <N>")
+            return
+        try:
+            n = int(context.args[0])
+            draft = self._last_skill_draft_set[n - 1]
+        except (ValueError, IndexError):
+            await self._send_reply(update, "Invalid N. Run /skill-drafts first.")
+            return
+        skill_name = draft["skill_name"]
+        ct = ", ".join(draft.get("content_types", ["unknown"]))
+        if self.skill_creator and self.skill_creator.reject_draft(skill_name):
+            await self._send_reply(update, f"Skill '{skill_name}' rejected. Content type '{ct}' on 24h cooldown.")
+        else:
+            await self._send_reply(update, f"Could not reject '{skill_name}'.")
+
+    async def cmd_skill_approval(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if self.skill_creator is None:
+            await self._send_reply(update, "Skill creator not available.")
+            return
+        arg = context.args[0].lower() if context.args else "status"
+        if arg == "on":
+            self.skill_creator.set_approval_override(True)
+            await self._send_reply(update, "Skill approval mode ON. New skill drafts require /approve-skill before running.")
+        elif arg == "off":
+            self.skill_creator.set_approval_override(False)
+            await self._send_reply(update, "Skill approval mode OFF. New skills enter probation automatically.")
+        else:
+            mode = self.skill_creator.get_effective_approval_mode()
+            override = self.skill_creator._load_registry().get("require_approval_runtime_override")
+            source = "runtime override" if override is not None else "config"
+            await self._send_reply(update, f"Skill approval: {'on' if mode else 'off'} (from {source})")
+
+    async def cmd_skill_health(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        skills_dir = BRAIN_DIR / "skills"
+        if not skills_dir.exists():
+            await self._send_reply(update, "Skills directory not found.")
+            return
+        lines = ["Skill health:"]
+        for path in sorted(skills_dir.glob("*.md")):
+            fm = self._parse_frontmatter(path)
+            name = path.stem
+            score = fm.get("utility_score", fm.get("success_rate", "?"))
+            trend = fm.get("score_trend", "")
+            trend_sym = {"improving": "▲", "declining": "▼", "stable": "◆", "insufficient-data": "—"}.get(trend, "—")
+            status = fm.get("status", "active")
+            status_tag = f" [{status}]" if status != "active" else ""
+            lines.append(f"• {name}{status_tag}: {score} {trend_sym}")
+        await self._send_reply(update, "\n".join(lines))
+
+    # ── Report commands ───────────────────────────────────────────────────────
+
+    async def cmd_reports(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if self.report_scheduler is None:
+            await self._send_reply(update, "Report scheduler not available.")
+            return
+        reports = self.report_scheduler.get_all_reports()
+        if not reports:
+            await self._send_reply(update, "No reports configured. Use /report-add to create one.")
+            return
+        self._last_report_set = reports
+        lines = [f"Reports ({len(reports)}):"]
+        for i, r in enumerate(reports, 1):
+            name = r["name"]
+            rtype = r.get("type", "digest")
+            schedule = r.get("schedule", "?")
+            last = r.get("last_sent", "never")
+            paused = " [paused]" if r.get("paused") else ""
+            is_config = " [config]" if r.get("is_config_report") else ""
+            lines.append(f"{i}. [{rtype}] {name} — {schedule} (last: {last}){paused}{is_config}")
+        await self._send_reply(update, "\n".join(lines))
+
+    async def cmd_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await self._send_reply(update, "Usage: /report <N>")
+            return
+        try:
+            n = int(context.args[0])
+            r = self._last_report_set[n - 1]
+        except (ValueError, IndexError):
+            await self._send_reply(update, "Invalid N. Run /reports first.")
+            return
+        lines = [
+            f"**{r['name']}**",
+            f"Type: {r.get('type','?')} | Schedule: {r.get('schedule','?')}",
+            f"Sources: {', '.join(r.get('sources',[]))}",
+            f"Window: {r.get('window_days','?')} days",
+            f"Paused: {r.get('paused', False)}",
+            f"Last sent: {r.get('last_sent','never')}",
+        ]
+        if r.get("prompt"):
+            lines.append(f"Prompt: {r['prompt'][:200]}")
+        await self._send_reply(update, "\n".join(lines))
+
+    async def cmd_report_add(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not self.report_scheduler:
+            await self._send_reply(update, "Report scheduler not available.")
+            return
+        if len(context.args) < 3:
+            await self._send_reply(update,
+                "Usage: /report-add \"<schedule>\" <digest|analysis> <source1> [source2...]\n"
+                "Example: /report-add \"mon 07:00\" digest commitments meetings")
+            return
+        try:
+            # First arg is schedule (may be quoted), second is type, rest are sources
+            args = context.args
+            schedule = args[0].strip('"\'')
+            rtype = args[1].lower()
+            sources = [s.lower() for s in args[2:]]
+            defn = {
+                "schedule": schedule,
+                "type": rtype,
+                "sources": sources,
+                "window_days": 7,
+                "paused": False,
+            }
+            report_id = self.report_scheduler.add_runtime_report(defn)
+            await self._send_reply(update, f"Report created (ID: {report_id}). Run /reports to view.")
+        except ValueError as e:
+            await self._send_reply(update, f"Error: {e}")
+
+    async def cmd_report_remove(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await self._send_reply(update, "Usage: /report-remove <N>")
+            return
+        try:
+            n = int(context.args[0])
+            r = self._last_report_set[n - 1]
+        except (ValueError, IndexError):
+            await self._send_reply(update, "Invalid N. Run /reports first.")
+            return
+        if r.get("is_config_report"):
+            await self._send_reply(update, f"Config reports cannot be removed. Use /report-pause {n} to disable.")
+            return
+        report_id = r.get("id", r.get("name"))
+        if self.report_scheduler.remove_runtime_report(report_id):
+            await self._send_reply(update, f"Report '{r['name']}' removed.")
+        else:
+            await self._send_reply(update, f"Could not remove report '{r['name']}'.")
+
+    async def cmd_report_pause(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await self._send_reply(update, "Usage: /report-pause <N>")
+            return
+        try:
+            n = int(context.args[0])
+            r = self._last_report_set[n - 1]
+        except (ValueError, IndexError):
+            await self._send_reply(update, "Invalid N. Run /reports first.")
+            return
+        is_runtime = not r.get("is_config_report", False)
+        if self.report_scheduler.set_paused(r["name"], True, is_runtime):
+            await self._send_reply(update, f"Report '{r['name']}' paused.")
+        else:
+            await self._send_reply(update, f"Could not pause report '{r['name']}'.")
+
+    async def cmd_report_resume(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await self._send_reply(update, "Usage: /report-resume <N>")
+            return
+        try:
+            n = int(context.args[0])
+            r = self._last_report_set[n - 1]
+        except (ValueError, IndexError):
+            await self._send_reply(update, "Invalid N. Run /reports first.")
+            return
+        is_runtime = not r.get("is_config_report", False)
+        if self.report_scheduler.set_paused(r["name"], False, is_runtime):
+            await self._send_reply(update, f"Report '{r['name']}' resumed.")
+        else:
+            await self._send_reply(update, f"Could not resume report '{r['name']}'.")
+
+    async def cmd_report_run(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await self._send_reply(update, "Usage: /report-run <N>")
+            return
+        if self.report_scheduler is None:
+            await self._send_reply(update, "Report scheduler not available.")
+            return
+        try:
+            n = int(context.args[0])
+            r = self._last_report_set[n - 1]
+        except (ValueError, IndexError):
+            await self._send_reply(update, "Invalid N. Run /reports first.")
+            return
+        chat_id = update.effective_chat.id
+        await self._send_reply(update, f"Running report '{r['name']}'...")
+        try:
+            await self.report_scheduler.trigger_report(r["name"], r, chat_id)
+        except Exception as e:
+            await self._send_reply(update, f"Report failed: {e}")
 
     async def _send_reply(self, update: Update, text: str):
         """Chunk response into ≤4096-char messages to respect Telegram's hard limit."""
