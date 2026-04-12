@@ -8,7 +8,7 @@ Automatically captures and summarizes everything you read on the web. Stores sum
 
 ## How it works
 
-A daemon runs eight async loops:
+A daemon runs ten async loops:
 
 1. **Browser Watcher** — polls Chrome/Firefox history every 5 minutes, fetches pages you spent time on, summarizes them with Gemini Flash, writes a `.md` file to iCloud
 2. **Telegram Bot** — answers questions about what you've read by loading relevant memory files into context
@@ -18,6 +18,8 @@ A daemon runs eight async loops:
 6. **Email Scanner** — reads Apple Mail.app data every 5 minutes, writes a living `email-thread-*.md` memory file per conversation thread. Requires Full Disk Access (see below).
 7. **Zoom Scanner** — polls Zoom Cloud Recordings every 5 minutes, downloads VTT transcripts, parses speaker-attributed segments, generates a summary, writes `meeting-*.md` memory files. Requires Zoom Server-to-Server OAuth credentials (see below).
 8. **Commitment Tracker** — scans meeting and email memory files every 5 minutes, uses LLM to extract commitments and waiting-on items, writes one `commitment-*.md` file per extracted item. Surface via `/commitments` in Telegram.
+9. **Calendar Scanner** — reads macOS Calendar data every 5 minutes, writes `calendar-event-*.md` memory files for upcoming events. Used by the notification manager for pre-meeting context.
+10. **Notification Manager** — checks every 60 seconds for proactive messages to send: daily morning briefing, pre-meeting context pushes (10 min before events), commitment deadline alerts. Controlled via `/briefing`, `/mute`, `/unmute` commands.
 
 ---
 
@@ -238,7 +240,7 @@ The system supports two roles. Set `SECOND_BRAIN_ROLE` in each machine's launchd
 
 | Role | What runs | API keys needed |
 |------|-----------|-----------------|
-| `full` | All eight loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
+| `full` | All ten loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
 | `watcher` | Browser watcher only | `GEMINI_API_KEY` only |
 
 Run `full` on your always-on machine (Mac Studio / Mac Mini). Run `watcher` on your MacBook — it captures pages you read while traveling and syncs memories to iCloud automatically.
@@ -322,6 +324,21 @@ Send these slash commands to your bot:
 | `/dismiss <N>` | Mark commitment N as dismissed (false positive or no longer relevant) |
 
 Items with low confidence (0.5–0.69) are shown with a ⚠️ indicator.
+
+**Proactive notifications:**
+
+| Command | Effect |
+|---------|--------|
+| `/briefing` | Trigger the daily briefing immediately (today's calendar, due/overdue commitments, new memories) |
+| `/mute` | Suppress all proactive notifications (briefings, pre-meeting pushes, deadline alerts) |
+| `/unmute` | Resume proactive notifications |
+
+The notification manager sends unsolicited messages when enabled:
+- **Daily briefing** at the configured time (default 7:30 AM local time)
+- **Pre-meeting context** 10 minutes before calendar events (attendees, related commitments, recent threads)
+- **Commitment deadline alerts** when commitments are due today or tomorrow
+
+Muted state persists across daemon restarts. `/briefing` works even when muted.
 
 **Domain skip filter:**
 

@@ -38,6 +38,7 @@ async def main():
         from email_scanner import EmailScanner
         from zoom_scanner import ZoomScanner
         from commitment_tracker import CommitmentTracker
+        from notification_manager import NotificationManager
         chat = TelegramChatHandler()
         optimizer = SkillOptimizer()
         indexer = IndexBuilder()
@@ -46,6 +47,12 @@ async def main():
         zoom_scanner = ZoomScanner(role=role)
         commitment_tracker = CommitmentTracker(role=role)
         await chat.start()
+
+        # Instantiate notification manager and wire up cross-references
+        DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
+        notification_mgr = NotificationManager(bot=chat.app.bot, deploy_dir=DEPLOY_DIR)
+        chat.notification_manager = notification_mgr
+
         tasks += [
             chat.poll_loop,
             optimizer.run_loop,
@@ -54,6 +61,7 @@ async def main():
             email_scanner.run_loop,
             zoom_scanner.run_loop,
             commitment_tracker.run_loop,
+            notification_mgr.run_loop,
         ]
 
     stop_event = asyncio.Event()
