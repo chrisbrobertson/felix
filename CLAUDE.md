@@ -106,7 +106,7 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 4. **Skill Optimizer** (3 AM daily) — scores recent executions using LLM-as-judge against source content, rewrites underperforming skill instructions, appends to evolution log.
 
-5. **Project Scanner** (every 5 min) — globs `~/repos/` and `~/repo/` for git repos, extracts metadata (remote URL, HEAD sha, recent commits, branches, languages), generates a 1-2 sentence LLM summary from README on first scan or README change, writes `project-{name}.md` memory file. Skips write when HEAD sha unchanged. `type: code_project` in frontmatter.
+5. **Project Scanner** (every 5 min) — globs `~/repos/` and `~/repo/` for git repos, extracts metadata (remote URL, HEAD sha, recent commits, branches, languages), generates a 1-2 sentence LLM summary from README on first scan or README change, writes `project-{name}.md` memory file. Skips write when HEAD sha unchanged. `type: project` + `category: code` in frontmatter (was `type: code_project` before v1.1.0 — migration runs automatically on `ProjectScanner.__init__`). Exposes `/projects [category] [N]` and `/project <N>` Telegram commands.
 
 6. **Email Scanner** (every 5 min) — reads Apple Mail.app data (SQLite Envelope Index primary, AppleScript fallback), writes one `email-thread-{slug}-{conv-id}.md` per conversation thread. Skips write when `message_count` and `last_message` unchanged. `type: email_thread` in frontmatter. Requires Full Disk Access for SQLite path; on macOS Sonoma, Homebrew Python (ad-hoc signed) silently fails FDA at runtime even when granted — AppleScript fallback (120s timeout, last-500-message item-slice approach) is the operative path on most setups. State (high-water ROWID) persisted in `DEPLOY_DIR/email-scanner-state.json`.
 
@@ -114,13 +114,15 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 8. **Commitment Tracker** (every 5 min, `full` role only) — scans `meeting_transcript` and `email_thread` memory files for new/changed content (mtime-based), calls LLM to extract commitments and waiting-on items, writes one `commitment-{slug}-{id}.md` per item. Confidence ≥0.7 → auto-active; 0.5–0.69 → `needs-review` tag; <0.5 → discarded. Exposes `/commitments`, `/complete N`, `/dismiss N` Telegram commands. State persisted in `DEPLOY_DIR/commitment-scanner-state.json`.
 
-9. **Calendar Scanner** (every 5 min, `full` role only) — reads Apple Calendar.app data (SQLite Calendar Cache primary, AppleScript fallback), writes one `calendar-event-{date}-{slug}-{id}.md` per event in a rolling ±7-day window. `type: calendar_event` in frontmatter. Change detection via modification timestamp. SQLite path requires no permissions; AppleScript fallback requires Automation permission to Calendar.app. State persisted in `DEPLOY_DIR/calendar-scanner-state.json`.
+9. **Calendar Scanner** (every 5 min, `full` role only) — reads Apple Calendar.app data (SQLite Calendar Cache primary, AppleScript fallback), writes one `calendar-event-{date}-{slug}-{id}.md` per event in a rolling ±7-day window. `type: calendar_event` in frontmatter. Change detection via modification timestamp. SQLite path requires no permissions; AppleScript fallback requires Automation permission to Calendar.app. Exposes `/events [N]` and `/event <N>` Telegram commands. State persisted in `DEPLOY_DIR/calendar-scanner-state.json`.
 
-10. **Contact Tracker** (every 5 min, `full` role only) — scans `email_thread`, `meeting_transcript`, `calendar_event`, and `slack_thread` memory files for participant names and emails (mtime-based). Writes one `contact-{name-slug}.md` per person with email-based deduplication, recency-weighted relationship scoring, and interaction history. Exposes `/contacts [N]` (list sorted by last interaction) and `/contact <name|N>` (detail view with open commitments) Telegram commands. State persisted in `DEPLOY_DIR/contact-tracker-state.json`.
+10. **Contact Tracker** (every 5 min, `full` role only) — scans `email_thread`, `meeting_transcript`, `calendar_event`, and `slack_thread` memory files for participant names and emails (mtime-based). Writes one `contact-{name-slug}.md` per person with email-based deduplication, recency-weighted relationship scoring, and interaction history. Exposes `/contacts [N]` (alias: `/people`), `/contact <name|N>` Telegram commands. State persisted in `DEPLOY_DIR/contact-tracker-state.json`.
 
 11. **Slack Scanner** (every 5 min, `full` role only) — polls Slack Web API for threads in monitored channels, writes `slack-thread-*.md` memory files. Requires `SLACK_BOT_TOKEN` and `SLACK_USER_ID` env vars; exits gracefully if missing. State persisted in `DEPLOY_DIR/slack-scanner-state.json`.
 
 12. **Notification Manager** (every 60 sec, `full` role only) — pushes proactive messages to Telegram: daily morning briefing (calendar, commitments, memory digest), pre-meeting context (10 min before events), commitment deadline alerts (today/tomorrow). Exposes `/briefing`, `/mute`, `/unmute` commands. State persisted in `DEPLOY_DIR/notification-state.json`.
+
+**Zoom Scanner** also exposes `/meetings [N]` and `/meeting <N>` Telegram commands for browsing meeting transcripts.
 
 ## Two Deployment Roles
 
@@ -146,6 +148,9 @@ Config lives at `~/.litellm/config.yaml`. API keys come from env vars (`GEMINI_A
 - **Watcher nodes log locally:** Watcher-role machines write execution logs to a local JSONL file (not iCloud) to avoid sync conflicts.
 - **Max memory file size:** ~2KB. Summarize harder if content is longer.
 - **Telegram 4096-char limit:** Chat handler must chunk responses.
+- **COMMAND_REGISTRY:** Module-level constant in `chat_handler.py` is the single source of truth for all Telegram commands. `/help` renders from it. A test asserts every `CommandHandler` registration has a matching entry — add both when adding a new command.
+- **Project type generalization:** Project memories use `type: project` + `category: code` (not `type: code_project`). `ProjectScanner.__init__` migrates legacy files automatically. Future scanners for person/work projects write the same `type: project` with a different `category`.
+- **Unified /comms:** Email and Slack threads share `/comms [email|slack]` + `/comm <N>`. No separate `/emails` or `/slack` commands.
 
 ## Deploy directory
 

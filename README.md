@@ -328,14 +328,39 @@ The commitment tracker reads memory files written by the email and Zoom scanners
 
 Send these slash commands to your bot:
 
+**Meta:**
+
+| Command | Effect |
+|---------|--------|
+| `/help` | Show all available commands grouped by category (alias: `/commands`) |
+
 **Memory browsing:**
 
 | Command | Effect |
 |---------|--------|
-| `/memories [N]` | List N most recent memories (default 10, max 50) |
-| `/search <query>` | Keyword search across all memories |
+| `/memories [N]` | List N most recent web memories (default 10, max 50) |
+| `/search <query>` | Keyword search across ALL memory types |
 | `/memory <N>` | View full details of memory at index N from last list/search |
 | `/delete <N>` | Delete memory at index N from last list/search |
+
+**Knowledge listings:**
+
+| Command | Effect |
+|---------|--------|
+| `/contacts [N]` | List contacts sorted by most recent interaction (default 20, max 50) |
+| `/contact <name\|N>` | Show detailed contact view (alias: `/people [N]`, `/people <name>`) |
+| `/projects [category] [N]` | List projects, optionally filtered by category (e.g. `code`). Default 10, max 50. |
+| `/project <N>` | Show project N from last `/projects` list |
+| `/events [N]` | List calendar events in the ±7-day window, sorted by start time. Default 10, max 50. |
+| `/event <N>` | Show event N from last `/events` list |
+| `/meetings [N]` | List meeting transcripts, newest first. Default 10, max 50. |
+| `/meeting <N>` | Show meeting N from last `/meetings` list |
+| `/comms [email\|slack] [N]` | List email threads and Slack threads, most recent first. Optional source filter. (aliases: `/messages`, `/communications`) |
+| `/comm <N>` | Show comm N from last `/comms` list (aliases: `/message`, `/communication`) |
+
+Contacts are deduplicated by email address. Display names are normalized to the longest version seen. Relationship score is recency-weighted: recent interactions contribute more than old ones (1.0 for yesterday, 0.1 for 10 days ago, etc.).
+
+Projects use `type: project` + `category: code` in frontmatter. Future scanners may write `category: person` or `category: work`. Use `/projects person` to filter once those exist.
 
 **Commitment tracker:**
 
@@ -346,16 +371,6 @@ Send these slash commands to your bot:
 | `/dismiss <N>` | Mark commitment N as dismissed (false positive or no longer relevant) |
 
 Items with low confidence (0.5–0.69) are shown with a ⚠️ indicator.
-
-**Contact tracker:**
-
-| Command | Effect |
-|---------|--------|
-| `/contacts [N]` | List contacts sorted by most recent interaction (default 20, max 50) |
-| `/contact <name>` | Show detailed contact view including interaction history and open commitments |
-| `/contact <N>` | Show contact N from most recent `/contacts` list |
-
-Contacts are deduplicated by email address. Display names are normalized to the longest version seen. Relationship score is recency-weighted: recent interactions contribute more than old ones (1.0 for yesterday, 0.1 for 10 days ago, etc.).
 
 **Proactive notifications:**
 
