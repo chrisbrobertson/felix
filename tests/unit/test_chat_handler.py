@@ -41,7 +41,8 @@ def handler(brain_dir):
 
     with patch.object(ch, "BRAIN_DIR", brain_dir), \
          patch("chat_handler.ApplicationBuilder", return_value=mock_builder), \
-         patch("chat_handler.SkillExecutor"):
+         patch("chat_handler.SkillExecutor"), \
+         patch.dict(os.environ, {"GITHUB_PAT": "", "GITHUB_REPO": ""}, clear=False):
         h = ch.TelegramChatHandler()
         h.allowed_user_id = 12345
         yield h
@@ -1247,3 +1248,241 @@ async def test_bugs_alias_lists_bugs_only(handler, brain_dir):
     await handler.cmd_bugs(update, ctx)
     assert len(handler._last_feature_set) == 1
     assert handler._last_feature_set[0] == bug_path
+
+
+# ── GitHub client tests ────────────────────────────────────────────────────────
+
+def _parse_fm(path):
+    """Parse frontmatter from a markdown file."""
+    text = path.read_text()
+    parts = text.split("---", 2)
+    return yaml.safe_load(parts[1]) if len(parts) >= 3 else {}
+
+
+@pytest.mark.asyncio
+async def test_github_fallback_when_pat_missing(handler, brain_dir):
+    """With no PAT, /feature writes a local file."""
+    # handler fixture already has empty GITHUB_PAT → handler.github.enabled is False
+    update, ctx = _make_update(12345, ["test", "feature", "request"])
+    await handler.cmd_feature(update, ctx)
+    files = list((brain_dir / "memories").glob("feature-request-*.md"))
+    assert len(files) == 1
+    fm = _parse_fm(files[0])
+    assert fm.get("kind") == "feature"
+
+
+@pytest.mark.asyncio
+async def test_github_enabled_create_feature(handler, brain_dir):
+    """With GitHub enabled, /feature creates a GH issue not a local file."""
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.create_issue = AsyncMock(return_value={
+        "number": 42, "html_url": "https://github.com/owner/repo/issues/42"
+    })
+    mock_gh.ensure_labels = AsyncMock()
+    mock_gh.list_issues = AsyncMock(return_value=[])
+    handler.github = mock_gh
+    update, ctx = _make_update(12345, ["test", "feature"])
+    await handler.cmd_feature(update, ctx)
+    mock_gh.create_issue.assert_called_once()
+    call = mock_gh.create_issue.call_args
+    labels = call.kwargs.get("labels") or call.args[2]
+    assert "kind:feature" in labels
+    reply = update.message.reply_text.call_args[0][0]
+    assert "42" in reply
+
+
+@pytest.mark.asyncio
+async def test_github_enabled_create_bug(handler, brain_dir):
+    """With GitHub enabled, /bug creates an issue with kind:bug label."""
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.create_issue = AsyncMock(return_value={
+        "number": 7, "html_url": "https://github.com/owner/repo/issues/7"
+    })
+    mock_gh.ensure_labels = AsyncMock()
+    mock_gh.list_issues = AsyncMock(return_value=[])
+    handler.github = mock_gh
+    update, ctx = _make_update(12345, ["login", "broken"])
+    await handler.cmd_bug(update, ctx)
+    mock_gh.create_issue.assert_called_once()
+    call = mock_gh.create_issue.call_args
+    labels = call.kwargs.get("labels") or call.args[2]
+    assert "kind:bug" in labels
+
+
+@pytest.mark.asyncio
+async def test_github_feature_plan_sets_status(handler, brain_dir):
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.repo = "owner/repo"
+    mock_gh.get_issue = AsyncMock(return_value={
+        "number": 5, "title": "Test", "state": "open", "state_reason": None,
+        "labels": [{"name": "kind:feature"}, {"name": "priority:medium"}]
+    })
+    mock_gh.replace_labels = AsyncMock()
+    mock_gh.update_issue = AsyncMock()
+    mock_gh.list_issues = AsyncMock(return_value=[])
+    handler.github = mock_gh
+    handler._last_feature_set = [5]
+    update, ctx = _make_update(12345, ["1"])
+    await handler.cmd_feature_plan(update, ctx)
+    mock_gh.replace_labels.assert_called_once()
+    new_labels = mock_gh.replace_labels.call_args[0][1]
+    assert "status:planned" in new_labels
+
+
+@pytest.mark.asyncio
+async def test_github_feature_done_closes_issue(handler, brain_dir):
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.repo = "owner/repo"
+    mock_gh.get_issue = AsyncMock(return_value={
+        "number": 5, "title": "Test", "state": "open", "state_reason": None,
+        "labels": [{"name": "kind:feature"}, {"name": "status:planned"}]
+    })
+    mock_gh.replace_labels = AsyncMock()
+    mock_gh.update_issue = AsyncMock(return_value={"number": 5})
+    mock_gh.list_issues = AsyncMock(return_value=[])
+    handler.github = mock_gh
+    handler._last_feature_set = [5]
+    update, ctx = _make_update(12345, ["1"])
+    await handler.cmd_feature_done(update, ctx)
+    update_call = mock_gh.update_issue.call_args
+    assert update_call[1].get("state") == "closed" or update_call[0][1] == "closed" or \
+           any("closed" in str(a) for a in update_call.args + tuple(update_call.kwargs.values()))
+
+
+@pytest.mark.asyncio
+async def test_github_feature_note_adds_comment(handler, brain_dir):
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.repo = "owner/repo"
+    mock_gh.add_comment = AsyncMock(return_value={"id": 1})
+    mock_gh.get_issue = AsyncMock(return_value={"number": 10, "title": "Test issue"})
+    handler.github = mock_gh
+    handler._last_feature_set = [10]
+    update, ctx = _make_update(12345, ["1", "this", "is", "a", "note"])
+    await handler.cmd_feature_note(update, ctx)
+    mock_gh.add_comment.assert_called_once_with(10, "this is a note")
+
+
+@pytest.mark.asyncio
+async def test_github_hashtag_ref_bypasses_list(handler, brain_dir):
+    """#N syntax lets users act on an issue without running /features first."""
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.repo = "owner/repo"
+    mock_gh.get_issue = AsyncMock(return_value={
+        "number": 99, "title": "Direct ref test", "state": "open", "state_reason": None,
+        "labels": [{"name": "kind:feature"}]
+    })
+    mock_gh.replace_labels = AsyncMock()
+    mock_gh.update_issue = AsyncMock()
+    mock_gh.list_issues = AsyncMock(return_value=[])
+    handler.github = mock_gh
+    handler._last_feature_set = []  # empty — no prior /features call
+    update, ctx = _make_update(12345, ["#99"])
+    await handler.cmd_feature_plan(update, ctx)
+    # Should still call _gh_set_status(99, "planned")
+    mock_gh.get_issue.assert_called_with(99)
+
+
+@pytest.mark.asyncio
+async def test_github_features_list_calls_list_issues(handler, brain_dir):
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.list_issues = AsyncMock(return_value=[
+        {"number": 1, "title": "Feature A", "state": "open", "state_reason": None,
+         "created_at": "2024-01-01T00:00:00Z",
+         "labels": [{"name": "kind:feature"}, {"name": "priority:medium"}]},
+    ])
+    handler.github = mock_gh
+    update, ctx = _make_update(12345, [])
+    await handler.cmd_features(update, ctx)
+    mock_gh.list_issues.assert_called()
+    assert handler._last_feature_set == [1]
+
+
+@pytest.mark.asyncio
+async def test_feature_import_preview(handler, brain_dir):
+    """/feature_import without confirm shows preview count."""
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    handler.github = mock_gh
+    memories_dir = brain_dir / "memories"
+    # Write two local feature files
+    for i in range(2):
+        (memories_dir / f"feature-request-test{i}-abc{i}de.md").write_text(
+            f"---\ntitle: Test {i}\ntype: feature_request\nkind: feature\nstatus: new\n"
+            f"priority: medium\ncreated: 2024-01-01\ntags: []\nshort_id: abc{i}de\n---\n\n## Request\n\nTest {i}\n"
+        )
+    update, ctx = _make_update(12345, [])
+    await handler.cmd_feature_import(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "2" in reply
+    assert "confirm" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_feature_import_confirm_creates_and_archives(handler, brain_dir):
+    """/feature_import confirm creates GH issues and moves local files to archive/."""
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.repo = "owner/repo"
+    mock_gh.create_issue = AsyncMock(side_effect=[
+        {"number": 101, "html_url": "..."},
+        {"number": 102, "html_url": "..."},
+    ])
+    mock_gh.ensure_labels = AsyncMock()
+    mock_gh.update_issue = AsyncMock()
+    mock_gh.list_issues = AsyncMock(return_value=[])
+    handler.github = mock_gh
+    memories_dir = brain_dir / "memories"
+    for i in range(2):
+        (memories_dir / f"feature-request-test{i}-abc{i}de.md").write_text(
+            f"---\ntitle: Test {i}\ntype: feature_request\nkind: feature\nstatus: new\n"
+            f"priority: medium\ncreated: 2024-01-01\ntags: []\nshort_id: abc{i}de\n---\n\n## Request\n\nTest {i}\n"
+        )
+    update, ctx = _make_update(12345, ["confirm"])
+    await handler.cmd_feature_import(update, ctx)
+    assert mock_gh.create_issue.call_count == 2
+    # Files should be in archive/
+    archive = memories_dir / "archive"
+    assert archive.exists()
+    archived = list(archive.glob("feature-request-*.md"))
+    assert len(archived) == 2
+    reply = update.message.reply_text.call_args[0][0]
+    assert "2" in reply
+
+
+@pytest.mark.asyncio
+async def test_feature_import_refuses_when_gh_disabled(handler, brain_dir):
+    handler.github = MagicMock(enabled=False)
+    update, ctx = _make_update(12345, [])
+    await handler.cmd_feature_import(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "GitHub" in reply or "not configured" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_features_index_snapshot_written_on_create(handler, brain_dir):
+    """After GH-backed /feature create, features-index.md is written to memories/."""
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.repo = "owner/repo"
+    mock_gh.create_issue = AsyncMock(return_value={
+        "number": 1, "html_url": "https://github.com/owner/repo/issues/1"
+    })
+    mock_gh.ensure_labels = AsyncMock()
+    mock_gh.list_issues = AsyncMock(return_value=[
+        {"number": 1, "title": "Test feature", "state": "open", "state_reason": None,
+         "labels": [{"name": "kind:feature"}]}
+    ])
+    handler.github = mock_gh
+    update, ctx = _make_update(12345, ["test", "feature"])
+    await handler.cmd_feature(update, ctx)
+    index_file = brain_dir / "memories" / "features-index.md"
+    assert index_file.exists()
+    content = index_file.read_text()
+    assert "feature_request_index" in content

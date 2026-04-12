@@ -9,6 +9,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
 from skill_executor import SkillExecutor
+from github_client import GitHubClient, _STANDARD_LABELS
 
 log = logging.getLogger("chat-handler")
 
@@ -73,6 +74,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("feature_done",     "Mark feature N as done (optional closing note)"),
         ("feature_wont_do",  "Mark feature N as won't do (optional reason)"),
         ("feature_note",     "Append a timestamped note to feature N"),
+        ("feature_import",   "Import existing local feature files into GitHub issues (one-time migration)"),
     ],
     "Skill Management": [
         ("skill_drafts",    "List pending skill drafts awaiting approval"),
@@ -157,6 +159,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("feature_done", self.cmd_feature_done))
         self.app.add_handler(CommandHandler("feature_wont_do", self.cmd_feature_wont_do))
         self.app.add_handler(CommandHandler("feature_note", self.cmd_feature_note))
+        self.app.add_handler(CommandHandler("feature_import", self.cmd_feature_import))
         # Skill management
         self.app.add_handler(CommandHandler("skill_drafts", self.cmd_skill_drafts))
         self.app.add_handler(CommandHandler("skill_draft", self.cmd_skill_draft))
@@ -195,6 +198,15 @@ class TelegramChatHandler:
         self._last_feature_set: list = []
         # Last /skill-drafts result set
         self._last_skill_draft_set: list = []
+        # GitHub backing for feature/bug commands
+        gh_cfg = config.get("github", {}) or {}
+        repo = os.environ.get("GITHUB_REPO") or gh_cfg.get("repo", "")
+        self.github = GitHubClient(repo=repo)
+        self._labels_bootstrapped = False
+        if self.github.enabled:
+            log.info(f"GitHub backing enabled for feature/bug → {self.github.repo}")
+        else:
+            log.info("GitHub backing disabled — feature/bug using local files")
         # Last /reports result set
         self._last_report_set: list = []
         # Notification manager reference (set by daemon.py)
@@ -1542,11 +1554,18 @@ class TelegramChatHandler:
         return None
 
     def _resolve_feature_index(self, args, update: Update):
-        """Convert 1-based index from args to a Path from _last_feature_set, or None with error reply."""
+        """Convert 1-based index or #N issue-number to a value from _last_feature_set, or None."""
         if not args:
             return None
+        arg = str(args[0])
+        # Direct GitHub issue reference: #42
+        if arg.startswith("#"):
+            try:
+                return int(arg[1:])
+            except ValueError:
+                return None
         try:
-            n = int(args[0])
+            n = int(arg)
             idx = n - 1
         except (ValueError, TypeError):
             return None
@@ -1586,6 +1605,138 @@ class TelegramChatHandler:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(text)
         os.rename(tmp, path)
+
+    # ── GitHub Issues helpers ─────────────────────────────────────────────────────
+
+    def _status_from_labels(self, issue: dict) -> str:
+        if issue.get("state") == "closed":
+            return "done" if issue.get("state_reason") == "completed" else "wont-do"
+        for lb in issue.get("labels", []):
+            if lb["name"].startswith("status:"):
+                return lb["name"].split(":", 1)[1]
+        return "new"
+
+    def _priority_from_labels(self, issue: dict) -> str:
+        for lb in issue.get("labels", []):
+            if lb["name"].startswith("priority:"):
+                return lb["name"].split(":", 1)[1]
+        return "medium"
+
+    def _kind_from_labels(self, issue: dict) -> str:
+        for lb in issue.get("labels", []):
+            if lb["name"].startswith("kind:"):
+                return lb["name"].split(":", 1)[1]
+        return "feature"
+
+    def _tags_from_labels(self, issue: dict) -> list[str]:
+        reserved_prefixes = ("kind:", "status:", "priority:")
+        return [lb["name"] for lb in issue.get("labels", [])
+                if not any(lb["name"].startswith(p) for p in reserved_prefixes)]
+
+    async def _gh_ensure_labels(self) -> None:
+        if not self._labels_bootstrapped:
+            try:
+                await self.github.ensure_labels(_STANDARD_LABELS)
+                self._labels_bootstrapped = True
+            except Exception as e:
+                log.warning(f"Label bootstrap failed (non-fatal): {e}")
+
+    async def _gh_set_status(self, number: int, status: str) -> None:
+        issue = await self.github.get_issue(number)
+        existing = [lb["name"] for lb in issue.get("labels", [])]
+        non_status = [l for l in existing if not l.startswith("status:")]
+        if status == "done":
+            await self.github.update_issue(number, state="closed", state_reason="completed")
+            await self.github.replace_labels(number, non_status)
+        elif status == "wont-do":
+            await self.github.update_issue(number, state="closed", state_reason="not_planned")
+            await self.github.replace_labels(number, non_status)
+        else:
+            new_labels = non_status if status == "new" else non_status + [f"status:{status}"]
+            await self.github.replace_labels(number, new_labels)
+            if issue.get("state") == "closed":
+                await self.github.update_issue(number, state="open")
+
+    async def _gh_set_priority(self, number: int, priority: str) -> None:
+        issue = await self.github.get_issue(number)
+        existing = [lb["name"] for lb in issue.get("labels", [])]
+        non_priority = [l for l in existing if not l.startswith("priority:")]
+        await self.github.replace_labels(number, non_priority + [f"priority:{priority}"])
+
+    async def _gh_title(self, number: int) -> str:
+        issue = await self.github.get_issue(number)
+        return issue.get("title", f"#{number}")
+
+    async def _rewrite_features_index_snapshot(self) -> None:
+        """Rewrite memories/features-index.md with a compact summary. Keeps index_builder fed."""
+        import os as _os
+        if not self.github.enabled:
+            return
+        try:
+            open_issues = await self.github.list_issues(state="open", per_page=50)
+            closed = await self.github.list_issues(state="closed", per_page=15)
+        except Exception as e:
+            log.warning(f"features-index snapshot refresh failed: {e}")
+            return
+        from datetime import datetime as _dt
+        fm = {
+            "type": "feature_request_index",
+            "title": "Feature and bug backlog",
+            "source": f"github:{self.github.repo}",
+            "last_updated": _dt.now().isoformat(timespec="seconds"),
+            "open_count": len(open_issues),
+            "recently_closed_count": len(closed),
+        }
+        lines = ["## Open", ""]
+        for i in open_issues:
+            kind = self._kind_from_labels(i)
+            status = self._status_from_labels(i)
+            priority = self._priority_from_labels(i)
+            lines.append(f"- [{kind}][{status}][{priority}] #{i['number']} {i['title']}")
+        lines += ["", "## Recently closed", ""]
+        for i in closed:
+            kind = self._kind_from_labels(i)
+            status = self._status_from_labels(i)
+            lines.append(f"- [{kind}][{status}] #{i['number']} {i['title']}")
+        body = "\n".join(lines)
+        content = f"---\n{yaml.dump(fm, sort_keys=False, allow_unicode=True)}---\n\n{body}\n"
+        target = BRAIN_DIR / "memories" / "features-index.md"
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(content)
+        _os.rename(tmp, target)
+
+    async def _list_features_from_github(self, update, kind_filter, status_filter, show_all) -> None:
+        state = "all" if show_all or status_filter in ("done", "wont-do") else "open"
+        labels = []
+        if kind_filter:
+            labels.append(f"kind:{kind_filter}")
+        if status_filter in ("planned", "in-progress"):
+            labels.append(f"status:{status_filter}")
+        try:
+            issues = await self.github.list_issues(state=state, labels=labels or None)
+        except Exception as e:
+            await self._send_reply(update, f"GitHub error: {e}")
+            return
+        if status_filter == "done":
+            issues = [i for i in issues if i.get("state_reason") == "completed"]
+        elif status_filter == "wont-do":
+            issues = [i for i in issues if i.get("state_reason") == "not_planned"]
+        elif not show_all and not status_filter:
+            issues = [i for i in issues if i.get("state") == "open"]
+        self._last_feature_set = [i["number"] for i in issues]
+        if not issues:
+            await self._send_reply(update, "No feature requests found.")
+            return
+        lines = [f"Feature requests ({len(issues)}):"]
+        for idx, issue in enumerate(issues, 1):
+            status = self._status_from_labels(issue)
+            priority = self._priority_from_labels(issue)
+            kind = self._kind_from_labels(issue)
+            created = issue.get("created_at", "")[:10]
+            title = issue.get("title", "")[:60]
+            kind_tag = f"[{kind[:4]}] " if not kind_filter else ""
+            lines.append(f"{idx}. {kind_tag}[{status}] [{priority}] {title} ({created}) #{issue['number']}")
+        await self._send_reply(update, "\n".join(lines))
 
     async def cmd_comms(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -1750,7 +1901,26 @@ class TelegramChatHandler:
         clean_desc = re.sub(r'#\w+', '', description).strip()
         title = " ".join(clean_desc.split()[:8])  # first 8 words as title
 
-        # Write memory file
+        if self.github.enabled:
+            await self._gh_ensure_labels()
+            from datetime import datetime
+            body = (
+                f"## Request\n\n{clean_desc}\n\n"
+                f"## Context\n\nCaptured via /feature command at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n\n"
+                f"## Notes\n\n"
+            )
+            labels = ["kind:feature", "priority:medium"] + tags
+            try:
+                issue = await self.github.create_issue(title, body, labels)
+            except Exception as e:
+                await self._send_reply(update, f"GitHub error: {e}")
+                return
+            await self._rewrite_features_index_snapshot()
+            await self._send_reply(update,
+                f"Feature captured: '{clean_desc[:60]}' (#{issue['number']})\n{issue['html_url']}")
+            return
+
+        # --- local fallback ---
         import hashlib, os
         from datetime import datetime
         memories_dir = BRAIN_DIR / "memories"
@@ -1792,6 +1962,28 @@ class TelegramChatHandler:
         clean_desc = re.sub(r'#\w+', '', description).strip()
         title = " ".join(clean_desc.split()[:8])
 
+        if self.github.enabled:
+            await self._gh_ensure_labels()
+            from datetime import datetime
+            body = (
+                f"## Bug\n\n{clean_desc}\n\n"
+                f"## Expected\n\n\n\n"
+                f"## Actual\n\n\n\n"
+                f"## Steps to reproduce\n\n\n\n"
+                f"## Notes\n\nCaptured via /bug at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n"
+            )
+            labels = ["kind:bug", "priority:medium"] + tags
+            try:
+                issue = await self.github.create_issue(title, body, labels)
+            except Exception as e:
+                await self._send_reply(update, f"GitHub error: {e}")
+                return
+            await self._rewrite_features_index_snapshot()
+            await self._send_reply(update,
+                f"Bug captured: '{clean_desc[:60]}' (#{issue['number']})\n{issue['html_url']}")
+            return
+
+        # --- local fallback ---
         import hashlib, os
         from datetime import datetime
         memories_dir = BRAIN_DIR / "memories"
@@ -1846,6 +2038,11 @@ class TelegramChatHandler:
         elif arg:
             status_filter = arg
 
+        if self.github.enabled:
+            await self._list_features_from_github(update, kind_filter, status_filter, show_all)
+            return
+
+        # --- local fallback ---
         memories_dir = BRAIN_DIR / "memories"
         files = sorted(memories_dir.glob("feature-request-*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
 
@@ -1891,19 +2088,52 @@ class TelegramChatHandler:
     async def cmd_feature_detail(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
-        path = self._resolve_feature_index(context.args, update)
-        if path is None:
-            await self._send_reply(update, "Invalid N. Run /features first.")
+        target = self._resolve_feature_index(context.args, update)
+        if target is None:
+            await self._send_reply(update, "Invalid N. Run /features first, or use #<issue>.")
             return
 
-        fm = self._parse_frontmatter(path)
-        text = path.read_text()
+        if isinstance(target, int):
+            # GitHub path
+            try:
+                issue = await self.github.get_issue(target)
+                comments = await self.github.get_comments(target)
+            except Exception as e:
+                await self._send_reply(update, f"GitHub error: {e}")
+                return
+            status = self._status_from_labels(issue)
+            priority = self._priority_from_labels(issue)
+            kind = self._kind_from_labels(issue)
+            tags = self._tags_from_labels(issue)
+            created = issue.get("created_at", "")[:10]
+            body = issue.get("body", "")[:1500]
+            lines = [
+                f"**{issue.get('title', '?')}** — #{target} · {issue.get('html_url', '')}",
+                f"Status: {status} | Priority: {priority} | Kind: {kind}",
+                f"Created: {created}",
+                f"Tags: {', '.join(tags) if tags else 'none'}",
+                "",
+                body,
+            ]
+            if comments:
+                lines.append("")
+                lines.append(f"## Notes ({len(comments)} comments)")
+                for c in comments[-5:]:  # last 5
+                    created_at = c.get("created_at", "")[:10]
+                    comment_body = c.get("body", "")[:150]
+                    lines.append(f"- {created_at}: {comment_body}")
+            await self._send_reply(update, "\n".join(lines))
+            return
+
+        # Local path
+        fm = self._parse_frontmatter(target)
+        text = target.read_text()
         # Strip frontmatter for body
         parts = text.split("---", 2)
         body = parts[2].strip() if len(parts) >= 3 else text
 
         lines = [
-            f"**{fm.get('title', path.stem)}**",
+            f"**{fm.get('title', target.stem)}**",
             f"Status: {fm.get('status', '?')} | Priority: {fm.get('priority', '?')}",
             f"Created: {fm.get('created', '?')[:16]}",
             f"Tags: {', '.join(fm.get('tags', []))}",
@@ -1915,52 +2145,84 @@ class TelegramChatHandler:
     async def cmd_feature_plan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
-        path = self._resolve_feature_index(context.args, update)
-        if path is None:
-            await self._send_reply(update, "Invalid N. Run /features first.")
+        target = self._resolve_feature_index(context.args, update)
+        if target is None:
+            await self._send_reply(update, "Invalid N. Run /features first, or use #<issue>.")
             return
-        fm = self._parse_frontmatter(path)
-        self._rewrite_feature_frontmatter(path, {"status": "planned"})
-        await self._send_reply(update, f"Feature '{fm.get('title','?')[:50]}' marked as planned.")
+        if isinstance(target, int):
+            await self._gh_set_status(target, "planned")
+            await self._rewrite_features_index_snapshot()
+            title = await self._gh_title(target)
+            issue_url = f"https://github.com/{self.github.repo}/issues/{target}"
+            await self._send_reply(update, f"Feature '{title[:50]}' marked as planned. {issue_url}")
+        else:
+            fm = self._parse_frontmatter(target)
+            self._rewrite_feature_frontmatter(target, {"status": "planned"})
+            await self._send_reply(update, f"Feature '{fm.get('title','?')[:50]}' marked as planned.")
 
     async def cmd_feature_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
-        path = self._resolve_feature_index(context.args, update)
-        if path is None:
-            await self._send_reply(update, "Invalid N. Run /features first.")
+        target = self._resolve_feature_index(context.args, update)
+        if target is None:
+            await self._send_reply(update, "Invalid N. Run /features first, or use #<issue>.")
             return
-        fm = self._parse_frontmatter(path)
-        self._rewrite_feature_frontmatter(path, {"status": "in-progress"})
-        await self._send_reply(update, f"Feature '{fm.get('title','?')[:50]}' is now in progress.")
+        if isinstance(target, int):
+            await self._gh_set_status(target, "in-progress")
+            await self._rewrite_features_index_snapshot()
+            title = await self._gh_title(target)
+            issue_url = f"https://github.com/{self.github.repo}/issues/{target}"
+            await self._send_reply(update, f"Feature '{title[:50]}' is now in progress. {issue_url}")
+        else:
+            fm = self._parse_frontmatter(target)
+            self._rewrite_feature_frontmatter(target, {"status": "in-progress"})
+            await self._send_reply(update, f"Feature '{fm.get('title','?')[:50]}' is now in progress.")
 
     async def cmd_feature_done(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
-        path = self._resolve_feature_index(context.args[:1], update)
-        if path is None:
-            await self._send_reply(update, "Invalid N. Run /features first.")
+        target = self._resolve_feature_index(context.args[:1], update)
+        if target is None:
+            await self._send_reply(update, "Invalid N. Run /features first, or use #<issue>.")
             return
-        fm = self._parse_frontmatter(path)
         note = " ".join(context.args[1:]) if len(context.args) > 1 else None
-        self._rewrite_feature_frontmatter(path, {"status": "done"})
-        if note:
-            self._append_feature_note(path, note)
-        await self._send_reply(update, f"Feature '{fm.get('title','?')[:50]}' marked as done.")
+        if isinstance(target, int):
+            await self._gh_set_status(target, "done")
+            if note:
+                await self.github.add_comment(target, note)
+            await self._rewrite_features_index_snapshot()
+            title = await self._gh_title(target)
+            issue_url = f"https://github.com/{self.github.repo}/issues/{target}"
+            await self._send_reply(update, f"Feature '{title[:50]}' marked as done. {issue_url}")
+        else:
+            fm = self._parse_frontmatter(target)
+            self._rewrite_feature_frontmatter(target, {"status": "done"})
+            if note:
+                self._append_feature_note(target, note)
+            await self._send_reply(update, f"Feature '{fm.get('title','?')[:50]}' marked as done.")
 
     async def cmd_feature_wont_do(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
-        path = self._resolve_feature_index(context.args[:1], update)
-        if path is None:
-            await self._send_reply(update, "Invalid N. Run /features first.")
+        target = self._resolve_feature_index(context.args[:1], update)
+        if target is None:
+            await self._send_reply(update, "Invalid N. Run /features first, or use #<issue>.")
             return
-        fm = self._parse_frontmatter(path)
         reason = " ".join(context.args[1:]) if len(context.args) > 1 else None
-        self._rewrite_feature_frontmatter(path, {"status": "wont-do"})
-        if reason:
-            self._append_feature_note(path, f"Won't do: {reason}")
-        await self._send_reply(update, f"Feature '{fm.get('title','?')[:50]}' marked as won't do.")
+        if isinstance(target, int):
+            await self._gh_set_status(target, "wont-do")
+            if reason:
+                await self.github.add_comment(target, f"Won't do: {reason}")
+            await self._rewrite_features_index_snapshot()
+            title = await self._gh_title(target)
+            issue_url = f"https://github.com/{self.github.repo}/issues/{target}"
+            await self._send_reply(update, f"Feature '{title[:50]}' marked as won't do. {issue_url}")
+        else:
+            fm = self._parse_frontmatter(target)
+            self._rewrite_feature_frontmatter(target, {"status": "wont-do"})
+            if reason:
+                self._append_feature_note(target, f"Won't do: {reason}")
+            await self._send_reply(update, f"Feature '{fm.get('title','?')[:50]}' marked as won't do.")
 
     async def cmd_feature_priority(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -1968,17 +2230,24 @@ class TelegramChatHandler:
         if len(context.args) < 2:
             await self._send_reply(update, "Usage: /feature-priority <N> <low|medium|high|critical>")
             return
-        path = self._resolve_feature_index(context.args[:1], update)
-        if path is None:
-            await self._send_reply(update, "Invalid N. Run /features first.")
+        target = self._resolve_feature_index(context.args[:1], update)
+        if target is None:
+            await self._send_reply(update, "Invalid N. Run /features first, or use #<issue>.")
             return
         priority = context.args[1].lower()
         if priority not in ("low", "medium", "high", "critical"):
             await self._send_reply(update, "Priority must be: low, medium, high, or critical")
             return
-        fm = self._parse_frontmatter(path)
-        self._rewrite_feature_frontmatter(path, {"priority": priority})
-        await self._send_reply(update, f"Priority updated: '{fm.get('title','?')[:50]}' is now {priority}.")
+        if isinstance(target, int):
+            await self._gh_set_priority(target, priority)
+            await self._rewrite_features_index_snapshot()
+            title = await self._gh_title(target)
+            issue_url = f"https://github.com/{self.github.repo}/issues/{target}"
+            await self._send_reply(update, f"Priority updated: '{title[:50]}' is now {priority}. {issue_url}")
+        else:
+            fm = self._parse_frontmatter(target)
+            self._rewrite_feature_frontmatter(target, {"priority": priority})
+            await self._send_reply(update, f"Priority updated: '{fm.get('title','?')[:50]}' is now {priority}.")
 
     async def cmd_feature_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -1986,14 +2255,82 @@ class TelegramChatHandler:
         if len(context.args) < 2:
             await self._send_reply(update, "Usage: /feature-note <N> <text>")
             return
-        path = self._resolve_feature_index(context.args[:1], update)
-        if path is None:
-            await self._send_reply(update, "Invalid N. Run /features first.")
+        target = self._resolve_feature_index(context.args[:1], update)
+        if target is None:
+            await self._send_reply(update, "Invalid N. Run /features first, or use #<issue>.")
             return
-        fm = self._parse_frontmatter(path)
         note = " ".join(context.args[1:])
-        self._append_feature_note(path, note)
-        await self._send_reply(update, f"Note added to '{fm.get('title','?')[:50]}'.")
+        if isinstance(target, int):
+            await self.github.add_comment(target, note)
+            title = await self._gh_title(target)
+            await self._send_reply(update, f"Note added to '{title[:50]}'.")
+        else:
+            fm = self._parse_frontmatter(target)
+            self._append_feature_note(target, note)
+            await self._send_reply(update, f"Note added to '{fm.get('title','?')[:50]}'.")
+
+    async def cmd_feature_import(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """One-time migration: import local feature-request-*.md files into GitHub Issues."""
+        if not self._check_auth(update):
+            return
+        if not self.github.enabled:
+            await self._send_reply(update, "GitHub not configured. Set GITHUB_PAT and github.repo first.")
+            return
+        confirm = bool(context.args and context.args[0].lower() == "confirm")
+        memories_dir = BRAIN_DIR / "memories"
+        files = list(memories_dir.glob("feature-request-*.md"))
+        to_import = []
+        for f in files:
+            fm = self._parse_frontmatter(f)
+            if fm.get("type") != "feature_request":
+                continue
+            if fm.get("github_issue_number"):
+                continue  # already imported
+            to_import.append((f, fm))
+        if not to_import:
+            await self._send_reply(update, "No local feature files to import.")
+            return
+        if not confirm:
+            titles = [f"• {fm.get('title', '?')[:60]}" for _, fm in to_import[:10]]
+            extra = f"\n...and {len(to_import)-10} more" if len(to_import) > 10 else ""
+            await self._send_reply(update,
+                f"{len(to_import)} file(s) to import:\n" + "\n".join(titles) + extra +
+                "\n\nRun /feature_import confirm to proceed.")
+            return
+        import os
+        archive_dir = memories_dir / "archive"
+        archive_dir.mkdir(exist_ok=True)
+        await self._gh_ensure_labels()
+        imported = 0
+        for f, fm in to_import:
+            title = fm.get("title", f.stem)[:100]
+            text = f.read_text()
+            parts = text.split("---", 2)
+            body = parts[2].strip() if len(parts) >= 3 else text
+            kind = fm.get("kind", "feature")
+            tags = fm.get("tags") or []
+            status = fm.get("status", "new")
+            priority = fm.get("priority", "medium")
+            labels = [f"kind:{kind}", f"priority:{priority}"] + tags
+            if status == "planned":
+                labels.append("status:planned")
+            elif status == "in-progress":
+                labels.append("status:in-progress")
+            try:
+                issue = await self.github.create_issue(title, body, labels)
+            except Exception as e:
+                await self._send_reply(update, f"Error importing '{title[:40]}': {e}")
+                continue
+            self._rewrite_feature_frontmatter(f, {"github_issue_number": issue["number"]})
+            dest = archive_dir / f.name
+            os.rename(f, dest)
+            if status == "done":
+                await self.github.update_issue(issue["number"], state="closed", state_reason="completed")
+            elif status == "wont-do":
+                await self.github.update_issue(issue["number"], state="closed", state_reason="not_planned")
+            imported += 1
+        await self._rewrite_features_index_snapshot()
+        await self._send_reply(update, f"Imported {imported} issue(s) to {self.github.repo}.")
 
     # ── Skill Management commands ─────────────────────────────────────────────
 

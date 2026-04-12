@@ -25,6 +25,7 @@ email_scanner.py       # Reads Apple Mail, writes email-thread-*.md memory files
 zoom_scanner.py        # Polls Zoom API, parses VTT transcripts, writes meeting-*.md files
 commitment_tracker.py  # Extracts commitments from meeting/email memories, /commitments cmd
 contact_tracker.py     # Aggregates participants across memories, /contacts cmd
+github_client.py       # Async GitHub Issues API client (optional GH backing for /feature and /bug)
 utils.py               # Shared helpers
 skills/                # Skill .md files (committed; deployed to iCloud skills/ dir)
 tests/
@@ -109,6 +110,8 @@ All live data lives outside the repo, in iCloud Drive:
 ```
 
 Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overrides `daemon.role` (use this per-machine so the override isn't synced via iCloud).
+
+`GITHUB_PAT` + `GITHUB_REPO` (optional) enable GitHub-Issues backing for `/feature` and `/bug`. Both must be set; if either is missing, the local-file fallback is used.
 
 ## Architecture: Twelve Async Loops
 

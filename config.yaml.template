@@ -127,3 +127,9 @@ notifications:
   pre_meeting_minutes: 10          # push context N minutes before events
   stale_waiting_on_days: 7         # waiting-ons older than N days appear in briefing
   telegram_chat_id: null           # auto-detected from first message if null
+
+# GitHub Issues backing for /feature and /bug (optional)
+# If GITHUB_PAT and GITHUB_REPO env vars are set (via install.sh), they take
+# precedence. Set github.repo here to configure the repo without an env var.
+# github:
+#   repo: chrisrobertson/secondbrain

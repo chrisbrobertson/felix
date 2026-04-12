@@ -20,7 +20,7 @@ Ask questions like "What did I read about Rust async last week?" or "Who was on 
 
 **Build a living contact graph.** Every participant in every email, meeting, calendar event, or Slack thread becomes a contact with a relationship score, interaction history, and links to related threads. Search with `/contacts` or `/contact <name>`.
 
-**Control what gets captured.** Skip noisy domains with `/skip reddit.com`, forget unwanted captures with `/forget <domain>`, and manage your ignore list with `/skiplist` and `/unskip`.
+**Control what gets captured.** Skip noisy domains with `/skip reddit.com`, purge unwanted memories with `/purge <domain>`, and manage your ignore list with `/skiplist` and `/unskip`.
 
 **Get better summaries as the system learns.** Second Brain routes each captured page to a specialized summarizer — research papers, API docs, code repos, and video transcripts each get their own prompt. A nightly optimizer scores past runs, catches declining skills early, and rewrites the weakest ones. Check skill health any time with `/skill-health`.
 
@@ -130,8 +130,8 @@ Items with low confidence (0.5–0.69) show a ⚠️ indicator. The default thre
 ### Browsing recent activity
 
 ```
-/readings [N]            # list your N most recent web captures (default 10, max 50)
-/reading <N>             # show full detail of reading N from the last list
+/memories [N]            # list your N most recent web captures (default 10, max 50)
+/memory <N>              # show full detail of memory N from the last list
 
 /meetings [N]            # list meeting transcripts, newest first
 /meeting <N>             # show meeting detail: attendees, summary, transcript
@@ -167,8 +167,10 @@ Results are grouped by type with up to 5 per group. If a group has more than 5, 
 /skiplist                # show all skipped domains
 /unskip reddit.com       # remove domain from ignore list
 
-/forget <N>              # forget item N from your last list
-/forget reddit.com       # forget all captures from reddit.com
+/purge reddit.com        # delete all memories whose URL contains "reddit.com"
+/purgeall                # delete memories for every domain on the skip list
+
+/delete 3                # delete memory #3 from the last list or search
 ```
 
 The skip list is stored in `config.yaml` under `browser_watcher.skip_domains`. Changes take effect within 5 minutes (next watcher poll).
@@ -195,6 +197,42 @@ Second Brain runs a pool of specialized summarizer skills and improves them auto
 When the browser watcher sees a URL whose content type has no matching skill, the daemon drafts a new one using Claude Sonnet. By default the draft is written directly to `skills/` and runs in **probation mode** — its output is discarded for the first five executions while the optimizer scores it. After probation, a daily graduation check promotes the skill to active if its utility score ≥ 0.6, or triggers a rewrite and re-probation if not (maximum three attempts before the skill is marked failed).
 
 If you'd rather review drafts before they run, send `/skill-approval on`. New drafts land in `$BRAIN/skill-drafts/` and the bot sends you a Telegram notification; nothing executes until you `/approve-skill`. The runtime override survives daemon restarts.
+
+### Feature and bug tracking
+
+Second Brain includes a lightweight feature/bug tracker accessible via Telegram. You can optionally back it with GitHub Issues for full history and web UI access.
+
+**Basic usage (local files):**
+
+```
+/feature Implement search by date range #enhancement
+/bug Login fails on Safari #auth
+/features                  # list all active items
+/feature-detail 1          # show full detail
+/feature-plan 1            # mark as planned
+/feature-start 1           # mark in-progress
+/feature-done 1 "Shipped in v1.2"
+```
+
+**GitHub Issues backing (optional):**
+
+Set `GITHUB_PAT` (a Personal Access Token with `repo` scope) and `GITHUB_REPO` (`owner/repo`) during `./install.sh` prompts, or add them to the launchd plist manually. When configured:
+
+- `/feature` and `/bug` create GitHub Issues instead of local files
+- All lifecycle commands (`/feature-plan`, `/feature-done`, etc.) work unchanged
+- The daemon maintains `memories/features-index.md` so the LLM context stays hydrated
+- Use `/feature-import` to migrate existing local feature files to GitHub
+
+**Label conventions:**
+
+- `kind:feature` / `kind:bug` — type
+- `status:planned` / `status:in-progress` — intermediate states (open issues only)
+- `priority:low|medium|high|critical` — urgency
+- Hashtags in the description become plain labels (e.g., `#auth`, `#enhancement`)
+
+**Direct issue references:**
+
+You can bypass the `/features` list and reference issues directly: `/feature-plan #42`, `/feature-done #42`, etc.
 
 ### Managing proactive notifications
 
@@ -259,12 +297,11 @@ Muted state persists across daemon restarts. `/briefing` works even when muted �
 | `/missed` | Manually add a commitment the bot missed |
 | `/accuracy` | Show extraction precision per source type |
 | **Memory browsing** | |
-| `/readings [N]` | List N most recent web captures (default 10, max 50) |
+| `/memories [N]` | List N most recent web captures (default 10, max 50) |
 | `/search <query>` | Search across ALL memory types. Results grouped by type: Contacts, Commitments, Projects, Meetings, Email threads, Slack threads, Calendar events, Web memories. Up to 5 per group, overflow hint shows `/search <type> <query>`. |
 | `/search <type> <query>` | Filter to one type: `email`, `slack`, `meeting`, `project`, `commitment`, `event`, `contact`, `web` |
-| `/reading <N>` | Show full detail of item N from last list or search |
-| `/forget <N>` | Forget item N from your last list |
-| `/forget <domain>` | Forget all web captures from a domain |
+| `/memory <N>` | Show full detail of item N from last list or search |
+| `/delete <N>` | Delete item N from last list or search |
 | **Proactive notifications** | |
 | `/briefing` | Trigger today's briefing now (works even when muted): today's calendar, due/overdue commitments, new memories |
 | `/mute` | Suppress all proactive notifications (briefings, pre-meeting pushes, deadline alerts) |
@@ -273,6 +310,21 @@ Muted state persists across daemon restarts. `/briefing` works even when muted �
 | `/skip <domain>` | Add domain to ignore list (e.g. `/skip reddit.com`) |
 | `/unskip <domain>` | Remove domain from ignore list |
 | `/skiplist` | Show all currently skipped domains |
+| `/purge <domain>` | Delete all captured memories whose URL contains domain |
+| `/purgeall` | Delete memories for every domain on the skip list |
+| **Feature & bug tracking** | |
+| `/feature <description>` | Capture a new feature request (hashtags become labels) |
+| `/bug <description>` | Capture a new bug report (hashtags become labels) |
+| `/features [bug\|feature\|<status>] [N]` | List feature/bug backlog. Filters: `bug`, `feature`, `all`, `new`, `planned`, `in-progress`, `done`, `wont-do`. Default: new + planned + in-progress. |
+| `/bugs` | Alias for `/features bug` |
+| `/feature-detail <N\|#issue>` | Show full detail for feature N from last list, or GitHub issue #N |
+| `/feature-plan <N\|#issue>` | Mark as planned |
+| `/feature-start <N\|#issue>` | Mark as in-progress |
+| `/feature-done <N\|#issue> [note]` | Mark as done (closed with `completed` reason in GitHub) |
+| `/feature-wont-do <N\|#issue> [reason]` | Mark as won't-do (closed with `not_planned` reason in GitHub) |
+| `/feature-priority <N\|#issue> <low\|medium\|high\|critical>` | Change priority |
+| `/feature-note <N\|#issue> <text>` | Add a timestamped note (GitHub comment if backing enabled) |
+| `/feature-import [confirm]` | One-time migration: import local feature files to GitHub issues (requires GitHub backing) |
 
 ---
 

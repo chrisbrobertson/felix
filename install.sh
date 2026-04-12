@@ -131,6 +131,8 @@ EXISTING_ZOOM_CLIENT_ID=""
 EXISTING_ZOOM_CLIENT_SECRET=""
 EXISTING_SLACK_BOT_TOKEN=""
 EXISTING_SLACK_USER_ID=""
+EXISTING_GITHUB_PAT=""
+EXISTING_GITHUB_REPO=""
 
 if [ -f "$PLIST_DEST" ]; then
     EXISTING_ROLE="$(_plist_env_val SECOND_BRAIN_ROLE)"
@@ -141,6 +143,8 @@ if [ -f "$PLIST_DEST" ]; then
     EXISTING_ZOOM_CLIENT_SECRET="$(_plist_env_val ZOOM_CLIENT_SECRET)"
     EXISTING_SLACK_BOT_TOKEN="$(_plist_env_val SLACK_BOT_TOKEN)"
     EXISTING_SLACK_USER_ID="$(_plist_env_val SLACK_USER_ID)"
+    EXISTING_GITHUB_PAT="$(_plist_env_val GITHUB_PAT)"
+    EXISTING_GITHUB_REPO="$(_plist_env_val GITHUB_REPO)"
 fi
 
 CONFIG_DEST="$BRAIN_DIR/config.yaml"
@@ -283,6 +287,31 @@ if [ "$ROLE" = "full" ]; then
         else
             skip "Slack credentials skipped — thread scanning disabled"
         fi
+    fi
+fi
+
+# ── 4d. GitHub credentials (optional) ──────────────────────────────────────────
+GITHUB_PAT=""
+GITHUB_REPO=""
+if [ -n "$EXISTING_GITHUB_PAT" ] && [ -n "$EXISTING_GITHUB_REPO" ]; then
+    ok "GitHub credentials (from existing config)"
+    GITHUB_PAT="$EXISTING_GITHUB_PAT"
+    GITHUB_REPO="$EXISTING_GITHUB_REPO"
+elif [ -n "${GITHUB_PAT:-}" ] && [ -n "${GITHUB_REPO:-}" ]; then
+    ok "GitHub credentials (from environment)"
+else
+    echo ""
+    echo "GitHub (optional — leave blank to keep using local files)"
+    echo "────────────────────────────────────────────────────────"
+    echo "  Create a Personal Access Token at https://github.com/settings/tokens"
+    echo "  Required scope: repo (full control of private repositories)"
+    echo ""
+    read -r -p "  Personal access token with 'repo' scope (Enter to skip): " GITHUB_PAT
+    if [ -n "$GITHUB_PAT" ]; then
+        read -r -p "  Repository (owner/name, e.g. chrisrobertson/secondbrain): " GITHUB_REPO
+        ok "GitHub credentials configured"
+    else
+        skip "GitHub credentials skipped — /feature and /bug will use local files"
     fi
 fi
 
@@ -527,6 +556,10 @@ cat > "$PLIST_TMP" << PLIST_EOF
     <string>${SLACK_BOT_TOKEN}</string>
     <key>SLACK_USER_ID</key>
     <string>${SLACK_USER_ID}</string>
+    <key>GITHUB_PAT</key>
+    <string>${GITHUB_PAT}</string>
+    <key>GITHUB_REPO</key>
+    <string>${GITHUB_REPO}</string>
   </dict>
 </dict>
 </plist>
