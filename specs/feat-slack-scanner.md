@@ -2,8 +2,9 @@
 specmas: 3.0
 kind: feature
 id: feat-slack-scanner
-version: 1.1.0
+version: 1.2.0
 created: 2026-04-11
+updated: 2026-04-12
 status: draft
 complexity: moderate
 maturity: 1
@@ -15,6 +16,21 @@ related_specs:
 ---
 
 # Slack Scanner
+
+## Revision 1.2.0 — User Token Switch (2026-04-12)
+
+**Summary:** Switched from bot token (`xoxb-`) to user token (`xoxp-`) for automatic channel discovery. The scanner now calls `users.conversations` instead of `conversations.list`, so all channels the user is a member of are captured without per-channel bot invites.
+
+**Changes:**
+- `SLACK_BOT_TOKEN` env var renamed to `SLACK_USER_TOKEN`
+- `SLACK_USER_ID` env var retired; user ID now auto-discovered via `auth.test` on startup
+- Channel enumeration endpoint: `conversations.list` → `users.conversations`
+- New `_resolve_self()` helper: calls `auth.test`, caches `own_user_id`, logs authenticated identity at startup
+- `install.sh`: consolidated to single Slack prompt; detects old bot token and warns to re-prompt
+
+**Migration:** Existing installs must swap their `xoxb-` bot token for an `xoxp-` user token. Add User Token Scopes (`channels:history`, `channels:read`, `groups:history`, `groups:read`, `users:read`) in the Slack app's OAuth & Permissions, reinstall to workspace, then run `./install.sh` — the installer detects the old token and re-prompts.
+
+---
 
 ## Overview
 

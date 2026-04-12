@@ -31,6 +31,8 @@ class SlackScanner:
     def __init__(self, role: str = "full"):
         self.role = role
         self._user_cache: dict = {}  # user_id -> display_name
+        self.own_user_id = None
+        self._self_resolved = False
 
     # ── Config ────────────────────────────────────────────────────────────────
 
@@ -90,7 +92,7 @@ class SlackScanner:
         params: dict = None,
         _retry: int = 0,
     ) -> Optional[dict]:
-        token = os.environ.get("SLACK_BOT_TOKEN", "")
+        token = os.environ.get("SLACK_USER_TOKEN", "")
         if not token:
             return None
         try:
@@ -108,7 +110,7 @@ class SlackScanner:
                 log.error("Persistent rate limit on %s — skipping", method)
                 return None
             if resp.status_code == 401:
-                log.error("Slack API auth failed (401) — check SLACK_BOT_TOKEN")
+                log.error("Slack API auth failed (401) — check SLACK_USER_TOKEN (must start with xoxp-)")
                 return None
             resp.raise_for_status()
             data = resp.json()
@@ -126,14 +128,14 @@ class SlackScanner:
     # ── Channel discovery ─────────────────────────────────────────────────────
 
     async def _list_channels(self, client: httpx.AsyncClient) -> list:
-        """Return list of (channel_id, channel_name) tuples for channels bot can access."""
+        """Return list of (channel_id, channel_name) tuples for channels user is a member of."""
         channels = []
         cursor = None
         while True:
-            params = {"types": "public_channel,private_channel", "limit": 200}
+            params = {"types": "public_channel,private_channel", "exclude_archived": "true", "limit": 200}
             if cursor:
                 params["cursor"] = cursor
-            data = await self._api_call(client, "conversations.list", params)
+            data = await self._api_call(client, "users.conversations", params)
             if not data:
                 break
             for ch in data.get("channels", []):
@@ -143,6 +145,7 @@ class SlackScanner:
             if not cursor:
                 break
             await asyncio.sleep(1)  # rate limit compliance
+        log.info("Enumerated %d channels via users.conversations", len(channels))
         return channels
 
     def _filter_channels(self, channels: list, config: dict) -> list:
@@ -326,7 +329,6 @@ class SlackScanner:
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
         # Extract participants
-        slack_user_id = os.environ.get("SLACK_USER_ID", "")
         participants = []
         seen_users = set()
         for msg in messages:
@@ -402,6 +404,19 @@ class SlackScanner:
             except Exception:
                 pass
 
+    # ── Self-resolution ───────────────────────────────────────────────────────
+
+    async def _resolve_self(self, client: httpx.AsyncClient) -> bool:
+        """Call auth.test to cache own_user_id and log authenticated identity."""
+        data = await self._api_call(client, "auth.test", {})
+        if not data or not data.get("ok"):
+            log.error("Slack auth.test failed — check SLACK_USER_TOKEN (must start with xoxp-)")
+            return False
+        self.own_user_id = data.get("user_id", "")
+        user = data.get("user", "")
+        log.info("Slack scanner started — authenticated as %s (%s)", self.own_user_id, user)
+        return True
+
     # ── Run loop ──────────────────────────────────────────────────────────────
 
     async def run_loop(self, stop_event: asyncio.Event):
@@ -409,17 +424,24 @@ class SlackScanner:
             log.debug("Slack scanner skipped (role=%s)", self.role)
             return
 
-        token = os.environ.get("SLACK_BOT_TOKEN")
+        token = os.environ.get("SLACK_USER_TOKEN")
         if not token:
-            log.warning("SLACK_BOT_TOKEN not set — Slack scanner disabled")
+            log.warning("SLACK_USER_TOKEN not set — Slack scanner disabled")
             return
 
         sc = self._scanner_config()
         interval = sc.get("interval_seconds", 300)
-        log.info("Slack scanner started — polling every %ds", interval)
 
         while not stop_event.is_set():
             try:
+                # Resolve self on first iteration
+                if not self._self_resolved:
+                    async with httpx.AsyncClient(timeout=30) as client:
+                        if not await self._resolve_self(client):
+                            log.warning("Slack scanner disabled — auth.test failed")
+                            return
+                        self._self_resolved = True
+
                 await self._run_scan()
             except Exception:
                 log.exception("Uncaught error in slack scanner cycle")

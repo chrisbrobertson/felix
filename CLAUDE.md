@@ -135,7 +135,7 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 10. **Contact Tracker** (every 5 min, `full` role only) — scans `email_thread`, `meeting_transcript`, `calendar_event`, and `slack_thread` memory files for participant names and emails (mtime-based). Writes one `contact-{name-slug}.md` per person with email-based deduplication, recency-weighted relationship scoring, and interaction history. Exposes `/contacts [N]` (alias: `/people`), `/contact <name|N>` Telegram commands. State persisted in `DEPLOY_DIR/contact-tracker-state.json`.
 
-11. **Slack Scanner** (every 5 min, `full` role only) — polls Slack Web API for threads in monitored channels, writes `slack-thread-*.md` memory files. Requires `SLACK_BOT_TOKEN` and `SLACK_USER_ID` env vars; exits gracefully if missing. State persisted in `DEPLOY_DIR/slack-scanner-state.json`.
+11. **Slack Scanner** (every 5 min, `full` role only) — polls Slack Web API for threads in monitored channels, writes `slack-thread-*.md` memory files. Requires `SLACK_USER_TOKEN` env var (xoxp-); user ID auto-discovered via auth.test. Exits gracefully if missing. State persisted in `DEPLOY_DIR/slack-scanner-state.json`.
 
 12. **Notification Manager** (every 60 sec, `full` role only) — pushes proactive messages to Telegram: daily morning briefing (calendar, commitments, memory digest), pre-meeting context (10 min before events), commitment deadline alerts (today/tomorrow). Exposes `/briefing`, `/mute`, `/unmute` commands. State persisted in `DEPLOY_DIR/notification-state.json`.
 

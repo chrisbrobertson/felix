@@ -1461,7 +1461,7 @@ async def test_slack_scanner_writes_memory_for_thread(tmp_path):
     import yaml as _yaml
 
     async def fake_api_call(client, method, params=None, _retry=0):
-        if method == "conversations.list":
+        if method == "users.conversations":
             return CHANNELS_RESPONSE
         elif method == "conversations.history":
             return MESSAGES_RESPONSE
@@ -1469,6 +1469,8 @@ async def test_slack_scanner_writes_memory_for_thread(tmp_path):
             return THREAD_RESPONSE
         elif method == "users.info":
             return USER_RESPONSE
+        elif method == "auth.test":
+            return {"ok": True, "user_id": "U001", "user": "testuser"}
         return None
 
     mock_acompletion = AsyncMock()
@@ -1482,7 +1484,7 @@ async def test_slack_scanner_writes_memory_for_thread(tmp_path):
          patch.object(ss, "CONFIG_PATH", tmp_path / "config.yaml"), \
          patch.object(scanner, "_api_call", side_effect=fake_api_call), \
          patch("litellm.acompletion", mock_acompletion), \
-         patch.dict(os.environ, {"SLACK_BOT_TOKEN": "xoxb-test"}):
+         patch.dict(os.environ, {"SLACK_USER_TOKEN": "xoxp-test"}):
 
         (tmp_path / "config.yaml").write_text(_yaml.dump({
             "slack_scanner": {

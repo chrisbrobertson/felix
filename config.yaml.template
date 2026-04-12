@@ -106,8 +106,8 @@ contact_tracker:
 slack_scanner:
   interval_seconds: 300          # scan every 5 minutes
   lookback_days: 7               # initial history window on first run per channel
-  channel_include: []            # whitelist (empty = all channels bot can see)
-  channel_exclude:               # blacklist (applied when include is empty)
+  channel_include: []            # whitelist — filters the user's auto-discovered channel set (empty = all channels you're a member of)
+  channel_exclude:               # blacklist — applied when include is empty
     - general
     - random
   min_thread_messages: 2         # skip threads with fewer replies than this
