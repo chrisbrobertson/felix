@@ -8,7 +8,7 @@ Automatically captures and summarizes everything you read on the web. Stores sum
 
 ## How it works
 
-A daemon runs eight async loops:
+A daemon runs nine async loops:
 
 1. **Browser Watcher** — polls Chrome/Firefox history every 5 minutes, fetches pages you spent time on, summarizes them with Gemini Flash, writes a `.md` file to iCloud
 2. **Telegram Bot** — answers questions about what you've read by loading relevant memory files into context
@@ -18,6 +18,7 @@ A daemon runs eight async loops:
 6. **Email Scanner** — reads Apple Mail.app data every 5 minutes, writes a living `email-thread-*.md` memory file per conversation thread. Requires Full Disk Access (see below).
 7. **Zoom Scanner** — polls Zoom Cloud Recordings every 5 minutes, downloads VTT transcripts, parses speaker-attributed segments, generates a summary, writes `meeting-*.md` memory files. Requires Zoom Server-to-Server OAuth credentials (see below).
 8. **Commitment Tracker** — scans meeting and email memory files every 5 minutes, uses LLM to extract commitments and waiting-on items, writes one `commitment-*.md` file per extracted item. Surface via `/commitments` in Telegram.
+9. **Contact Tracker** — scans email, meeting, calendar, and Slack memory files every 5 minutes, extracts participant names and emails, writes one `contact-*.md` file per person with relationship scoring and interaction history. Surface via `/contacts` and `/contact <name>` in Telegram.
 
 ---
 
@@ -49,7 +50,11 @@ The installer is idempotent — safe to run again after a key rotation, repo mov
 ├── logs/               out.log, error.log
 ├── seen-urls           processed URL list
 ├── errors.log          LLM API errors
-└── execution-log.jsonl watcher skill execution history
+├── execution-log.jsonl watcher skill execution history
+├── email-scanner-state.json
+├── zoom-scanner-state.json
+├── commitment-scanner-state.json
+└── contact-tracker-state.json
 
 ~/Library/Mobile Documents/com~apple~CloudDocs/second-brain/
 ├── memories/           one .md file per captured webpage
@@ -238,7 +243,7 @@ The system supports two roles. Set `SECOND_BRAIN_ROLE` in each machine's launchd
 
 | Role | What runs | API keys needed |
 |------|-----------|-----------------|
-| `full` | All eight loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
+| `full` | All nine loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
 | `watcher` | Browser watcher only | `GEMINI_API_KEY` only |
 
 Run `full` on your always-on machine (Mac Studio / Mac Mini). Run `watcher` on your MacBook — it captures pages you read while traveling and syncs memories to iCloud automatically.
@@ -322,6 +327,16 @@ Send these slash commands to your bot:
 | `/dismiss <N>` | Mark commitment N as dismissed (false positive or no longer relevant) |
 
 Items with low confidence (0.5–0.69) are shown with a ⚠️ indicator.
+
+**Contact tracker:**
+
+| Command | Effect |
+|---------|--------|
+| `/contacts [N]` | List contacts sorted by most recent interaction (default 20, max 50) |
+| `/contact <name>` | Show detailed contact view including interaction history and open commitments |
+| `/contact <N>` | Show contact N from most recent `/contacts` list |
+
+Contacts are deduplicated by email address. Display names are normalized to the longest version seen. Relationship score is recency-weighted: recent interactions contribute more than old ones (1.0 for yesterday, 0.1 for 10 days ago, etc.).
 
 **Domain skip filter:**
 

@@ -24,6 +24,7 @@ project_scanner.py     # Scans ~/repos for git repos, writes project-*.md memory
 email_scanner.py       # Reads Apple Mail, writes email-thread-*.md memory files
 zoom_scanner.py        # Polls Zoom API, parses VTT transcripts, writes meeting-*.md files
 commitment_tracker.py  # Extracts commitments from meeting/email memories, /commitments cmd
+contact_tracker.py     # Aggregates participants across memories, /contacts cmd
 utils.py               # Shared helpers
 skills/                # Skill .md files (committed; deployed to iCloud skills/ dir)
 tests/
@@ -95,7 +96,7 @@ All live data lives outside the repo, in iCloud Drive:
 
 Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overrides `daemon.role` (use this per-machine so the override isn't synced via iCloud).
 
-## Architecture: Eight Async Loops
+## Architecture: Nine Async Loops
 
 1. **Browser Watcher** (every 5 min) — reads Chrome/Firefox SQLite DBs, filters by dwell time and skip-domain list, fetches page content, runs `summarize-webpage` skill, writes memory file.
 
@@ -113,9 +114,11 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 8. **Commitment Tracker** (every 5 min, `full` role only) — scans `meeting_transcript` and `email_thread` memory files for new/changed content (mtime-based), calls LLM to extract commitments and waiting-on items, writes one `commitment-{slug}-{id}.md` per item. Confidence ≥0.7 → auto-active; 0.5–0.69 → `needs-review` tag; <0.5 → discarded. Exposes `/commitments`, `/complete N`, `/dismiss N` Telegram commands. State persisted in `DEPLOY_DIR/commitment-scanner-state.json`.
 
+9. **Contact Tracker** (every 5 min, `full` role only) — scans `email_thread`, `meeting_transcript`, `calendar_event`, and `slack_thread` memory files for participant names and emails (mtime-based). Writes one `contact-{name-slug}.md` per person with email-based deduplication, recency-weighted relationship scoring, and interaction history. Exposes `/contacts [N]` (list sorted by last interaction) and `/contact <name|N>` (detail view with open commitments) Telegram commands. State persisted in `DEPLOY_DIR/contact-tracker-state.json`.
+
 ## Two Deployment Roles
 
-- **`full`** — all eight loops. Runs on always-on machine (Mac Studio/Mini). Needs `ANTHROPIC_API_KEY` + `GEMINI_API_KEY`.
+- **`full`** — all nine loops. Runs on always-on machine (Mac Studio/Mini). Needs `ANTHROPIC_API_KEY` + `GEMINI_API_KEY`.
 - **`watcher`** — browser watcher only. Runs on MacBook. Needs only `GEMINI_API_KEY`. Full-node imports (`python-telegram-bot`, etc.) must be deferred inside the `role == "full"` block to avoid crashing on watcher nodes that don't have those packages installed.
 
 ## LLM Routing
@@ -151,7 +154,8 @@ All runtime state lives in `~/secondbrain/` — separate from the repo and from 
 ├── execution-log.jsonl             # watcher-node skill execution log
 ├── email-scanner-state.json        # high-water ROWID for email scanner
 ├── zoom-scanner-state.json         # processed meeting UUIDs for zoom scanner
-└── commitment-scanner-state.json   # processed file mtimes for commitment tracker
+├── commitment-scanner-state.json   # processed file mtimes for commitment tracker
+└── contact-tracker-state.json      # processed file mtimes and interaction timestamps for contact tracker
 ```
 
 `SECOND_BRAIN_DIR` env var overrides the deploy dir location (defaults to `~/secondbrain`). The launchd plist sets this explicitly so the daemon always finds its runtime files.
