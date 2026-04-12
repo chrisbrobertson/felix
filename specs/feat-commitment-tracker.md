@@ -2,7 +2,7 @@
 specmas: 3.0
 kind: feature
 id: feat-commitment-tracker
-version: 1.0.0
+version: 1.1.0
 created: 2026-04-11
 status: draft
 complexity: moderate
@@ -12,6 +12,9 @@ related_specs:
   - second-brain-spec-v1.0
   - feat-email-scanner
   - feat-zoom-transcript-scanner
+  - feat-calendar-scanner
+  - feat-slack-scanner
+  - feat-proactive-notifications
 ---
 
 # Commitment Tracker
@@ -34,20 +37,22 @@ for review and status management.
 
 **In Scope:**
 - Eighth async daemon loop, running every 5 minutes (`full` role only)
-- Scan `meeting_transcript` and `email_thread` memory files for new/updated content
+- Scan `meeting_transcript`, `email_thread`, `calendar_event`, and `slack_thread`
+  memory files for new/updated content
 - LLM-powered extraction of commitments (outbound, inbound) and waiting-on items
 - One `commitment-{slug}-{id}.md` file per extracted item
 - Confidence-based filtering (discard below threshold, flag low-confidence)
 - Status management: `active`, `completed`, `dismissed`
 - Telegram commands: `/commitments`, `/complete N`, `/dismiss N`
-- Extensible `source_types` config for future Slack integration
+- Feedback commands: `/wrong N`, `/missed`, `/accuracy`
+- Correction-aware LLM extraction (few-shot examples from corrections log)
+- Extensible `source_types` config
 
 **Out of Scope:**
 - Web page memories (type: `webpage`) — commitments rarely arise from reading articles
 - Project memories (type: `code_project`) — no natural-language commitments
 - Automatic completion detection (status must be set manually via Telegram)
-- Deadline reminders / push notifications (the bot answers questions; it does not push)
-- Email or calendar integration for cross-referencing commitment status
+- Deadline reminders / push notifications (see `feat-proactive-notifications`)
 - Duplicate detection across source files (same commitment mentioned in email and meeting)
 - Multi-user or shared commitment tracking
 
@@ -363,7 +368,8 @@ Avoid re-extracting commitments from source files that have not changed since la
 
 ### FR-10: Extensible Source Types
 
-The `source_types` config controls which memory file types are scanned. Adding Slack or other types in a future feature requires only adding the type string to the config — no code change.
+The `source_types` config controls which memory file types are scanned. Adding new
+source types requires only adding the type string to the config — no code change.
 
 **Config:**
 ```yaml
@@ -371,12 +377,164 @@ commitment_tracker:
   source_types:
     - meeting_transcript
     - email_thread
-    # - slack_thread  # add when slack scanner is implemented
+    - calendar_event
+    - slack_thread
 ```
 
 **Validation criteria:**
 - Unknown source types in config logged at WARNING, not crashed
 - Removing a source type from config stops scanning that type on next cycle
+
+---
+
+### FR-11: `/wrong N` Correction Command
+
+Mark an extracted commitment as a false positive, log the correction, and set the
+commitment to dismissed. This feeds into the correction-aware extraction in FR-13.
+
+**Usage:** `/wrong N`
+
+**Behaviour:**
+- Look up index N from `_last_commitment_set` (same session-scoped list as `/complete`)
+- Set `status: dismissed` in the commitment file (atomic write)
+- Append one line to `DEPLOY_DIR/commitment-corrections.jsonl`:
+  ```json
+  {
+    "timestamp": "2026-04-11T15:00:00",
+    "correction_type": "false_positive",
+    "commitment_id": "abc123def456",
+    "description": "Let me look into that",
+    "owner": "Mike Peters",
+    "source_memory": "zoom:meeting-uuid-abc123",
+    "source_type": "meeting_transcript"
+  }
+  ```
+- Update `DEPLOY_DIR/commitment-accuracy.json` (FR-14)
+- Reply confirming the correction
+
+**Reply format:**
+```
+✗ Marked as incorrect extraction: "Let me look into that" (Mike Peters)
+This will help avoid similar false positives in future scans.
+```
+
+**Validation criteria:**
+- Correction appended to JSONL atomically (append mode, one JSON object per line)
+- Commitment status set to dismissed
+- Invalid index returns clear error
+- JSONL file created if absent (first correction)
+
+---
+
+### FR-12: `/missed` Manual Commitment Addition
+
+Add a commitment that the scanner missed. Creates a commitment file with
+`correction_type: manual_add` in frontmatter and logs the correction.
+
+**Usage:** `/missed`
+
+**Behaviour:**
+- Bot replies with a prompt requesting the commitment details in structured form:
+  ```
+  Add a missed commitment. Reply with:
+  type: outbound|inbound|waiting_on
+  description: what the commitment is
+  owner: who made it (name)
+  due: YYYY-MM-DD or "unknown"
+  source: brief note on where it came from
+  ```
+- Parse the reply (next message from the allowed user, with 60s timeout)
+- Create a commitment file with `status: active` and `confidence: 1.0`
+  (manual adds are treated as high-confidence)
+- Append to `commitment-corrections.jsonl` with `correction_type: missed`
+- Update `commitment-accuracy.json`
+- Reply confirming creation
+
+**Validation criteria:**
+- Timeout (60s with no reply) → bot sends "Cancelled" message, no file written
+- Malformed reply → bot prompts for correction, retries once
+- Created file has `confidence: 1.0` and `correction_type: manual_add`
+- Correction logged to JSONL
+
+---
+
+### FR-13: Correction-Aware Extraction Prompt
+
+Prepend corrections from `commitment-corrections.jsonl` to the LLM extraction prompt
+as few-shot negative and positive examples. This is the flat-file equivalent of a
+feedback loop — no separate training or model fine-tuning required.
+
+**Mechanism:**
+- Before each LLM extraction call (FR-2), load the last 20 entries from
+  `DEPLOY_DIR/commitment-corrections.jsonl`
+- Separate into `false_positives` and `missed` entries
+- If either list is non-empty, prepend to the extraction prompt:
+
+```
+Learning from previous corrections:
+
+Do NOT extract items like these (previously marked as false positives):
+- "Let me look into that" (Mike Peters, meeting_transcript) — too vague, not a real commitment
+- "I'll think about it" (Alice, email_thread) — not an actionable commitment
+
+DO extract items like these (previously missed):
+- "Can you send me the final numbers?" — a waiting_on item that was missed
+```
+
+- If corrections file is absent or empty, skip this section entirely
+
+**Validation criteria:**
+- Last 20 corrections (combined) used; oldest dropped if > 20
+- Missing corrections file → empty section, no error
+- Corrections from different source types shown to LLM (not filtered by source)
+- Prompt not lengthened excessively: cap corrections section at 1000 characters total
+
+---
+
+### FR-14: `/accuracy` Per-Source Accuracy Command
+
+Show a simple accuracy summary across all feedback received.
+
+**Usage:** `/accuracy`
+
+**Data source:** `DEPLOY_DIR/commitment-accuracy.json`
+
+```json
+{
+  "by_source_type": {
+    "meeting_transcript": {
+      "extracted": 45,
+      "false_positives": 3,
+      "missed": 2
+    },
+    "email_thread": {
+      "extracted": 28,
+      "false_positives": 1,
+      "missed": 1
+    }
+  },
+  "last_updated": "2026-04-11T15:00:00"
+}
+```
+
+Updated on every `/wrong` or `/missed` command. `extracted` count incremented on each
+commitment file write. Precision computed as `(extracted - false_positives) / extracted`.
+
+**Reply format:**
+```
+Commitment extraction accuracy:
+
+meeting_transcript: 45 extracted, 3 false positives (93% precision), 2 missed
+email_thread: 28 extracted, 1 false positive (96% precision), 1 missed
+calendar_event: 12 extracted, 0 false positives (100%), 0 missed
+
+Use /wrong N to flag false positives. Use /missed to add skipped commitments.
+```
+
+**Validation criteria:**
+- Missing accuracy file → "No accuracy data yet. Use /wrong and /missed to provide feedback."
+- Precision calculation: `(extracted - false_positives) / extracted` (0 extracted → "N/A")
+- File updated atomically on each feedback command
 
 ---
 
@@ -389,6 +547,8 @@ commitment_tracker:
   source_types:
     - meeting_transcript
     - email_thread
+    - calendar_event
+    - slack_thread
 ```
 
 ---
@@ -398,13 +558,13 @@ commitment_tracker:
 | File | Change |
 |------|--------|
 | `specs/feat-commitment-tracker.md` | **This spec** |
-| `commitment_tracker.py` | **Create** — CommitmentTracker class + extraction prompt |
-| `chat_handler.py` | Add `/commitments`, `/complete`, `/dismiss` command handlers |
+| `commitment_tracker.py` | **Create** — CommitmentTracker class + extraction prompt; add corrections loading, feedback commands |
+| `chat_handler.py` | Add `/commitments`, `/complete`, `/dismiss`, `/wrong`, `/missed`, `/accuracy` handlers |
 | `daemon.py` | Add CommitmentTracker to full-role gather |
-| `config.yaml.template` | Add `commitment_tracker` section |
-| `CLAUDE.md` | Update to eight async loops, add CommitmentTracker + commands |
-| `README.md` | Document commitment tracker, new Telegram commands |
-| `tests/unit/test_commitment_tracker.py` | **Create** |
+| `config.yaml.template` | Add `commitment_tracker` section; update source_types |
+| `CLAUDE.md` | Update loop descriptions, add feedback commands |
+| `README.md` | Document commitment tracker, all Telegram commands including feedback loop |
+| `tests/unit/test_commitment_tracker.py` | **Create** — includes both original and v1.1.0 tests |
 | `tests/integration/test_pipeline.py` | Add commitment tracker integration test |
 
 ---
@@ -436,3 +596,34 @@ commitment_tracker:
 | `test_needs_review_indicator_in_listing` | needs-review item shows ⚠️ in reply |
 | `test_state_file_persists_across_scans` | State file survives daemon restart |
 | `test_dedup_same_source_two_runs` | Two scans of same source → no duplicate files |
+| `test_calendar_event_source_type` | `calendar_event` type files processed |
+| `test_slack_thread_source_type` | `slack_thread` type files processed |
+| `test_cmd_wrong_writes_correction` | `/wrong N` appends to corrections JSONL |
+| `test_cmd_wrong_sets_dismissed` | `/wrong N` sets `status: dismissed` in commitment file |
+| `test_cmd_wrong_invalid_index` | `/wrong 99` with empty set → clear error message |
+| `test_cmd_wrong_updates_accuracy_json` | `/wrong N` decrements precision in accuracy file |
+| `test_cmd_missed_creates_commitment` | `/missed` flow creates commitment file with `confidence: 1.0` |
+| `test_cmd_missed_logs_correction` | `/missed` appends `correction_type: missed` to JSONL |
+| `test_cmd_missed_timeout` | No reply within 60s → "Cancelled", no file written |
+| `test_corrections_prepended_to_prompt` | Last 20 corrections injected into LLM prompt |
+| `test_corrections_file_missing_no_crash` | Missing JSONL → empty corrections, no error |
+| `test_corrections_capped_at_20` | 25 entries in JSONL → only last 20 used |
+| `test_corrections_section_capped_at_1000_chars` | Corrections section truncated to 1000 chars |
+| `test_accuracy_per_source_type` | `/accuracy` shows extracted/false_positive/missed per type |
+| `test_accuracy_precision_calculation` | Precision = (extracted - false_positives) / extracted |
+| `test_accuracy_file_missing` | `/accuracy` with no file → friendly "no data yet" message |
+| `test_accuracy_updated_on_wrong` | `/wrong` command updates accuracy JSON atomically |
+
+---
+
+## Changelog
+
+### v1.1.0 (2026-04-11)
+- Added FR-11 (`/wrong N`), FR-12 (`/missed`), FR-13 (correction-aware extraction),
+  FR-14 (`/accuracy`): lightweight feedback/learning loop via corrections JSONL
+- Added `calendar_event` and `slack_thread` to source_types (FR-10 updated)
+- Moved "deadline reminders / push notifications" to `feat-proactive-notifications`
+  (no longer Out of Scope here — delegated to that spec)
+- Added related specs: `feat-calendar-scanner`, `feat-slack-scanner`,
+  `feat-proactive-notifications`
+- Updated Files to Create/Modify and Unit Tests tables for v1.1.0 additions
