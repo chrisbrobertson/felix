@@ -368,6 +368,7 @@ DAEMON_FILES=(
     email_scanner.py
     index_builder.py
     memory_writer.py
+    notification_manager.py
     project_scanner.py
     skill_executor.py
     skill_optimizer.py
