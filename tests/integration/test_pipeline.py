@@ -5,6 +5,7 @@ These tests use real file I/O against tmp directories and mock only the
 LLM API call (acompletion) and HTTP fetches.
 """
 import json
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1406,6 +1407,7 @@ async def test_slack_scanner_writes_memory_for_thread(tmp_path):
     """SlackScanner._run_scan → slack-thread-*.md written with correct frontmatter."""
     import slack_scanner as ss
     from slack_scanner import SlackScanner
+    from commitment_tracker import _parse_frontmatter
 
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -1475,7 +1477,7 @@ async def test_slack_scanner_writes_memory_for_thread(tmp_path):
          patch.object(ss, "STATE_FILE", state_file), \
          patch.object(ss, "CONFIG_PATH", tmp_path / "config.yaml"), \
          patch.object(scanner, "_api_call", side_effect=fake_api_call), \
-         patch("slack_scanner.acompletion", mock_acompletion), \
+         patch("litellm.acompletion", mock_acompletion), \
          patch.dict(os.environ, {"SLACK_BOT_TOKEN": "xoxb-test"}):
 
         (tmp_path / "config.yaml").write_text(_yaml.dump({
@@ -1494,7 +1496,7 @@ async def test_slack_scanner_writes_memory_for_thread(tmp_path):
     assert len(files) == 1
 
     text = files[0].read_text()
-    fm, _ = _parse_frontmatter(text)
+    fm = _parse_frontmatter(text)
 
     assert fm["type"] == "slack_thread"
     assert fm["channel"] == "engineering"
