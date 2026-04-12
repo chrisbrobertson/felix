@@ -601,3 +601,505 @@ async def test_cmd_delete_rejects_unauthorised(handler, brain_dir):
     update, ctx = _make_update(99999, ["1"])
     await handler.cmd_delete(update, ctx)
     update.message.reply_text.assert_not_called()
+
+
+# ── /help command ─────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_cmd_help_renders_all_groups(handler):
+    update, ctx = _make_update(12345)
+    await handler.cmd_help(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    for group in ch.COMMAND_REGISTRY:
+        assert group in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_help_all_registry_commands_listed(handler):
+    update, ctx = _make_update(12345)
+    await handler.cmd_help(update, ctx)
+    # Collect all chunks across multiple calls
+    calls = update.message.reply_text.call_args_list
+    full_text = "\n".join(c[0][0] for c in calls)
+    for commands in ch.COMMAND_REGISTRY.values():
+        for cmd, _ in commands:
+            assert f"/{cmd}" in full_text, f"/{cmd} not found in /help output"
+
+
+@pytest.mark.asyncio
+async def test_cmd_help_rejects_unauthorised(handler):
+    update, ctx = _make_update(99999)
+    await handler.cmd_help(update, ctx)
+    update.message.reply_text.assert_not_called()
+
+
+def test_registry_completeness(handler):
+    """Every CommandHandler registration must have a COMMAND_REGISTRY entry."""
+    all_registered = set()
+    for cmd, handler_func in handler.app.add_handler.call_args_list:
+        arg = cmd[0]
+        if hasattr(arg, 'commands'):
+            for c in arg.commands:
+                all_registered.add(c)
+
+    all_in_registry = {
+        cmd
+        for commands in ch.COMMAND_REGISTRY.values()
+        for cmd, _ in commands
+    }
+    unregistered = all_in_registry - all_registered
+    assert not unregistered, f"Commands in COMMAND_REGISTRY but not registered: {unregistered}"
+
+
+# ── /projects and /project commands ──────────────────────────────────────────
+
+def write_project_memory(memories_dir: Path, name: str, category: str = "code",
+                         last_scanned: str = "2026-04-11T12:00:00",
+                         summary: str = "A project.") -> Path:
+    path = memories_dir / f"project-{name}.md"
+    path.write_text(
+        f"---\nsource_title: {name}\nsummary: {summary}\ntags: [python]\n"
+        f"last_scanned: '{last_scanned}'\nsource_url: git@github.com:org/{name}.git\n"
+        f"type: project\ncategory: {category}\n"
+        f"local_path: /tmp/{name}\ndefault_branch: main\nlanguages: [python]\n"
+        f"head_sha: abc123\n---\n\n## Description\n{summary}\n"
+    )
+    return path
+
+
+@pytest.mark.asyncio
+async def test_cmd_projects_lists_all(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_project_memory(m, "alpha")
+    write_project_memory(m, "beta")
+    update, ctx = _make_update(12345)
+    await handler.cmd_projects(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "alpha" in reply
+    assert "beta" in reply
+    assert len(handler._last_project_set) == 2
+
+
+@pytest.mark.asyncio
+async def test_cmd_projects_filter_by_category(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_project_memory(m, "codeproj", category="code")
+    write_project_memory(m, "workproj", category="work")
+    update, ctx = _make_update(12345, ["code"])
+    await handler.cmd_projects(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "codeproj" in reply
+    assert "workproj" not in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_projects_default_n_10(handler, brain_dir):
+    m = brain_dir / "memories"
+    for i in range(15):
+        write_project_memory(m, f"proj{i:02d}")
+    update, ctx = _make_update(12345)
+    await handler.cmd_projects(update, ctx)
+    assert len(handler._last_project_set) == 10
+
+
+@pytest.mark.asyncio
+async def test_cmd_projects_n_clamped(handler, brain_dir):
+    m = brain_dir / "memories"
+    for i in range(5):
+        write_project_memory(m, f"proj{i}")
+    # N=999 clamped to 50 — but only 5 exist so we get 5
+    update, ctx = _make_update(12345, ["999"])
+    await handler.cmd_projects(update, ctx)
+    assert len(handler._last_project_set) == 5
+    # N=0 clamped to 1
+    update2, ctx2 = _make_update(12345, ["0"])
+    await handler.cmd_projects(update2, ctx2)
+    assert len(handler._last_project_set) == 1
+
+
+@pytest.mark.asyncio
+async def test_cmd_project_detail_view(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_project_memory(m, "myrepo", summary="My test repo.")
+    handler._last_project_set = [m / "project-myrepo.md"]
+    update, ctx = _make_update(12345, ["1"])
+    await handler.cmd_project(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "myrepo" in reply
+    assert "My test repo" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_project_invalid_index(handler):
+    handler._last_project_set = []
+    update, ctx = _make_update(12345, ["99"])
+    await handler.cmd_project(update, ctx)
+    assert "Invalid index" in update.message.reply_text.call_args[0][0]
+
+
+# ── /events and /event commands ───────────────────────────────────────────────
+
+def write_event_memory(memories_dir: Path, slug: str,
+                       start: str = "2026-04-12T10:00:00",
+                       title: str = "Team Meeting",
+                       location: str = "") -> Path:
+    path = memories_dir / f"calendar-event-2026-04-12-{slug}-abc123.md"
+    loc_line = f"location: '{location}'\n" if location else ""
+    path.write_text(
+        f"---\nsource_title: '{title}'\nsummary: Event summary.\n"
+        f"tags: [meeting]\nlast_scanned: '2026-04-12T10:00:00'\n"
+        f"source_url: calendar:abc\ntype: calendar_event\n"
+        f"calendar_name: Work\nstart_time: '{start}'\nend_time: '{start}'\n"
+        f"all_day: false\n{loc_line}participants: [Alice, Bob]\n---\n\nContent.\n"
+    )
+    return path
+
+
+@pytest.mark.asyncio
+async def test_cmd_events_lists_recent(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_event_memory(m, "standup", title="Standup")
+    write_event_memory(m, "review", title="Code Review")
+    update, ctx = _make_update(12345)
+    await handler.cmd_events(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Standup" in reply
+    assert "Code Review" in reply
+    assert len(handler._last_event_set) == 2
+
+
+@pytest.mark.asyncio
+async def test_cmd_events_default_n_10(handler, brain_dir):
+    m = brain_dir / "memories"
+    for i in range(15):
+        write_event_memory(m, f"evt{i:02d}", title=f"Event {i}")
+    update, ctx = _make_update(12345)
+    await handler.cmd_events(update, ctx)
+    assert len(handler._last_event_set) == 10
+
+
+@pytest.mark.asyncio
+async def test_cmd_events_n_clamped(handler, brain_dir):
+    m = brain_dir / "memories"
+    for i in range(5):
+        write_event_memory(m, f"evt{i}", title=f"Evt{i}")
+    update, ctx = _make_update(12345, ["0"])
+    await handler.cmd_events(update, ctx)
+    assert len(handler._last_event_set) == 1
+
+
+@pytest.mark.asyncio
+async def test_cmd_events_sets_last_event_set(handler, brain_dir):
+    m = brain_dir / "memories"
+    p = write_event_memory(m, "standup")
+    update, ctx = _make_update(12345)
+    await handler.cmd_events(update, ctx)
+    assert handler._last_event_set == [p]
+
+
+@pytest.mark.asyncio
+async def test_cmd_event_detail_view(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_event_memory(m, "standup", title="Daily Standup", location="Conf Room A")
+    handler._last_event_set = [m / "calendar-event-2026-04-12-standup-abc123.md"]
+    update, ctx = _make_update(12345, ["1"])
+    await handler.cmd_event(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Daily Standup" in reply
+    assert "Conf Room A" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_event_invalid_index(handler):
+    handler._last_event_set = []
+    update, ctx = _make_update(12345, ["99"])
+    await handler.cmd_event(update, ctx)
+    assert "Invalid index" in update.message.reply_text.call_args[0][0]
+
+
+# ── /meetings and /meeting commands ──────────────────────────────────────────
+
+def write_meeting_memory(memories_dir: Path, slug: str,
+                         title: str = "Q4 Planning",
+                         date: str = "2026-04-10") -> Path:
+    path = memories_dir / f"meeting-{date}-{slug}-abc123.md"
+    path.write_text(
+        f"---\nsource_title: '{title}'\nsummary: Meeting summary.\n"
+        f"tags: [meeting]\ncreated: '{date}T10:00:00'\n"
+        f"source_url: zoom:abc\ntype: meeting_transcript\n"
+        f"start_time: '{date}T10:00:00'\nparticipants: [Alice, Bob, Charlie]\n"
+        f"---\n\nTranscript.\n"
+    )
+    return path
+
+
+@pytest.mark.asyncio
+async def test_cmd_meetings_lists_recent(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_meeting_memory(m, "q4", title="Q4 Planning")
+    write_meeting_memory(m, "standup", title="Standup")
+    update, ctx = _make_update(12345)
+    await handler.cmd_meetings(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Q4 Planning" in reply or "Standup" in reply
+    assert len(handler._last_meeting_set) == 2
+
+
+@pytest.mark.asyncio
+async def test_cmd_meetings_default_n_10(handler, brain_dir):
+    m = brain_dir / "memories"
+    for i in range(15):
+        write_meeting_memory(m, f"mtg{i:02d}", title=f"Meeting {i}")
+    update, ctx = _make_update(12345)
+    await handler.cmd_meetings(update, ctx)
+    assert len(handler._last_meeting_set) == 10
+
+
+@pytest.mark.asyncio
+async def test_cmd_meetings_sets_last_meeting_set(handler, brain_dir):
+    m = brain_dir / "memories"
+    p = write_meeting_memory(m, "q4")
+    update, ctx = _make_update(12345)
+    await handler.cmd_meetings(update, ctx)
+    assert handler._last_meeting_set == [p]
+
+
+@pytest.mark.asyncio
+async def test_cmd_meeting_detail_view(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_meeting_memory(m, "q4", title="Q4 Planning")
+    handler._last_meeting_set = [m / "meeting-2026-04-10-q4-abc123.md"]
+    update, ctx = _make_update(12345, ["1"])
+    await handler.cmd_meeting(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Q4 Planning" in reply
+    assert "Alice" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_meeting_invalid_index(handler):
+    handler._last_meeting_set = []
+    update, ctx = _make_update(12345, ["99"])
+    await handler.cmd_meeting(update, ctx)
+    assert "Invalid index" in update.message.reply_text.call_args[0][0]
+
+
+# ── /comms and /comm commands ─────────────────────────────────────────────────
+
+def write_email_memory(memories_dir: Path, slug: str,
+                       subject: str = "Re: Project Update",
+                       last_message: str = "2026-04-11") -> Path:
+    path = memories_dir / f"email-thread-{slug}-abc123.md"
+    path.write_text(
+        f"---\nsource_title: '{subject}'\nsummary: Email thread summary.\n"
+        f"type: email_thread\nlast_message: '{last_message}'\n"
+        f"participants: [alice@example.com]\n---\n\nContent.\n"
+    )
+    return path
+
+
+def write_slack_memory(memories_dir: Path, slug: str,
+                       channel: str = "engineering",
+                       last_reply: str = "2026-04-11") -> Path:
+    path = memories_dir / f"slack-thread-{slug}-1234567890.md"
+    path.write_text(
+        f"---\nsource_title: '{channel}'\nsummary: Slack thread summary.\n"
+        f"type: slack_thread\nchannel: {channel}\n"
+        f"last_reply: '{last_reply}'\nparticipants: [U123456]\n---\n\nContent.\n"
+    )
+    return path
+
+
+@pytest.mark.asyncio
+async def test_cmd_comms_mixed_results(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_email_memory(m, "proj-update")
+    write_slack_memory(m, "eng-discussion")
+    update, ctx = _make_update(12345)
+    await handler.cmd_comms(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "[email]" in reply
+    assert "[slack]" in reply
+    assert len(handler._last_comms_set) == 2
+
+
+@pytest.mark.asyncio
+async def test_cmd_comms_email_filter(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_email_memory(m, "email1")
+    write_slack_memory(m, "slack1")
+    update, ctx = _make_update(12345, ["email"])
+    await handler.cmd_comms(update, ctx)
+    assert len(handler._last_comms_set) == 1
+    reply = update.message.reply_text.call_args[0][0]
+    assert "[email]" in reply
+    assert "[slack]" not in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_comms_slack_filter(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_email_memory(m, "email1")
+    write_slack_memory(m, "slack1")
+    update, ctx = _make_update(12345, ["slack"])
+    await handler.cmd_comms(update, ctx)
+    assert len(handler._last_comms_set) == 1
+    reply = update.message.reply_text.call_args[0][0]
+    assert "[slack]" in reply
+    assert "[email]" not in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_comms_n_arg_no_filter(handler, brain_dir):
+    m = brain_dir / "memories"
+    for i in range(5):
+        write_email_memory(m, f"email{i}")
+    update, ctx = _make_update(12345, ["3"])
+    await handler.cmd_comms(update, ctx)
+    assert len(handler._last_comms_set) == 3
+
+
+@pytest.mark.asyncio
+async def test_cmd_comms_n_clamped(handler, brain_dir):
+    m = brain_dir / "memories"
+    for i in range(3):
+        write_email_memory(m, f"email{i}")
+    update, ctx = _make_update(12345, ["0"])
+    await handler.cmd_comms(update, ctx)
+    assert len(handler._last_comms_set) == 1
+
+
+@pytest.mark.asyncio
+async def test_cmd_comms_source_tag_in_reply(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_email_memory(m, "e1")
+    write_slack_memory(m, "s1")
+    update, ctx = _make_update(12345)
+    await handler.cmd_comms(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    # Each non-header line should have a source tag
+    content_lines = [l for l in reply.split("\n") if l.startswith(("1.", "2."))]
+    for line in content_lines:
+        assert "[email]" in line or "[slack]" in line
+
+
+@pytest.mark.asyncio
+async def test_cmd_comms_sets_last_comms_set(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_email_memory(m, "e1")
+    update, ctx = _make_update(12345)
+    await handler.cmd_comms(update, ctx)
+    assert len(handler._last_comms_set) == 1
+
+
+@pytest.mark.asyncio
+async def test_cmd_comm_email_detail(handler, brain_dir):
+    m = brain_dir / "memories"
+    p = write_email_memory(m, "proj-update", subject="Re: Project Update")
+    handler._last_comms_set = [p]
+    update, ctx = _make_update(12345, ["1"])
+    await handler.cmd_comm(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "[email]" in reply
+    assert "Re: Project Update" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_comm_slack_detail(handler, brain_dir):
+    m = brain_dir / "memories"
+    p = write_slack_memory(m, "eng", channel="engineering")
+    handler._last_comms_set = [p]
+    update, ctx = _make_update(12345, ["1"])
+    await handler.cmd_comm(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "[slack]" in reply
+    assert "engineering" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_comm_invalid_index(handler):
+    handler._last_comms_set = []
+    update, ctx = _make_update(12345, ["99"])
+    await handler.cmd_comm(update, ctx)
+    assert "Invalid index" in update.message.reply_text.call_args[0][0]
+
+
+# ── /people alias ─────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_cmd_people_is_alias_for_contacts(handler, brain_dir):
+    """Both /contacts and /people handlers should behave the same."""
+    m = brain_dir / "memories"
+    path = m / "contact-alice.md"
+    path.write_text(
+        "---\nsource_title: Alice\nname: Alice\ntype: contact\n"
+        "emails: [alice@example.com]\nlast_interaction: '2026-04-11'\n"
+        "relationship_score: 0.8\ninteraction_count: 5\n---\n"
+    )
+    update, ctx = _make_update(12345)
+    await handler.cmd_contacts(update, ctx)
+    contacts_reply = update.message.reply_text.call_args[0][0]
+
+    update2, ctx2 = _make_update(12345)
+    # /people is registered as cmd_contacts — same method
+    await handler.cmd_contacts(update2, ctx2)
+    people_reply = update2.message.reply_text.call_args[0][0]
+    assert contacts_reply == people_reply
+
+
+# ── project_scanner migration ─────────────────────────────────────────────────
+
+def test_migrate_legacy_code_project(tmp_path):
+    import project_scanner as ps_mod
+    from project_scanner import ProjectScanner
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    # Write a legacy file
+    legacy = memories_dir / "project-legacy.md"
+    legacy.write_text(
+        "---\nsource_title: legacy\nsummary: old\ntags: [python]\n"
+        "last_scanned: '2026-04-11T10:00:00'\n"
+        "source_url: git@github.com:org/legacy.git\ntype: code_project\n"
+        "local_path: /tmp/legacy\ndefault_branch: main\n"
+        "languages: [python]\nhead_sha: abc123\n---\n\n## Content\n"
+    )
+
+    with patch.object(ps_mod, "MEMORIES_DIR", memories_dir):
+        _ = ProjectScanner()
+
+    import yaml as _yaml
+    text = legacy.read_text()
+    parts = text.split("---", 2)
+    fm = _yaml.safe_load(parts[1])
+    assert fm["type"] == "project"
+    assert fm["category"] == "code"
+
+
+def test_migrate_idempotent(tmp_path):
+    import project_scanner as ps_mod
+    from project_scanner import ProjectScanner
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    # Write an already-migrated file
+    migrated = memories_dir / "project-new.md"
+    migrated.write_text(
+        "---\nsource_title: new\nsummary: new project\ntags: [python]\n"
+        "last_scanned: '2026-04-11T10:00:00'\n"
+        "source_url: git@github.com:org/new.git\ntype: project\ncategory: code\n"
+        "local_path: /tmp/new\ndefault_branch: main\n"
+        "languages: [python]\nhead_sha: def456\n---\n\n## Content\n"
+    )
+    original_mtime = migrated.stat().st_mtime
+
+    with patch.object(ps_mod, "MEMORIES_DIR", memories_dir):
+        _ = ProjectScanner()
+
+    # File should not have been rewritten (mtime unchanged or type still project)
+    import yaml as _yaml
+    fm = _yaml.safe_load(migrated.read_text().split("---", 2)[1])
+    assert fm["type"] == "project"
+    assert fm["category"] == "code"

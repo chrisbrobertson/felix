@@ -31,7 +31,7 @@ def write_memory(memories_dir: Path, name: str, head_sha: str = "abc123",
     content = (
         f"---\nsource_title: {name}\nsummary: {summary}\n"
         f"tags: {tags}\nlast_scanned: '2026-04-11T10:00:00'\n"
-        f"source_url: git@github.com:org/{name}.git\ntype: code_project\n"
+        f"source_url: git@github.com:org/{name}.git\ntype: project\ncategory: code\n"
         f"local_path: /tmp/{name}\ndefault_branch: main\n"
         f"languages: {tags}\nhead_sha: {head_sha}\n---\n\n"
         f"## Recent Activity\n- abc123 2026-04-11 initial\n"
@@ -270,7 +270,7 @@ def test_write_memory_atomic(tmp_path):
     assert (memories_dir / "project-atomictest.md").exists()
 
 
-def test_write_memory_type_is_code_project(tmp_path):
+def test_write_memory_type_is_project(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
@@ -293,7 +293,8 @@ def test_write_memory_type_is_code_project(tmp_path):
     mem = memories_dir / "project-typecheck.md"
     text = mem.read_text()
     fm = _parse_frontmatter(text)
-    assert fm["type"] == "code_project"
+    assert fm["type"] == "project"
+    assert fm["category"] == "code"
 
 
 def test_write_memory_frontmatter_parseable(tmp_path):
@@ -320,7 +321,8 @@ def test_write_memory_frontmatter_parseable(tmp_path):
     fm = _parse_frontmatter(mem.read_text())
     assert fm["source_title"] == "parsetest"
     assert fm["head_sha"] == "sha42"
-    assert fm["type"] == "code_project"
+    assert fm["type"] == "project"
+    assert fm["category"] == "code"
     assert "python" in fm["languages"]
     assert isinstance(fm["tags"], list)
 

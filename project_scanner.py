@@ -51,6 +51,38 @@ class ProjectScanner:
     def __init__(self, role: str = "full"):
         self.role = role
         self._executor = None  # lazy — only created if LLM call needed
+        self._migrate_legacy_code_project_files()
+
+    def _migrate_legacy_code_project_files(self):
+        """Rewrite any project-*.md with type: code_project → type: project + category: code."""
+        if not MEMORIES_DIR.exists():
+            return
+        migrated = 0
+        for path in MEMORIES_DIR.glob("project-*.md"):
+            try:
+                text = path.read_text()
+                m = re.match(r"^(---\n)(.*?)(\n---\n)(.*)", text, re.DOTALL)
+                if not m:
+                    continue
+                fm_text = m.group(2)
+                fm = yaml.safe_load(fm_text) or {}
+                if fm.get("type") != "code_project":
+                    continue
+                fm["type"] = "project"
+                # Insert category after type; preserve other fields
+                if "category" not in fm:
+                    fm["category"] = "code"
+                new_fm = yaml.dump(fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
+                new_text = f"---\n{new_fm}---\n{m.group(4)}"
+                # Atomic write
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(new_text)
+                tmp.replace(path)
+                migrated += 1
+            except Exception:
+                log.exception("Migration failed for %s", path)
+        if migrated:
+            log.info("Migrated %d legacy code_project files to type: project", migrated)
 
     def _load_config(self) -> dict:
         if CONFIG_PATH.exists():
@@ -438,7 +470,8 @@ class ProjectScanner:
             "tags": tags,
             "last_scanned": now,
             "source_url": data["remote_url"],
-            "type": "code_project",
+            "type": "project",
+            "category": "code",
             "local_path": data["local_path"],
             "default_branch": data["default_branch"],
             "languages": data.get("languages", []),

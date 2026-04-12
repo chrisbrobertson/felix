@@ -372,7 +372,8 @@ async def test_scanner_writes_memory_for_git_repo(tmp_path):
     fm = _yaml.safe_load(parts[1])
 
     assert fm["source_title"] == "myrepo"
-    assert fm["type"] == "code_project"
+    assert fm["type"] == "project"
+    assert fm.get("category") == "code"
     assert "python" in fm["languages"]
     assert fm["head_sha"] != ""
     assert "## Recent Activity" in text

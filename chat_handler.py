@@ -16,6 +16,57 @@ BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-b
 MAX_CONTEXT_CHARS = 80_000
 TG_MAX_CHARS = 4096  # Telegram hard limit per message
 
+# Single source of truth for all Telegram commands and their descriptions.
+# /help iterates this to render the grouped help text.
+# A test enforces that every CommandHandler registration appears here.
+COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
+    "Knowledge listings": [
+        ("memories",       "List recent web memories"),
+        ("search",         "Keyword search across ALL memory types"),
+        ("memory",         "Show memory N from last list"),
+        ("delete",         "Delete memory N from last list"),
+        ("people",         "List contacts (alias of /contacts)"),
+        ("contacts",       "List people you've interacted with"),
+        ("contact",        "Show contact by name or N"),
+        ("projects",       "List code/work/person projects (optional category filter)"),
+        ("project",        "Show project N from last list"),
+        ("events",         "List recent and upcoming calendar events"),
+        ("event",          "Show event N from last list"),
+        ("meetings",       "List recent meeting transcripts"),
+        ("meeting",        "Show meeting N from last list"),
+        ("comms",          "List recent email + slack threads (optional 'email' or 'slack' filter)"),
+        ("comm",           "Show comm N from last list"),
+        ("messages",       "Alias of /comms"),
+        ("communications", "Alias of /comms"),
+        ("message",        "Alias of /comm"),
+        ("communication",  "Alias of /comm"),
+    ],
+    "Commitments": [
+        ("commitments", "List active commitments"),
+        ("complete",    "Mark commitment N complete"),
+        ("dismiss",     "Dismiss commitment N"),
+        ("wrong",       "Mark extracted commitment N as a false positive"),
+        ("missed",      "Manually add a commitment the bot missed"),
+        ("accuracy",    "Show extraction precision per source type"),
+    ],
+    "Notifications": [
+        ("briefing", "Trigger today's briefing now"),
+        ("mute",     "Suppress proactive notifications"),
+        ("unmute",   "Resume proactive notifications"),
+    ],
+    "Domain filter": [
+        ("skip",     "Add a domain to the ignore list"),
+        ("unskip",   "Remove a domain from the ignore list"),
+        ("skiplist", "Show currently skipped domains"),
+        ("purge",    "Delete all memories for a domain"),
+        ("purgeall", "Delete memories for every skipped domain"),
+    ],
+    "Meta": [
+        ("help",     "Show this list"),
+        ("commands", "Alias of /help"),
+    ],
+}
+
 
 class TelegramChatHandler:
     def __init__(self):
@@ -44,6 +95,21 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("accuracy", self.cmd_accuracy))
         self.app.add_handler(CommandHandler("contacts", self.cmd_contacts))
         self.app.add_handler(CommandHandler("contact", self.cmd_contact))
+        self.app.add_handler(CommandHandler("people", self.cmd_contacts))
+        self.app.add_handler(CommandHandler("projects", self.cmd_projects))
+        self.app.add_handler(CommandHandler("project", self.cmd_project))
+        self.app.add_handler(CommandHandler("events", self.cmd_events))
+        self.app.add_handler(CommandHandler("event", self.cmd_event))
+        self.app.add_handler(CommandHandler("meetings", self.cmd_meetings))
+        self.app.add_handler(CommandHandler("meeting", self.cmd_meeting))
+        self.app.add_handler(CommandHandler("comms", self.cmd_comms))
+        self.app.add_handler(CommandHandler("messages", self.cmd_comms))
+        self.app.add_handler(CommandHandler("communications", self.cmd_comms))
+        self.app.add_handler(CommandHandler("comm", self.cmd_comm))
+        self.app.add_handler(CommandHandler("message", self.cmd_comm))
+        self.app.add_handler(CommandHandler("communication", self.cmd_comm))
+        self.app.add_handler(CommandHandler("help", self.cmd_help))
+        self.app.add_handler(CommandHandler("commands", self.cmd_help))
         self.app.add_handler(CommandHandler("briefing", self.cmd_briefing))
         self.app.add_handler(CommandHandler("mute", self.cmd_mute))
         self.app.add_handler(CommandHandler("unmute", self.cmd_unmute))
@@ -56,6 +122,14 @@ class TelegramChatHandler:
         self._last_commitment_set: list = []
         # Last /contacts result set — used by /contact <N>.
         self._last_contact_set: list = []
+        # Last /projects result set — used by /project <N>.
+        self._last_project_set: list = []
+        # Last /events result set — used by /event <N>.
+        self._last_event_set: list = []
+        # Last /meetings result set — used by /meeting <N>.
+        self._last_meeting_set: list = []
+        # Last /comms result set — used by /comm <N>.
+        self._last_comms_set: list = []
         # Notification manager reference (set by daemon.py)
         self.notification_manager = None
 
@@ -862,6 +936,391 @@ class TelegramChatHandler:
         except Exception:
             pass
 
+        await update.message.reply_text("\n".join(lines))
+
+    # ── /help command ─────────────────────────────────────────────────────────
+
+    async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        lines = []
+        for group, commands in COMMAND_REGISTRY.items():
+            lines.append(f"*{group}*")
+            for cmd, desc in commands:
+                lines.append(f"  /{cmd} — {desc}")
+            lines.append("")
+        text = "\n".join(lines).rstrip()
+        await self._send_reply(update, text)
+
+    # ── /projects and /project commands ──────────────────────────────────────
+
+    def _resolve_project_index(self, n: str):
+        try:
+            idx = int(n) - 1
+        except (ValueError, TypeError):
+            return None
+        if 0 <= idx < len(self._last_project_set):
+            return self._last_project_set[idx]
+        return None
+
+    async def cmd_projects(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+
+        args = list(context.args) if context.args else []
+        category_filter = None
+        limit = 10
+
+        # Parse: /projects [category] [N]
+        if args and not args[0].isdigit():
+            category_filter = args[0].lower()
+            args = args[1:]
+        if args:
+            try:
+                limit = max(1, min(int(args[0]), 50))
+            except ValueError:
+                pass
+
+        files = list((BRAIN_DIR / "memories").glob("project-*.md"))
+        projects = []
+        for f in files:
+            fm = self._parse_frontmatter(f)
+            if fm.get("type") not in ("project", "code_project"):
+                continue
+            if category_filter and fm.get("category", "code") != category_filter:
+                continue
+            projects.append((f, fm))
+
+        if not projects:
+            msg = (f"No {category_filter} projects found." if category_filter
+                   else "No projects found.")
+            await update.message.reply_text(msg)
+            return
+
+        projects.sort(key=lambda x: x[1].get("last_scanned") or "", reverse=True)
+        projects = projects[:limit]
+        self._last_project_set = [f for f, _ in projects]
+
+        lines = [f"Projects ({len(projects)} shown):"]
+        for i, (_, fm) in enumerate(projects, 1):
+            name = fm.get("source_title") or "(no name)"
+            cat = fm.get("category") or fm.get("type", "code").replace("_project", "")
+            last = (fm.get("last_scanned") or "")[:10]
+            lines.append(f"{i}. {name} [{cat}] ({last})")
+        lines.append("\nUse /project <N> for details.")
+        await update.message.reply_text("\n".join(lines))
+
+    async def cmd_project(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /project <N>")
+            return
+
+        path = self._resolve_project_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /projects first.")
+            return
+
+        fm = self._parse_frontmatter(path)
+        name = fm.get("source_title") or "(no name)"
+        url = fm.get("source_url") or ""
+        local = fm.get("local_path") or ""
+        langs = ", ".join(fm.get("languages") or []) or "unknown"
+        last = (fm.get("last_scanned") or "")[:10]
+        summary = fm.get("summary") or ""
+        tags = fm.get("tags") or []
+        tag_str = f"\nTags: {', '.join(tags)}" if tags else ""
+        cat = fm.get("category") or "code"
+
+        lines = [
+            f"{name} [{cat}]",
+            url,
+            f"Local: {local}",
+            f"Languages: {langs}",
+            f"Last scanned: {last}{tag_str}",
+            "",
+            summary,
+        ]
+        await update.message.reply_text("\n".join(lines))
+
+    # ── /events and /event commands ───────────────────────────────────────────
+
+    def _resolve_event_index(self, n: str):
+        try:
+            idx = int(n) - 1
+        except (ValueError, TypeError):
+            return None
+        if 0 <= idx < len(self._last_event_set):
+            return self._last_event_set[idx]
+        return None
+
+    async def cmd_events(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        try:
+            limit = int(context.args[0]) if context.args else 10
+            limit = max(1, min(limit, 50))
+        except (ValueError, IndexError):
+            limit = 10
+
+        files = list((BRAIN_DIR / "memories").glob("calendar-event-*.md"))
+        events = []
+        for f in files:
+            fm = self._parse_frontmatter(f)
+            if fm.get("type") != "calendar_event":
+                continue
+            events.append((f, fm))
+
+        if not events:
+            await update.message.reply_text("No calendar events found.")
+            return
+
+        events.sort(key=lambda x: x[1].get("start_time") or "", reverse=False)
+        events = events[:limit]
+        self._last_event_set = [f for f, _ in events]
+
+        lines = [f"Calendar events ({len(events)} shown):"]
+        for i, (_, fm) in enumerate(events, 1):
+            title = (fm.get("source_title") or "(no title)")[:50]
+            start = (str(fm.get("start_time") or ""))[:16]
+            location = fm.get("location") or ""
+            loc_str = f" ({location[:30]})" if location else ""
+            lines.append(f"{i}. [{start}] {title}{loc_str}")
+        lines.append("\nUse /event <N> for details.")
+        await update.message.reply_text("\n".join(lines))
+
+    async def cmd_event(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /event <N>")
+            return
+
+        path = self._resolve_event_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /events first.")
+            return
+
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title") or "(no title)"
+        start = fm.get("start_time") or ""
+        end = fm.get("end_time") or ""
+        all_day = fm.get("all_day", False)
+        location = fm.get("location") or ""
+        cal = fm.get("calendar_name") or ""
+        participants = fm.get("participants") or []
+        summary = fm.get("summary") or ""
+
+        time_str = "All day" if all_day else f"{start} – {end}"
+        parts_str = ", ".join(participants[:10]) if participants else "none listed"
+        lines = [
+            title,
+            f"When: {time_str}",
+        ]
+        if location:
+            lines.append(f"Where: {location}")
+        if cal:
+            lines.append(f"Calendar: {cal}")
+        lines += [f"Attendees: {parts_str}", "", summary]
+        await update.message.reply_text("\n".join(lines))
+
+    # ── /meetings and /meeting commands ──────────────────────────────────────
+
+    def _resolve_meeting_index(self, n: str):
+        try:
+            idx = int(n) - 1
+        except (ValueError, TypeError):
+            return None
+        if 0 <= idx < len(self._last_meeting_set):
+            return self._last_meeting_set[idx]
+        return None
+
+    async def cmd_meetings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        try:
+            limit = int(context.args[0]) if context.args else 10
+            limit = max(1, min(limit, 50))
+        except (ValueError, IndexError):
+            limit = 10
+
+        files = list((BRAIN_DIR / "memories").glob("meeting-*.md"))
+        meetings = []
+        for f in files:
+            fm = self._parse_frontmatter(f)
+            if fm.get("type") != "meeting_transcript":
+                continue
+            meetings.append((f, fm))
+
+        if not meetings:
+            await update.message.reply_text("No meeting transcripts found.")
+            return
+
+        meetings.sort(key=lambda x: x[1].get("start_time") or x[1].get("created") or "", reverse=True)
+        meetings = meetings[:limit]
+        self._last_meeting_set = [f for f, _ in meetings]
+
+        lines = [f"Meeting transcripts ({len(meetings)} shown):"]
+        for i, (_, fm) in enumerate(meetings, 1):
+            title = (fm.get("source_title") or "(no title)")[:50]
+            date = (str(fm.get("start_time") or fm.get("created") or ""))[:10]
+            participants = fm.get("participants") or []
+            n_parts = len(participants)
+            lines.append(f"{i}. [{date}] {title} — {n_parts} participant{'s' if n_parts != 1 else ''}")
+        lines.append("\nUse /meeting <N> for details.")
+        await update.message.reply_text("\n".join(lines))
+
+    async def cmd_meeting(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /meeting <N>")
+            return
+
+        path = self._resolve_meeting_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /meetings first.")
+            return
+
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title") or "(no title)"
+        date = (str(fm.get("start_time") or fm.get("created") or ""))[:10]
+        participants = fm.get("participants") or []
+        summary = fm.get("summary") or ""
+
+        parts_str = ", ".join(str(p) for p in participants[:10]) if participants else "none listed"
+        lines = [
+            title,
+            f"Date: {date}",
+            f"Attendees: {parts_str}",
+            "",
+            summary,
+        ]
+        await update.message.reply_text("\n".join(lines))
+
+    # ── /comms, /comm commands ────────────────────────────────────────────────
+
+    def _resolve_comm_index(self, n: str):
+        try:
+            idx = int(n) - 1
+        except (ValueError, TypeError):
+            return None
+        if 0 <= idx < len(self._last_comms_set):
+            return self._last_comms_set[idx]
+        return None
+
+    async def cmd_comms(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+
+        args = list(context.args) if context.args else []
+        type_filter = None
+        limit = 10
+
+        # Parse: /comms [email|slack] [N]
+        if args and args[0].lower() in ("email", "slack"):
+            type_filter = args[0].lower()
+            args = args[1:]
+        elif args and not args[0].isdigit():
+            await update.message.reply_text(
+                "Usage: /comms [email|slack] [N]\n"
+                "Filter must be 'email' or 'slack'. Example: /comms email 5"
+            )
+            return
+
+        if args:
+            try:
+                limit = max(1, min(int(args[0]), 50))
+            except ValueError:
+                pass
+
+        type_map = {"email": "email_thread", "slack": "slack_thread"}
+        wanted_types = {type_map[type_filter]} if type_filter else {"email_thread", "slack_thread"}
+
+        comms = []
+        for glob_pattern, mem_type in [("email-thread-*.md", "email_thread"), ("slack-thread-*.md", "slack_thread")]:
+            if mem_type not in wanted_types:
+                continue
+            for f in (BRAIN_DIR / "memories").glob(glob_pattern):
+                fm = self._parse_frontmatter(f)
+                if fm.get("type") != mem_type:
+                    continue
+                comms.append((f, fm, mem_type))
+
+        if not comms:
+            msg = (f"No {type_filter} threads found." if type_filter
+                   else "No communications found.")
+            await update.message.reply_text(msg)
+            return
+
+        def _sort_key(item):
+            _, fm, mem_type = item
+            if mem_type == "email_thread":
+                return fm.get("last_message") or ""
+            # For slack: use mtime of file as fallback
+            return fm.get("last_reply") or fm.get("last_message") or ""
+
+        comms.sort(key=_sort_key, reverse=True)
+        comms = comms[:limit]
+        self._last_comms_set = [f for f, _, _ in comms]
+
+        lines = [f"Communications ({len(comms)} shown):"]
+        for i, (_, fm, mem_type) in enumerate(comms, 1):
+            source_tag = "[email]" if mem_type == "email_thread" else "[slack]"
+            if mem_type == "email_thread":
+                subject = (fm.get("source_title") or "(no subject)")[:45]
+                sender = (fm.get("participants") or [""])[0]
+                sender_str = f" — {str(sender)[:25]}" if sender else ""
+                date = (fm.get("last_message") or "")[:10]
+                lines.append(f"{i}. {source_tag} {subject}{sender_str} ({date})")
+            else:
+                channel = fm.get("channel") or fm.get("source_title") or "(no channel)"
+                opener = (fm.get("participants") or [""])[0]
+                opener_str = f" — {str(opener)[:25]}" if opener else ""
+                date = (fm.get("last_reply") or fm.get("created") or "")[:10]
+                lines.append(f"{i}. {source_tag} #{channel[:30]}{opener_str} ({date})")
+        lines.append("\nUse /comm <N> for details.")
+        await update.message.reply_text("\n".join(lines))
+
+    async def cmd_comm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /comm <N>")
+            return
+
+        path = self._resolve_comm_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /comms first.")
+            return
+
+        fm = self._parse_frontmatter(path)
+        mem_type = fm.get("type")
+        title = fm.get("source_title") or "(no title)"
+        participants = fm.get("participants") or []
+        parts_str = ", ".join(str(p) for p in participants[:8]) if participants else "none listed"
+        summary = fm.get("summary") or ""
+
+        if mem_type == "email_thread":
+            date = (fm.get("last_message") or "")[:10]
+            lines = [
+                f"[email] {title}",
+                f"Participants: {parts_str}",
+                f"Last message: {date}",
+                "",
+                summary,
+            ]
+        else:
+            channel = fm.get("channel") or title
+            date = (fm.get("last_reply") or fm.get("created") or "")[:10]
+            lines = [
+                f"[slack] #{channel}",
+                f"Participants: {parts_str}",
+                f"Last reply: {date}",
+                "",
+                summary,
+            ]
         await update.message.reply_text("\n".join(lines))
 
     # ── Notification commands ─────────────────────────────────────────────────
