@@ -477,6 +477,12 @@ class NotificationManager:
 
             try:
                 start_time = datetime.fromisoformat(start_time_str)
+                # Normalize timezone awareness so comparison doesn't raise TypeError.
+                # Calendar files written without tz → assume same tz as `now`.
+                if now.tzinfo is not None and start_time.tzinfo is None:
+                    start_time = start_time.replace(tzinfo=now.tzinfo)
+                elif now.tzinfo is None and start_time.tzinfo is not None:
+                    start_time = start_time.replace(tzinfo=None)
             except Exception:
                 continue
 

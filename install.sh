@@ -370,8 +370,11 @@ DAEMON_FILES=(
     memory_writer.py
     notification_manager.py
     project_scanner.py
+    report_scheduler.py
+    skill_creator.py
     skill_executor.py
     skill_optimizer.py
+    skill_router.py
     slack_scanner.py
     utils.py
     zoom_scanner.py
