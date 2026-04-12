@@ -8,7 +8,7 @@ Automatically captures and summarizes everything you read on the web. Stores sum
 
 ## How it works
 
-A daemon runs nine async loops:
+A daemon runs twelve async loops:
 
 1. **Browser Watcher** — polls Chrome/Firefox history every 5 minutes, fetches pages you spent time on, summarizes them with Gemini Flash, writes a `.md` file to iCloud
 2. **Telegram Bot** — answers questions about what you've read by loading relevant memory files into context
@@ -21,6 +21,7 @@ A daemon runs nine async loops:
 9. **Calendar Scanner** — reads Apple Calendar.app data every 5 minutes, writes a living `calendar-event-*.md` memory file per event in a rolling ±7-day window. No special permissions required for SQLite path; AppleScript fallback requires Automation permission to Calendar.app (see below).
 10. **Contact Tracker** — scans email, meeting, calendar, and Slack memory files every 5 minutes, extracts participant names and emails, writes one `contact-*.md` file per person with relationship scoring and interaction history. Surface via `/contacts` and `/contact <name>` in Telegram.
 11. **Slack Scanner** — polls Slack channels every 5 minutes, writes `slack-thread-*.md` memory files. Requires a Slack bot token (see below).
+12. **Notification Manager** — checks every 60 seconds for proactive messages to send: daily morning briefing, pre-meeting context pushes (10 min before events), commitment deadline alerts. Controlled via `/briefing`, `/mute`, `/unmute` commands.
 
 ---
 
@@ -261,7 +262,7 @@ The system supports two roles. Set `SECOND_BRAIN_ROLE` in each machine's launchd
 
 | Role | What runs | API keys needed |
 |------|-----------|-----------------|
-| `full` | All nine loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
+| `full` | All twelve loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
 | `watcher` | Browser watcher only | `GEMINI_API_KEY` only |
 
 Run `full` on your always-on machine (Mac Studio / Mac Mini). Run `watcher` on your MacBook — it captures pages you read while traveling and syncs memories to iCloud automatically.
@@ -355,6 +356,21 @@ Items with low confidence (0.5–0.69) are shown with a ⚠️ indicator.
 | `/contact <N>` | Show contact N from most recent `/contacts` list |
 
 Contacts are deduplicated by email address. Display names are normalized to the longest version seen. Relationship score is recency-weighted: recent interactions contribute more than old ones (1.0 for yesterday, 0.1 for 10 days ago, etc.).
+
+**Proactive notifications:**
+
+| Command | Effect |
+|---------|--------|
+| `/briefing` | Trigger the daily briefing immediately (today's calendar, due/overdue commitments, new memories) |
+| `/mute` | Suppress all proactive notifications (briefings, pre-meeting pushes, deadline alerts) |
+| `/unmute` | Resume proactive notifications |
+
+The notification manager sends unsolicited messages when enabled:
+- **Daily briefing** at the configured time (default 7:30 AM local time)
+- **Pre-meeting context** 10 minutes before calendar events (attendees, related commitments, recent threads)
+- **Commitment deadline alerts** when commitments are due today or tomorrow
+
+Muted state persists across daemon restarts. `/briefing` works even when muted.
 
 **Domain skip filter:**
 

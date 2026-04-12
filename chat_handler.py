@@ -44,6 +44,9 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("accuracy", self.cmd_accuracy))
         self.app.add_handler(CommandHandler("contacts", self.cmd_contacts))
         self.app.add_handler(CommandHandler("contact", self.cmd_contact))
+        self.app.add_handler(CommandHandler("briefing", self.cmd_briefing))
+        self.app.add_handler(CommandHandler("mute", self.cmd_mute))
+        self.app.add_handler(CommandHandler("unmute", self.cmd_unmute))
         # Cache: path -> (mtime, header_text). Invalidated when mtime changes.
         # Avoids reading every file on every chat message.
         self._header_cache: dict = {}
@@ -53,6 +56,8 @@ class TelegramChatHandler:
         self._last_commitment_set: list = []
         # Last /contacts result set — used by /contact <N>.
         self._last_contact_set: list = []
+        # Notification manager reference (set by daemon.py)
+        self.notification_manager = None
 
     async def start(self):
         await self.app.initialize()
@@ -162,6 +167,14 @@ class TelegramChatHandler:
         if update.effective_user.id != self.allowed_user_id:
             log.warning(f"Ignored command from unauthorised user_id={update.effective_user.id}")
             return False
+
+        # Persist chat_id on first allowed message
+        if self.notification_manager is not None:
+            chat_id = update.effective_chat.id
+            if self.notification_manager.get_chat_id() is None:
+                self.notification_manager.set_chat_id(chat_id)
+                log.info(f"Persisted chat_id {chat_id} for proactive notifications")
+
         return True
 
     async def cmd_skip(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -850,6 +863,40 @@ class TelegramChatHandler:
             pass
 
         await update.message.reply_text("\n".join(lines))
+
+    # ── Notification commands ─────────────────────────────────────────────────
+
+    async def cmd_briefing(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+
+        if self.notification_manager is None:
+            await update.message.reply_text("Notification manager not available.")
+            return
+
+        # Assemble and send briefing without updating last_briefing_date
+        briefing_text = self.notification_manager._assemble_briefing()
+        await update.message.reply_text(briefing_text)
+
+    async def cmd_mute(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+
+        from notification_manager import _load_state, _save_state
+        state = _load_state()
+        state["muted"] = True
+        _save_state(state)
+        await update.message.reply_text("Proactive notifications muted.")
+
+    async def cmd_unmute(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+
+        from notification_manager import _load_state, _save_state
+        state = _load_state()
+        state["muted"] = False
+        _save_state(state)
+        await update.message.reply_text("Proactive notifications resumed.")
 
     async def _send_reply(self, update: Update, text: str):
         """Chunk response into ≤4096-char messages to respect Telegram's hard limit."""

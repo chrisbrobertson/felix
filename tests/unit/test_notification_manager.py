@@ -1,0 +1,954 @@
+"""
+Unit tests for notification_manager.
+
+All external access (Telegram bot, filesystem) is mocked.
+"""
+import asyncio
+import json
+from datetime import datetime, timedelta
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
+
+import pytest
+import yaml
+
+import notification_manager as nm
+from notification_manager import NotificationManager, _chunk_message, _parse_frontmatter
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def make_calendar_event(
+    memories_dir: Path,
+    event_id: str,
+    title: str,
+    start_time: str,
+    all_day: bool = False,
+    participants: list = None,
+    location: str = None,
+) -> Path:
+    """Create a calendar event memory file."""
+    p = memories_dir / f"calendar-event-{event_id}.md"
+    fm = {
+        "type": "calendar_event",
+        "event_id": event_id,
+        "title": title,
+        "start_time": start_time,
+        "all_day": all_day,
+        "participants": participants or [],
+        "location": location,
+        "last_scanned": "2026-04-11T10:00:00",
+    }
+    frontmatter = yaml.dump(fm, sort_keys=False)
+    p.write_text(f"---\n{frontmatter}---\n\n## Details\nTest event.\n")
+    return p
+
+
+def make_commitment(
+    memories_dir: Path,
+    commitment_id: str,
+    description: str,
+    status: str = "active",
+    commitment_type: str = "outbound",
+    due_date: str = None,
+    owner: str = "Alice",
+    recipient: str = "Chris",
+) -> Path:
+    """Create a commitment memory file."""
+    p = memories_dir / f"commitment-{description.lower().replace(' ', '-')}-{commitment_id}.md"
+    fm = {
+        "type": "commitment",
+        "source_title": description,
+        "summary": f"{owner} committed to {description}",
+        "status": status,
+        "commitment_type": commitment_type,
+        "owner": owner,
+        "owner_email": f"{owner.lower()}@acme.com",
+        "recipient": recipient,
+        "due_date": due_date,
+        "last_scanned": "2026-04-11T10:00:00",
+        "source_memory": "zoom:test123",
+        "confidence": 0.85,
+    }
+    frontmatter = yaml.dump(fm, sort_keys=False)
+    p.write_text(f"---\n{frontmatter}---\n\n## Context\nTest.\n")
+    return p
+
+
+def make_contact(memories_dir: Path, name: str, email: str, last_interaction: str, score: float) -> Path:
+    """Create a contact memory file."""
+    slug = name.lower().replace(" ", "-")
+    p = memories_dir / f"contact-{slug}.md"
+    fm = {
+        "type": "contact",
+        "name": name,
+        "email": email,
+        "last_interaction": last_interaction,
+        "relationship_score": score,
+    }
+    frontmatter = yaml.dump(fm, sort_keys=False)
+    p.write_text(f"---\n{frontmatter}---\n\n## Notes\nTest contact.\n")
+    return p
+
+
+# ── Chat ID Persistence ───────────────────────────────────────────────────────
+
+def test_chat_id_persisted_on_first_message(tmp_path):
+    """First allowed message writes chat_id to state file."""
+    state_file = tmp_path / "notification-state.json"
+    with patch.object(nm, "STATE_FILE", state_file):
+        mgr = NotificationManager()
+        mgr.set_chat_id(123456789)
+
+        assert state_file.exists()
+        state = json.loads(state_file.read_text())
+        assert state["chat_id"] == 123456789
+
+
+def test_chat_id_from_config_overrides_state(tmp_path):
+    """Non-null telegram_chat_id in config takes precedence."""
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("notifications:\n  telegram_chat_id: 999888777\n")
+
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789}))
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "STATE_FILE", state_file):
+            mgr = NotificationManager()
+            assert mgr.get_chat_id() == 999888777
+
+
+def test_no_send_when_chat_id_null(tmp_path):
+    """send_message not called when chat_id is None."""
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": None}))
+
+    bot_mock = AsyncMock()
+    with patch.object(nm, "STATE_FILE", state_file):
+        mgr = NotificationManager(bot=bot_mock)
+        asyncio.run(mgr.send_message("Test"))
+
+    bot_mock.send_message.assert_not_called()
+
+
+# ── Mute State ────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_no_send_when_muted(tmp_path):
+    """FR-3/FR-4/FR-5 sends suppressed when muted: true."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": True}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  enabled: true\n")
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                await mgr._check_and_send()
+
+    bot_mock.send_message.assert_not_called()
+
+
+def test_briefing_bypasses_mute(tmp_path):
+    """/briefing command delivers briefing even when muted."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": True}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager()
+                briefing = mgr._assemble_briefing()
+                assert "Good morning" in briefing
+
+
+def test_mute_state_persists(tmp_path):
+    """muted: true written to state; reloaded correctly."""
+    state_file = tmp_path / "notification-state.json"
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        state = nm._load_state()
+        state["muted"] = True
+        nm._save_state(state)
+
+        reloaded = nm._load_state()
+        assert reloaded["muted"] is True
+
+
+def test_unmute_resumes_notifications(tmp_path):
+    """muted: false written; next check sends normally."""
+    state_file = tmp_path / "notification-state.json"
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        state = nm._load_state()
+        state["muted"] = True
+        nm._save_state(state)
+
+        state["muted"] = False
+        nm._save_state(state)
+
+        reloaded = nm._load_state()
+        assert reloaded["muted"] is False
+
+
+# ── Daily Briefing ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_daily_briefing_at_configured_time(tmp_path):
+    """Briefing triggered when local time >= briefing_time."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "last_briefing_date": "2026-04-10"}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  briefing_time: '07:30'\n  enabled: true\n")
+
+    bot_mock = AsyncMock()
+
+    # Mock current time to be 07:35 on 2026-04-11
+    now = datetime(2026, 4, 11, 7, 35, tzinfo=ZoneInfo("America/Los_Angeles"))
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    await mgr._check_daily_briefing(nm._load_state())
+
+    bot_mock.send_message.assert_called_once()
+    assert "Good morning" in bot_mock.send_message.call_args[1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_daily_briefing_not_before_configured_time(tmp_path):
+    """No briefing before configured time."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "last_briefing_date": "2026-04-10"}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  briefing_time: '07:30'\n  enabled: true\n")
+
+    bot_mock = AsyncMock()
+
+    # Mock current time to be 07:00 on 2026-04-11
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    await mgr._check_daily_briefing(nm._load_state())
+
+    bot_mock.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_daily_briefing_not_repeated_same_day(tmp_path):
+    """last_briefing_date == today prevents second send."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "last_briefing_date": "2026-04-11"}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  briefing_time: '07:30'\n  enabled: true\n")
+
+    bot_mock = AsyncMock()
+
+    # Mock current time to be 08:00 on 2026-04-11
+    now = datetime(2026, 4, 11, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    await mgr._check_daily_briefing(nm._load_state())
+
+    bot_mock.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_daily_briefing_updates_last_date(tmp_path):
+    """After send, last_briefing_date set to today."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "last_briefing_date": "2026-04-10"}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  briefing_time: '07:30'\n  enabled: true\n")
+
+    bot_mock = AsyncMock()
+
+    now = datetime(2026, 4, 11, 7, 35, tzinfo=ZoneInfo("America/Los_Angeles"))
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_daily_briefing(state)
+
+                reloaded = nm._load_state()
+                assert reloaded["last_briefing_date"] == "2026-04-11"
+
+
+def test_on_demand_briefing_does_not_advance_date(tmp_path):
+    """/briefing does not set last_briefing_date."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "last_briefing_date": "2026-04-10"}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager()
+                mgr._assemble_briefing()
+
+                reloaded = nm._load_state()
+                assert reloaded["last_briefing_date"] == "2026-04-10"
+
+
+def test_briefing_includes_todays_calendar_events(tmp_path):
+    """calendar_event files for today listed."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    event_time = now.replace(hour=9, minute=0)
+
+    make_calendar_event(
+        memories_dir,
+        "evt123",
+        "Team Standup",
+        event_time.isoformat(),
+        participants=["Alice", "Bob"],
+    )
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "MEMORIES_DIR", memories_dir):
+            mgr = NotificationManager()
+            with patch.object(mgr, "_get_local_now", return_value=now):
+                briefing = mgr._assemble_briefing()
+
+    assert "Team Standup" in briefing
+    assert "9:00 AM" in briefing
+
+
+def test_briefing_includes_due_commitments(tmp_path):
+    """Active commitments with due_date=today shown."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    today_str = now.date().isoformat()
+
+    make_commitment(memories_dir, "abc123", "Send report", due_date=today_str)
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "MEMORIES_DIR", memories_dir):
+            mgr = NotificationManager()
+            with patch.object(mgr, "_get_local_now", return_value=now):
+                briefing = mgr._assemble_briefing()
+
+    assert "Commitments due today" in briefing
+    assert "Send report" in briefing
+
+
+def test_briefing_includes_overdue(tmp_path):
+    """due_date < today shown as overdue."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    past_date = (now - timedelta(days=2)).date().isoformat()
+
+    make_commitment(memories_dir, "def456", "Review document", due_date=past_date)
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "MEMORIES_DIR", memories_dir):
+            mgr = NotificationManager()
+            with patch.object(mgr, "_get_local_now", return_value=now):
+                briefing = mgr._assemble_briefing()
+
+    assert "Overdue" in briefing
+    assert "Review document" in briefing
+
+
+def test_briefing_empty_section_omitted(tmp_path):
+    """Section with no items not included in message."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "MEMORIES_DIR", memories_dir):
+            mgr = NotificationManager()
+            with patch.object(mgr, "_get_local_now", return_value=now):
+                briefing = mgr._assemble_briefing()
+
+    assert "Calendar" not in briefing
+    assert "Commitments due today" not in briefing
+
+
+# ── Commitment Alerts ─────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_commitment_alert_due_today(tmp_path):
+    """due_date=today triggers alert."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_commitment_alerts": []}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  enabled: true\n")
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    today_str = now.date().isoformat()
+
+    make_commitment(memories_dir, "abc123def456", "Send budget", due_date=today_str)
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_commitment_alerts(state)
+
+    bot_mock.send_message.assert_called_once()
+    assert "Commitment due today" in bot_mock.send_message.call_args[1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_commitment_alert_due_tomorrow(tmp_path):
+    """due_date=tomorrow triggers alert."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_commitment_alerts": []}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  enabled: true\n")
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    tomorrow_str = (now + timedelta(days=1)).date().isoformat()
+
+    make_commitment(memories_dir, "abc123def456", "Prepare slides", due_date=tomorrow_str)
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_commitment_alerts(state)
+
+    bot_mock.send_message.assert_called_once()
+    assert "due tomorrow" in bot_mock.send_message.call_args[1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_commitment_alert_deduplication(tmp_path):
+    """Same commitment not re-alerted on next 60s cycle."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_commitment_alerts": ["abc123def456"]}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  enabled: true\n")
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    today_str = now.date().isoformat()
+
+    make_commitment(memories_dir, "abc123def456", "Send budget", due_date=today_str)
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_commitment_alerts(state)
+
+    bot_mock.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_commitment_alert_not_for_completed(tmp_path):
+    """completed/dismissed commitments not alerted."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_commitment_alerts": []}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  enabled: true\n")
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    today_str = now.date().isoformat()
+
+    make_commitment(memories_dir, "abc123def456", "Done task", status="completed", due_date=today_str)
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_commitment_alerts(state)
+
+    bot_mock.send_message.assert_not_called()
+
+
+def test_commitment_alerts_pruned_by_age(tmp_path):
+    """sent_commitment_alerts entries > 1 day past due removed."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    old_date = (now - timedelta(days=3)).date().isoformat()
+
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"sent_commitment_alerts": ["abc123def456"]}))
+
+    make_commitment(memories_dir, "abc123def456", "Old task", due_date=old_date)
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager()
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    mgr._prune_sent_alerts(state)
+                    nm._save_state(state)
+
+    reloaded = nm._load_state()
+    assert "abc123def456" not in reloaded["sent_commitment_alerts"]
+
+
+# ── Pre-Meeting Alerts ────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_pre_meeting_in_window(tmp_path):
+    """Event starting in 8–12 min triggers pre-meeting push."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_pre_meeting": []}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  enabled: true\n  pre_meeting_minutes: 10\n")
+
+    now = datetime(2026, 4, 11, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    event_time = now + timedelta(minutes=10)
+
+    make_calendar_event(memories_dir, "evt123", "Team Standup", event_time.isoformat(), participants=["Alice"])
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_pre_meeting_alerts(state)
+
+    bot_mock.send_message.assert_called_once()
+    assert "starts in 10 minutes" in bot_mock.send_message.call_args[1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_pre_meeting_outside_window(tmp_path):
+    """Event starting in 5 min or 15 min → no push."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_pre_meeting": []}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  enabled: true\n  pre_meeting_minutes: 10\n")
+
+    now = datetime(2026, 4, 11, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    event_time = now + timedelta(minutes=5)  # Too soon
+
+    make_calendar_event(memories_dir, "evt123", "Team Standup", event_time.isoformat())
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_pre_meeting_alerts(state)
+
+    bot_mock.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pre_meeting_all_day_skipped(tmp_path):
+    """all_day: true events never trigger pre-meeting."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_pre_meeting": []}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  enabled: true\n")
+
+    now = datetime(2026, 4, 11, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+
+    make_calendar_event(memories_dir, "evt123", "All Day Event", now.isoformat(), all_day=True)
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_pre_meeting_alerts(state)
+
+    bot_mock.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pre_meeting_deduplication(tmp_path):
+    """Same event not pushed again on next 60s cycle."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_pre_meeting": ["evt123"]}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  enabled: true\n")
+
+    now = datetime(2026, 4, 11, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    event_time = now + timedelta(minutes=10)
+
+    make_calendar_event(memories_dir, "evt123", "Team Standup", event_time.isoformat())
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_pre_meeting_alerts(state)
+
+    bot_mock.send_message.assert_not_called()
+
+
+def test_pre_meeting_includes_contacts(tmp_path):
+    """Contact file info shown for attendees."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    now = datetime(2026, 4, 11, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    event_time = now + timedelta(minutes=10)
+
+    make_calendar_event(memories_dir, "evt123", "Team Standup", event_time.isoformat(), participants=["Alice Chen"])
+    make_contact(memories_dir, "Alice Chen", "alice@acme.com", "2026-04-10", 3.5)
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "MEMORIES_DIR", memories_dir):
+            mgr = NotificationManager()
+            with patch.object(mgr, "_get_local_now", return_value=now):
+                fm = _parse_frontmatter((memories_dir / "calendar-event-evt123.md").read_text())
+                context = mgr._assemble_pre_meeting_context(fm, event_time)
+
+    assert "Alice Chen" in context
+    assert "relationship score 3.50" in context
+
+
+def test_pre_meeting_includes_open_commitments(tmp_path):
+    """Active commitments with attendees shown."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    now = datetime(2026, 4, 11, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    event_time = now + timedelta(minutes=10)
+
+    make_calendar_event(memories_dir, "evt123", "Budget Review", event_time.isoformat(), participants=["Alice"])
+    make_commitment(memories_dir, "abc123", "Send budget numbers", owner="Alice", due_date="2026-04-11")
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "MEMORIES_DIR", memories_dir):
+            mgr = NotificationManager()
+            with patch.object(mgr, "_get_local_now", return_value=now):
+                fm = _parse_frontmatter((memories_dir / "calendar-event-evt123.md").read_text())
+                context = mgr._assemble_pre_meeting_context(fm, event_time)
+
+    assert "Open commitments with attendees" in context
+    assert "Send budget numbers" in context
+
+
+def test_pre_meeting_missing_contact_graceful(tmp_path):
+    """No contact file → attendee shown without score."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    now = datetime(2026, 4, 11, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    event_time = now + timedelta(minutes=10)
+
+    make_calendar_event(memories_dir, "evt123", "Team Standup", event_time.isoformat(), participants=["Bob"])
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "MEMORIES_DIR", memories_dir):
+            mgr = NotificationManager()
+            with patch.object(mgr, "_get_local_now", return_value=now):
+                fm = _parse_frontmatter((memories_dir / "calendar-event-evt123.md").read_text())
+                context = mgr._assemble_pre_meeting_context(fm, event_time)
+
+    assert "Bob" in context
+    assert "relationship score" not in context
+
+
+def test_pre_meeting_sent_alerts_pruned(tmp_path):
+    """Entries for past events removed from state."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    now = datetime(2026, 4, 11, 10, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    past_time = now - timedelta(hours=1)
+
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"sent_pre_meeting": ["evt123"]}))
+
+    make_calendar_event(memories_dir, "evt123", "Past Event", past_time.isoformat())
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager()
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    mgr._prune_sent_alerts(state)
+                    nm._save_state(state)
+
+    reloaded = nm._load_state()
+    assert "evt123" not in reloaded["sent_pre_meeting"]
+
+
+# ── Message Chunking ──────────────────────────────────────────────────────────
+
+def test_message_chunking_at_4000_chars():
+    """Message > 4096 chars split into multiple sends."""
+    text = "a" * 5000
+    chunks = _chunk_message(text, max_len=4000)
+    assert len(chunks) == 2
+    assert len(chunks[0]) <= 4000
+    assert len(chunks[1]) <= 4000
+
+
+def test_message_chunking_at_line_boundary():
+    """Split at paragraph break, not mid-sentence."""
+    text = "First paragraph.\n\nSecond paragraph." + ("x" * 4000)
+    chunks = _chunk_message(text, max_len=4000)
+    assert len(chunks) >= 2
+    assert chunks[0] == "First paragraph."
+
+
+# ── Loop Lifecycle ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_loop_exits_on_stop_event(tmp_path):
+    """Clean shutdown when stop_event is set."""
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": None}))
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        mgr = NotificationManager()
+        stop_event = asyncio.Event()
+        stop_event.set()
+
+        # Should exit immediately
+        await asyncio.wait_for(mgr.run_loop(stop_event), timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_exception_does_not_kill_loop(tmp_path):
+    """RuntimeError in _check_and_send → loop continues."""
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False}))
+
+    call_count = 0
+
+    async def failing_check():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("Test error")
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        mgr = NotificationManager()
+        mgr._check_and_send = failing_check
+
+        stop_event = asyncio.Event()
+
+        # Run for 2 cycles
+        async def stop_after_delay():
+            await asyncio.sleep(0.2)
+            stop_event.set()
+
+        await asyncio.gather(mgr.run_loop(stop_event), stop_after_delay())
+
+    # Should have called twice (once failed, once succeeded)
+    assert call_count >= 1
+
+
+def test_state_file_write_atomic(tmp_path):
+    """No .tmp file left after state write."""
+    state_file = tmp_path / "notification-state.json"
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        state = {"chat_id": 123456789, "muted": False}
+        nm._save_state(state)
+
+    assert state_file.exists()
+    assert not (tmp_path / "notification-state.tmp").exists()
+
+
+# ── Command Integration ───────────────────────────────────────────────────────
+
+def test_cmd_mute_sets_state(tmp_path):
+    """/mute writes muted: true."""
+    state_file = tmp_path / "notification-state.json"
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        state = nm._load_state()
+        state["muted"] = True
+        nm._save_state(state)
+
+    reloaded = json.loads(state_file.read_text())
+    assert reloaded["muted"] is True
+
+
+def test_cmd_unmute_clears_state(tmp_path):
+    """/unmute writes muted: false."""
+    state_file = tmp_path / "notification-state.json"
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        state = nm._load_state()
+        state["muted"] = False
+        nm._save_state(state)
+
+    reloaded = json.loads(state_file.read_text())
+    assert reloaded["muted"] is False

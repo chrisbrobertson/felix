@@ -120,3 +120,10 @@ calendar_scanner:
   forward_days: 7                # events up to N days in the future
   skip_calendars: []             # calendar names to exclude (e.g. ["Birthdays", "Holidays"])
   max_events_per_cycle: 50
+
+notifications:
+  enabled: true
+  briefing_time: "07:30"           # local time (uses user.timezone)
+  pre_meeting_minutes: 10          # push context N minutes before events
+  stale_waiting_on_days: 7         # waiting-ons older than N days appear in briefing
+  telegram_chat_id: null           # auto-detected from first message if null

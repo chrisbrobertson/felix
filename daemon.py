@@ -41,6 +41,7 @@ async def main():
         from contact_tracker import ContactTracker
         from slack_scanner import SlackScanner
         from calendar_scanner import CalendarScanner
+        from notification_manager import NotificationManager
         chat = TelegramChatHandler()
         optimizer = SkillOptimizer()
         indexer = IndexBuilder()
@@ -52,6 +53,12 @@ async def main():
         slack_scanner = SlackScanner(role=role)
         calendar_scanner = CalendarScanner(role=role)
         await chat.start()
+
+        # Instantiate notification manager and wire up cross-references
+        DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
+        notification_mgr = NotificationManager(bot=chat.app.bot, deploy_dir=DEPLOY_DIR)
+        chat.notification_manager = notification_mgr
+
         tasks += [
             chat.poll_loop,
             optimizer.run_loop,
@@ -63,6 +70,7 @@ async def main():
             contact_tracker.run_loop,
             slack_scanner.run_loop,
             calendar_scanner.run_loop,
+            notification_mgr.run_loop,
         ]
 
     stop_event = asyncio.Event()
