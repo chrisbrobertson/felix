@@ -420,7 +420,7 @@ def test_archive_skips_stale_threads(tmp_path):
         scanner._write_memory = lambda *a, **kw: written.append(a[0]["subject"])
 
         import asyncio
-        asyncio.get_event_loop().run_until_complete(scanner._run_scan())
+        asyncio.run(scanner._run_scan())
 
     assert "Old Thread" not in written
 
@@ -458,7 +458,7 @@ def test_incremental_uses_high_water_rowid(tmp_path):
         scanner._save_state({"high_water_rowid": 500, "last_scan_time": "2026-04-11T00:00:00"})
 
         import asyncio
-        asyncio.get_event_loop().run_until_complete(scanner._run_scan())
+        asyncio.run(scanner._run_scan())
 
     mock_source.get_threads_updated_since.assert_called_once()
     mock_source.get_threads_since.assert_not_called()
@@ -487,7 +487,7 @@ def test_full_rescan_resets_high_water(tmp_path):
         scanner._save_state({"high_water_rowid": 9999, "last_scan_time": "2026-04-10T00:00:00"})
 
         import asyncio
-        asyncio.get_event_loop().run_until_complete(scanner._run_scan())
+        asyncio.run(scanner._run_scan())
 
     # get_threads_since (not updated_since) should be called for full rescan
     mock_source.get_threads_since.assert_called_once()
