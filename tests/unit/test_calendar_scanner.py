@@ -509,7 +509,7 @@ async def test_change_detection_same_modified(tmp_path):
     # Pre-populate state
     state = {
         "processed": {
-            f"calendar-event-2026-04-11-team-standup-{_event_hash('abc123', 'Team Standup', event['start_time'].isoformat())}.md": modified_str
+            f"calendar-event-2026-04-11-team-standup-{_event_hash('', 'Team Standup', event['start_time'].strftime('%Y-%m-%dT%H:%M'))}.md": modified_str
         }
     }
     state_file.write_text(json.dumps(state))
@@ -546,7 +546,7 @@ async def test_change_detection_updated_event(tmp_path):
     # Pre-populate state with old modified time
     state = {
         "processed": {
-            f"calendar-event-2026-04-11-team-standup-{_event_hash('abc123', 'Team Standup', event['start_time'].isoformat())}.md": old_modified
+            f"calendar-event-2026-04-11-team-standup-{_event_hash('', 'Team Standup', event['start_time'].strftime('%Y-%m-%dT%H:%M'))}.md": old_modified
         }
     }
     state_file.write_text(json.dumps(state))
@@ -574,7 +574,7 @@ async def test_change_detection_updated_event(tmp_path):
         mock_llm.assert_called_once()
 
         # File should exist
-        expected_file = memories_dir / f"calendar-event-2026-04-11-team-standup-{_event_hash('abc123', 'Team Standup', event['start_time'].isoformat())}.md"
+        expected_file = memories_dir / f"calendar-event-2026-04-11-team-standup-{_event_hash('', 'Team Standup', event['start_time'].strftime('%Y-%m-%dT%H:%M'))}.md"
         assert expected_file.exists()
 
 
@@ -612,7 +612,7 @@ async def test_new_event_written(tmp_path):
         mock_llm.assert_called_once()
 
         # File should exist
-        expected_file = memories_dir / f"calendar-event-2026-04-11-team-standup-{_event_hash('abc123', 'Team Standup', event['start_time'].isoformat())}.md"
+        expected_file = memories_dir / f"calendar-event-2026-04-11-team-standup-{_event_hash('', 'Team Standup', event['start_time'].strftime('%Y-%m-%dT%H:%M'))}.md"
         assert expected_file.exists()
 
 

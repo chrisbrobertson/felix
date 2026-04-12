@@ -548,13 +548,49 @@ class CalendarScanner:
 
         events = source.get_events(start_date, end_date, skip_calendars)
 
-        if not events:
+        # Deduplicate: same event on multiple calendars → one merged entry.
+        # Key: (lowercase title, start truncated to minute).  This is stable
+        # across CalendarCache, EventKit, and AppleScript sources regardless of
+        # per-source external_id differences.
+        dedup: dict = {}
+        for event in events:
+            key = (
+                event["title"].lower().strip(),
+                event["start_time"].strftime("%Y-%m-%dT%H:%M"),
+            )
+            if key not in dedup:
+                event["calendar_names"] = [event["calendar_name"]]
+                dedup[key] = event
+            else:
+                merged = dedup[key]
+                # Accumulate calendar names (no duplicates)
+                cal = event["calendar_name"]
+                if cal not in merged["calendar_names"]:
+                    merged["calendar_names"].append(cal)
+                # Keep the most recent modification timestamp
+                if event["modified_time"] > merged["modified_time"]:
+                    merged["modified_time"] = event["modified_time"]
+                # Merge participants — deduplicate by email then name
+                seen = {p["email"] or p["name"] for p in merged.get("participants", [])}
+                for p in event.get("participants", []):
+                    pk = p["email"] or p["name"]
+                    if pk and pk not in seen:
+                        merged.setdefault("participants", []).append(p)
+                        seen.add(pk)
+
+        deduplicated = list(dedup.values())
+        if not deduplicated:
             log.debug("No calendar events to process")
         else:
-            log.info("Processing %d calendar event(s)", min(len(events), max_events))
+            raw_count = len(events)
+            merged_count = raw_count - len(deduplicated)
+            msg = f"Processing {min(len(deduplicated), max_events)} calendar event(s)"
+            if merged_count:
+                msg += f" ({merged_count} cross-calendar duplicate(s) merged)"
+            log.info(msg)
 
         processed_count = 0
-        for event in events[:max_events]:
+        for event in deduplicated[:max_events]:
             try:
                 memory_path = self._memory_path(event)
                 filename = memory_path.name
@@ -592,13 +628,19 @@ class CalendarScanner:
             log.info("Calendar scan complete — %d event(s) updated", processed_count)
 
     def _memory_path(self, event: dict) -> Path:
-        """Generate memory file path for event."""
+        """Generate memory file path for event.
+
+        Hash is based on title + start-minute only — external_id is deliberately
+        excluded so the same event appearing on multiple calendars always maps to
+        the same file regardless of per-calendar identifier differences.
+        """
         start_date_str = event["start_time"].strftime("%Y-%m-%d")
         slug = _slugify(event["title"])
+        # Truncate to minute so minor timestamp jitter across calendars stays stable
         hash_val = _event_hash(
-            event.get("external_id", ""),
+            "",
             event["title"],
-            event["start_time"].isoformat()
+            event["start_time"].strftime("%Y-%m-%dT%H:%M"),
         )
         return MEMORIES_DIR / f"calendar-event-{start_date_str}-{slug}-{hash_val}.md"
 
@@ -661,15 +703,18 @@ Return JSON only:
         memory_path = self._memory_path(event)
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
+        # calendar_names is set by deduplication; fall back for direct calls in tests
+        calendar_names = event.get("calendar_names") or [event.get("calendar_name", "Unknown")]
+
         # Build frontmatter
         fm = {
             "source_title": event["title"],
             "summary": summary,
             "tags": tags,
             "last_scanned": now,
-            "source_url": f"calendar:{_event_hash(event.get('external_id', ''), event['title'], event['start_time'].isoformat())}",
+            "source_url": f"calendar:{_event_hash('', event['title'], event['start_time'].strftime('%Y-%m-%dT%H:%M'))}",
             "type": "calendar_event",
-            "calendar_name": event["calendar_name"],
+            "calendar_names": calendar_names,
             "start_time": event["start_time"].isoformat(),
             "end_time": event["end_time"].isoformat(),
             "all_day": event["all_day"],
@@ -687,6 +732,7 @@ Return JSON only:
             p["name"] or p["email"] for p in event.get("participants", [])
         ) or "None"
 
+        calendars_display = ", ".join(calendar_names)
         content = f"""---
 {frontmatter}---
 
@@ -694,7 +740,7 @@ Return JSON only:
 
 **When:** {start_display} – {end_display}
 **Where:** {location_display}
-**Calendar:** {event['calendar_name']}
+**Calendar:** {calendars_display}
 **Attendees:** {attendees_display}
 
 ## Notes

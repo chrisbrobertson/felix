@@ -1493,7 +1493,9 @@ class TelegramChatHandler:
         end = fm.get("end_time") or ""
         all_day = fm.get("all_day", False)
         location = fm.get("location") or ""
-        cal = fm.get("calendar_name") or ""
+        # Support both new calendar_names (list) and old calendar_name (str)
+        cal_field = fm.get("calendar_names") or fm.get("calendar_name") or ""
+        cal = ", ".join(cal_field) if isinstance(cal_field, list) else str(cal_field)
         participants = fm.get("participants") or []
         summary = fm.get("summary") or ""
 
@@ -1505,7 +1507,12 @@ class TelegramChatHandler:
             duration = self._fmt_duration(start, end)
             dur_str = f" ({duration})" if duration else ""
             time_str = f"{start_fmt} – {end_fmt}{dur_str}"
-        parts_str = ", ".join(participants[:10]) if participants else "none listed"
+        # Participants may be list of dicts (new) or list of strings (old)
+        def _part_name(p):
+            if isinstance(p, dict):
+                return p.get("name") or p.get("email") or ""
+            return str(p)
+        parts_str = ", ".join(filter(None, (_part_name(p) for p in participants[:10]))) or "none listed"
         lines = [
             title,
             f"When: {time_str}",

@@ -1611,7 +1611,7 @@ async def test_calendar_scanner_writes_memory_for_event(tmp_path):
 
     assert fm["type"] == "calendar_event"
     assert fm["source_title"] == "Team Standup"
-    assert fm["calendar_name"] == "Work"
+    assert fm.get("calendar_names") == ["Work"]
     assert fm["location"] == "Zoom"
     assert fm["recurrence"] is True
     assert len(fm["participants"]) == 2
