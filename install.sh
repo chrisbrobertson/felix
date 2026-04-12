@@ -525,43 +525,28 @@ if [ "$ROLE" = "full" ]; then
     echo ""
     echo "Checking Full Disk Access for email scanner..."
 
-    # NOTE: We cannot reliably test FDA from within the installer. A subprocess
-    # spawned by Terminal inherits Terminal's responsible-process chain, so it
-    # gets Terminal's FDA status — not the binary's own grant. The daemon (run
-    # by launchd) is the true test: it runs the binary directly and will have
-    # FDA if the binary was added to the list.
+    # NOTE: macOS Sonoma (14+) does not reliably grant Full Disk Access to
+    # ad-hoc signed binaries (no Team Identifier), which includes all Homebrew
+    # Python builds. The System Settings UI accepts the drag-and-drop but TCC
+    # silently ignores it at runtime. Confirming FDA from inside the installer
+    # is also unreliable — a subprocess inherits Terminal's TCC context, not
+    # the binary's own grant.
     #
-    # If the venv was recreated this run, the new python3 binary is a different
-    # inode from the one previously granted FDA — macOS tracks FDA by binary
-    # identity, so the old grant no longer applies. Always prompt for re-grant.
+    # If this terminal can read the Envelope Index (i.e. Terminal.app has FDA),
+    # we confirm it. Otherwise we explain the limitation and note that the
+    # AppleScript fallback will be used instead.
 
     ENVELOPE_INDEX="$(ls "$HOME/Library/Mail"/V*/Envelope\ Index 2>/dev/null | sort -V | tail -1)"
 
-    if [ "$VENV_RECREATED" = "1" ]; then
-        # Venv was just (re)created — the binary is new, any prior FDA grant is stale.
-        printf "${YELLOW}  !${NC}  python3 binary replaced — Full Disk Access must be re-granted.\n"
-        echo "     macOS tracks FDA by binary identity; the old grant no longer applies."
-        echo ""
-        echo "     1. Open: System Settings → Privacy & Security → Full Disk Access"
-        echo "     2. Remove any existing python3 entry"
-        echo "     3. In Finder press Cmd+Shift+G and paste:"
-        echo "          $VENV/bin/"
-        echo "     4. Drag python3 from that window into the FDA list"
-        echo "     5. Restart the daemon:"
-        echo "          launchctl unload ~/Library/LaunchAgents/com.chrisrobertson.secondbrain.plist"
-        echo "          launchctl load  ~/Library/LaunchAgents/com.chrisrobertson.secondbrain.plist"
-        # Open System Settings to the FDA pane automatically
-        open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" 2>/dev/null || true
-        open "$VENV/bin" 2>/dev/null || true
-    elif [ -n "$ENVELOPE_INDEX" ] && [ -r "$ENVELOPE_INDEX" ]; then
+    if [ -n "$ENVELOPE_INDEX" ] && [ -r "$ENVELOPE_INDEX" ]; then
         ok "Envelope Index readable — Full Disk Access confirmed"
     elif [ -n "$ENVELOPE_INDEX" ]; then
-        # Path exists but not readable — FDA may be missing entirely
-        printf "${YELLOW}  !${NC}  Envelope Index not readable — Full Disk Access required.\n"
-        echo "     System Settings → Privacy & Security → Full Disk Access"
-        echo "     Drag $VENV/bin/python3 into the list, then restart the daemon."
-        open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" 2>/dev/null || true
-        open "$VENV/bin" 2>/dev/null || true
+        # Homebrew Python is ad-hoc signed (no Team ID); macOS Sonoma silently
+        # rejects FDA grants for unsigned binaries. The AppleScript fallback
+        # handles this case — it requires Mail.app to be running.
+        printf "${YELLOW}  –${NC}  Full Disk Access not available for Homebrew Python on macOS Sonoma.\n"
+        echo "     Email scanner will use the AppleScript fallback (Mail.app must be open)."
+        echo "     The fallback scans your last 500 Inbox/Sent messages per account."
     else
         printf "${YELLOW}  –${NC}  No Envelope Index found — Mail.app may not be set up.\n"
         echo "     The email scanner will use the AppleScript fallback (requires Mail.app open)."

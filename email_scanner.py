@@ -282,7 +282,11 @@ class EnvelopeIndexSource(MailDataSource):
 class AppleScriptSource(MailDataSource):
     """Fallback when Envelope Index is unavailable (no FDA)."""
 
-    def _run_osascript(self, script: str, timeout: int = 30) -> str:
+    # Limit per mailbox: fetch only the last N messages (by insertion order,
+    # which approximates recency). Avoids a full-mailbox scan with `whose`.
+    MAX_MESSAGES_PER_MAILBOX = 500
+
+    def _run_osascript(self, script: str, timeout: int = 120) -> str:
         try:
             proc = subprocess.Popen(
                 ["osascript", "-e", script],
@@ -317,9 +321,12 @@ class AppleScriptSource(MailDataSource):
             for mb in sorted(excluded_mailboxes)[:8]  # AppleScript has string length limits
         ) or "true"
 
-        # Only scan Inbox and Sent — scanning all mailboxes across 30+ days
-        # easily exceeds the 30s osascript timeout on large accounts.
-        # Date formatted as ISO 8601 to avoid locale-dependent parsing.
+        # Only scan Inbox and Sent. Avoid `whose date received >= cutoff` —
+        # that clause performs a full-mailbox scan (O(n)) in AppleScript and
+        # will time out on large inboxes. Instead, slice the last
+        # MAX_MESSAGES_PER_MAILBOX messages by insertion order (which
+        # approximates recency) and filter by date inside the loop.
+        max_msgs = self.MAX_MESSAGES_PER_MAILBOX
         script = f'''
 if application "Mail" is not running then return ""
 tell application "Mail"
@@ -329,18 +336,24 @@ tell application "Mail"
         repeat with mb in mailboxes of acct
             set mbName to name of mb
             if (mbName is "INBOX" or mbName is "Inbox" or mbName is "Sent" or mbName is "Sent Messages") and {exclude_check} then
-                set msgs to (messages of mb whose date received >= cutoff)
+                set allMsgs to every message of mb
+                set msgCount to count of allMsgs
+                set startIdx to msgCount - {max_msgs} + 1
+                if startIdx < 1 then set startIdx to 1
+                set msgs to items startIdx thru msgCount of allMsgs
                 repeat with m in msgs
                     set d to date received of m
-                    set mYear to (year of d) as string
-                    set mMon to text -2 thru -1 of ("0" & ((month of d) as integer) as string)
-                    set mDay to text -2 thru -1 of ("0" & (day of d) as string)
-                    set t to time of d
-                    set mHour to text -2 thru -1 of ("0" & ((t div 3600) as string))
-                    set mMin to text -2 thru -1 of ("0" & (((t mod 3600) div 60) as string))
-                    set mSec to text -2 thru -1 of ("0" & ((t mod 60) as string))
-                    set mDate to mYear & "-" & mMon & "-" & mDay & "T" & mHour & ":" & mMin & ":" & mSec
-                    set output to output & (subject of m) & "|||" & (sender of m) & "|||" & mDate & "|||" & (message id of m) & "|||" & "\n"
+                    if d >= cutoff then
+                        set mYear to (year of d) as string
+                        set mMon to text -2 thru -1 of ("0" & ((month of d) as integer) as string)
+                        set mDay to text -2 thru -1 of ("0" & (day of d) as string)
+                        set t to time of d
+                        set mHour to text -2 thru -1 of ("0" & ((t div 3600) as string))
+                        set mMin to text -2 thru -1 of ("0" & (((t mod 3600) div 60) as string))
+                        set mSec to text -2 thru -1 of ("0" & ((t mod 60) as string))
+                        set mDate to mYear & "-" & mMon & "-" & mDay & "T" & mHour & ":" & mMin & ":" & mSec
+                        set output to output & (subject of m) & "|||" & (sender of m) & "|||" & mDate & "|||" & (message id of m) & "|||" & "\n"
+                    end if
                 end repeat
             end if
         end repeat
