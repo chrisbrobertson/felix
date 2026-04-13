@@ -715,12 +715,18 @@ def test_registry_completeness(handler):
 
 def write_project_memory(memories_dir: Path, name: str, category: str = "code",
                          last_scanned: str = "2026-04-11T12:00:00",
-                         summary: str = "A project.") -> Path:
-    path = memories_dir / f"project-{name}.md"
+                         summary: str = "A project.", hostname: str = "") -> Path:
+    # Support both legacy and hostname-scoped filenames
+    if hostname:
+        path = memories_dir / f"project-{hostname}-{name}.md"
+        hostname_field = f"hostname: {hostname}\n"
+    else:
+        path = memories_dir / f"project-{name}.md"
+        hostname_field = ""
     path.write_text(
         f"---\nsource_title: {name}\nsummary: {summary}\ntags: [python]\n"
         f"last_scanned: '{last_scanned}'\nsource_url: git@github.com:org/{name}.git\n"
-        f"type: project\ncategory: {category}\n"
+        f"type: project\ncategory: {category}\n{hostname_field}"
         f"local_path: /tmp/{name}\ndefault_branch: main\nlanguages: [python]\n"
         f"head_sha: abc123\n---\n\n## Description\n{summary}\n"
     )
@@ -795,6 +801,22 @@ async def test_cmd_project_invalid_index(handler):
     update, ctx = _make_update(12345, ["99"])
     await handler.cmd_project(update, ctx)
     assert "Invalid index" in update.message.reply_text.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_cmd_projects_groups_by_base_name(handler, brain_dir):
+    """Projects with same base name from different hosts are grouped."""
+    m = brain_dir / "memories"
+    write_project_memory(m, "myrepo", hostname="studio", summary="Studio version")
+    write_project_memory(m, "myrepo", hostname="laptop", summary="Laptop version")
+    update, ctx = _make_update(12345)
+    await handler.cmd_projects(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    # Should show "myrepo" once (not twice)
+    assert reply.count("myrepo") == 1
+    # Should mention both hostnames
+    assert "laptop" in reply
+    assert "studio" in reply
 
 
 # ── /events and /event commands ───────────────────────────────────────────────
@@ -1116,7 +1138,7 @@ def test_migrate_legacy_code_project(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
-    # Write a legacy file
+    # Write a legacy file (both type migration and filename migration will occur)
     legacy = memories_dir / "project-legacy.md"
     legacy.write_text(
         "---\nsource_title: legacy\nsummary: old\ntags: [python]\n"
@@ -1126,11 +1148,16 @@ def test_migrate_legacy_code_project(tmp_path):
         "languages: [python]\nhead_sha: abc123\n---\n\n## Content\n"
     )
 
-    with patch.object(ps_mod, "MEMORIES_DIR", memories_dir):
+    with patch.object(ps_mod, "MEMORIES_DIR", memories_dir), \
+         patch("project_scanner._hostname", return_value="testhost"):
         _ = ProjectScanner()
 
     import yaml as _yaml
-    text = legacy.read_text()
+    # File will be renamed to project-testhost-legacy.md
+    migrated = memories_dir / "project-testhost-legacy.md"
+    assert migrated.exists()
+    assert not legacy.exists()
+    text = migrated.read_text()
     parts = text.split("---", 2)
     fm = _yaml.safe_load(parts[1])
     assert fm["type"] == "project"
@@ -1144,21 +1171,22 @@ def test_migrate_idempotent(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
-    # Write an already-migrated file
-    migrated = memories_dir / "project-new.md"
+    # Write an already-migrated file (with hostname)
+    migrated = memories_dir / "project-testhost-new.md"
     migrated.write_text(
         "---\nsource_title: new\nsummary: new project\ntags: [python]\n"
         "last_scanned: '2026-04-11T10:00:00'\n"
         "source_url: git@github.com:org/new.git\ntype: project\ncategory: code\n"
-        "local_path: /tmp/new\ndefault_branch: main\n"
+        "hostname: testhost\nlocal_path: /tmp/new\ndefault_branch: main\n"
         "languages: [python]\nhead_sha: def456\n---\n\n## Content\n"
     )
-    original_mtime = migrated.stat().st_mtime
 
-    with patch.object(ps_mod, "MEMORIES_DIR", memories_dir):
+    with patch.object(ps_mod, "MEMORIES_DIR", memories_dir), \
+         patch("project_scanner._hostname", return_value="testhost"):
         _ = ProjectScanner()
 
-    # File should not have been rewritten (mtime unchanged or type still project)
+    # File should remain unchanged
+    assert migrated.exists()
     import yaml as _yaml
     fm = _yaml.safe_load(migrated.read_text().split("---", 2)[1])
     assert fm["type"] == "project"

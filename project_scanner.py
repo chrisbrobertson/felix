@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+import socket as _socket
 import subprocess
 import tempfile
 from datetime import datetime
@@ -12,6 +13,10 @@ import yaml
 from skill_executor import SkillExecutor
 
 log = logging.getLogger("project-scanner")
+
+
+def _hostname() -> str:
+    return _socket.gethostname().split(".")[0]
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
 MEMORIES_DIR = BRAIN_DIR / "memories"
@@ -52,6 +57,7 @@ class ProjectScanner:
         self.role = role
         self._executor = None  # lazy — only created if LLM call needed
         self._migrate_legacy_code_project_files()
+        self._migrate_project_filenames()
 
     def _migrate_legacy_code_project_files(self):
         """Rewrite any project-*.md with type: code_project → type: project + category: code."""
@@ -84,6 +90,38 @@ class ProjectScanner:
         if migrated:
             log.info("Migrated %d legacy code_project files to type: project", migrated)
 
+    def _migrate_project_filenames(self):
+        """Migrate project-*.md to project-{hostname}-*.md for this node's files."""
+        if not MEMORIES_DIR.exists():
+            return
+        my_hostname = _hostname()
+        migrated = 0
+        for path in MEMORIES_DIR.glob("project-*.md"):
+            try:
+                stem = path.stem
+                rest = stem[len("project-"):]
+                # Already hostname-scoped for this host?
+                if rest.startswith(f"{my_hostname}-"):
+                    continue
+                # Check if this file belongs to us by reading frontmatter
+                text = path.read_text()
+                fm = _parse_frontmatter(text)
+                fm_hostname = fm.get("hostname", "")
+                # If frontmatter hostname matches ours, this file belongs to us — rename it
+                if fm_hostname == my_hostname or not fm_hostname:
+                    # Empty hostname means legacy file — assume it's ours
+                    new_name = f"project-{my_hostname}-{rest}.md"
+                    new_path = path.parent / new_name
+                    path.rename(new_path)
+                    migrated += 1
+                # If hostname is different, leave it (other node will handle)
+            except (OSError, FileNotFoundError):
+                pass
+            except Exception:
+                log.exception("Filename migration failed for %s", path)
+        if migrated:
+            log.info("Migrated %d project files to hostname-scoped filenames", migrated)
+
     def _load_config(self) -> dict:
         if CONFIG_PATH.exists():
             return yaml.safe_load(CONFIG_PATH.read_text()) or {}
@@ -95,30 +133,48 @@ class ProjectScanner:
 
     async def backfill(self, days: int) -> dict:
         """Delete all project memories and recreate from current state. days parameter ignored."""
-        # Delete all existing project-*.md files
+        # Delete only this host's project-*.md files
         deleted = 0
+        my_hostname = _hostname()
         if MEMORIES_DIR.exists():
-            for path in MEMORIES_DIR.glob("project-*.md"):
+            for path in MEMORIES_DIR.glob(f"project-{my_hostname}-*.md"):
                 try:
                     path.unlink()
                     deleted += 1
+                except Exception as e:
+                    log.error(f"Failed to delete {path}: {e}")
+            # Also delete legacy project-*.md files that belong to us
+            for path in MEMORIES_DIR.glob("project-*.md"):
+                stem = path.stem
+                rest = stem[len("project-"):]
+                # Skip if already hostname-scoped (by any host)
+                if "-" in rest and not rest.startswith(f"{my_hostname}-"):
+                    continue
+                # Legacy file (no hostname prefix) — assume it's ours if hostname field matches or is empty
+                try:
+                    text = path.read_text()
+                    fm = _parse_frontmatter(text)
+                    fm_hostname = fm.get("hostname", "")
+                    if fm_hostname == my_hostname or not fm_hostname:
+                        path.unlink()
+                        deleted += 1
                 except Exception as e:
                     log.error(f"Failed to delete {path}: {e}")
 
         # Run full scan
         await self._run_scan()
 
-        # Count newly created files
+        # Count newly created files for this host
         created = 0
         if MEMORIES_DIR.exists():
-            for path in MEMORIES_DIR.glob("project-*.md"):
+            for path in MEMORIES_DIR.glob(f"project-{my_hostname}-*.md"):
                 created += 1
 
         return {
             "processed": created,
             "skipped": 0,
             "errors": 0,
-            "notes": f"Deleted {deleted} and recreated {created} project memories"
+            "notes": f"Deleted {deleted} and recreated {created} project memories for {my_hostname}"
         }
 
     async def run_loop(self, stop_event: asyncio.Event):
@@ -331,9 +387,13 @@ class ProjectScanner:
 
         ranked = sorted(scores.values(), key=lambda x: x[0], reverse=True)[:5]
         result = []
+        my_hostname = _hostname()
         for _score, proj in ranked:
             # Use summary from existing memory file if available
-            mem = MEMORIES_DIR / f"project-{proj['name']}.md"
+            # Try hostname-scoped filename first, then legacy
+            mem = MEMORIES_DIR / f"project-{my_hostname}-{proj['name']}.md"
+            if not mem.exists():
+                mem = MEMORIES_DIR / f"project-{proj['name']}.md"
             summary = ""
             if mem.exists():
                 try:
@@ -442,7 +502,8 @@ class ProjectScanner:
         if not project or not project.get("name"):
             return
         name = project["name"]
-        memory_path = MEMORIES_DIR / f"project-{name}.md"
+        my_hostname = _hostname()
+        memory_path = MEMORIES_DIR / f"project-{my_hostname}-{name}.md"
         repo_path = Path(project["local_path"])
 
         if not self._needs_update(repo_path, memory_path):
@@ -485,7 +546,8 @@ class ProjectScanner:
     def _write_memory(self, data: dict):
         name = data["name"]
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        memory_path = MEMORIES_DIR / f"project-{name}.md"
+        my_hostname = _hostname()
+        memory_path = MEMORIES_DIR / f"project-{my_hostname}-{name}.md"
 
         tags = data.get("tags", [])
         if not isinstance(tags, list):
@@ -500,6 +562,7 @@ class ProjectScanner:
             "source_url": data["remote_url"],
             "type": "project",
             "category": "code",
+            "hostname": my_hostname,
             "local_path": data["local_path"],
             "default_branch": data["default_branch"],
             "languages": data.get("languages", []),

@@ -1420,17 +1420,59 @@ class TelegramChatHandler:
             await update.message.reply_text(msg)
             return
 
-        projects.sort(key=lambda x: x[1].get("last_scanned") or "", reverse=True)
-        projects = projects[:limit]
-        self._last_project_set = [f for f, _ in projects]
-        # projects are aggregated — /forget N not supported for this list
+        # Group by base name (hostname-scoped files share same base name)
+        # Format: project-{hostname}-{base_name}.md or legacy project-{base_name}.md
+        from collections import defaultdict
+        groups = defaultdict(list)  # base_name -> [(file, fm, hostname), ...]
 
-        lines = [f"Projects ({len(projects)} shown):"]
-        for i, (_, fm) in enumerate(projects, 1):
-            name = fm.get("source_title") or "(no name)"
-            cat = fm.get("category") or fm.get("type", "code").replace("_project", "")
-            last = (fm.get("last_scanned") or "")[:10]
-            lines.append(f"{i}. {name} [{cat}] ({last})")
+        for f, fm in projects:
+            stem = f.stem
+            hostname = fm.get("hostname", "")
+            # Extract base name from filename
+            if stem.startswith("project-"):
+                rest = stem[len("project-"):]
+                # Check if hostname-scoped: if hostname field exists, strip hostname- prefix
+                if hostname and rest.startswith(f"{hostname}-"):
+                    base_name = rest[len(f"{hostname}-"):]
+                else:
+                    # Legacy file (no hostname in filename)
+                    base_name = rest
+                groups[base_name].append((f, fm, hostname or "legacy"))
+
+        # Sort groups by most recent scan time across all hosts
+        def group_mtime(items):
+            return max((fm.get("last_scanned") or "" for _, fm, _ in items), default="")
+
+        sorted_groups = sorted(groups.items(), key=lambda x: group_mtime(x[1]), reverse=True)
+        sorted_groups = sorted_groups[:limit]
+
+        # Build flat list for _last_project_set (all files in display order)
+        self._last_project_set = []
+        for _, items in sorted_groups:
+            # Sort by hostname within group for consistent ordering
+            items.sort(key=lambda x: x[2])
+            for f, _, _ in items:
+                self._last_project_set.append(f)
+
+        # Display grouped results
+        lines = [f"Projects ({len(sorted_groups)} shown):"]
+        idx = 1
+        for base_name, items in sorted_groups:
+            # Pick most recent entry for display metadata
+            items_sorted = sorted(items, key=lambda x: x[1].get("last_scanned") or "", reverse=True)
+            _, fm_latest, _ = items_sorted[0]
+
+            name = fm_latest.get("source_title") or "(no name)"
+            cat = fm_latest.get("category") or fm_latest.get("type", "code").replace("_project", "")
+            last = (fm_latest.get("last_scanned") or "")[:10]
+
+            # Show hostnames if multiple hosts have this project
+            hostnames = sorted(set(h for _, _, h in items))
+            host_str = f" · hosts: {', '.join(hostnames)}" if len(hostnames) > 1 else ""
+
+            lines.append(f"{idx}. {name} [{cat}] ({last}){host_str}")
+            idx += 1
+
         lines.append("\nUse /project <N> for details.")
         await update.message.reply_text("\n".join(lines))
 
@@ -1446,27 +1488,83 @@ class TelegramChatHandler:
             await update.message.reply_text("Invalid index. Run /projects first.")
             return
 
+        # Find all hosts that have the same base project
+        # Extract base name from the selected file
         fm = self._parse_frontmatter(path)
-        name = fm.get("source_title") or "(no name)"
-        url = fm.get("source_url") or ""
-        local = fm.get("local_path") or ""
-        langs = ", ".join(fm.get("languages") or []) or "unknown"
-        last = (fm.get("last_scanned") or "")[:10]
-        summary = fm.get("summary") or ""
-        tags = fm.get("tags") or []
-        tag_str = f"\nTags: {', '.join(tags)}" if tags else ""
-        cat = fm.get("category") or "code"
+        stem = path.stem
+        hostname = fm.get("hostname", "")
+        if stem.startswith("project-"):
+            rest = stem[len("project-"):]
+            if hostname and rest.startswith(f"{hostname}-"):
+                base_name = rest[len(f"{hostname}-"):]
+            else:
+                base_name = rest
+        else:
+            base_name = stem
 
-        lines = [
-            f"{name} [{cat}]",
-            url,
-            f"Local: {local}",
-            f"Languages: {langs}",
-            f"Last scanned: {last}{tag_str}",
-            "",
-            summary,
-        ]
-        await update.message.reply_text("\n".join(lines))
+        # Find all files with this base name
+        all_files = []
+        for f in (BRAIN_DIR / "memories").glob("project-*.md"):
+            f_fm = self._parse_frontmatter(f)
+            f_stem = f.stem
+            f_hostname = f_fm.get("hostname", "")
+            if f_stem.startswith("project-"):
+                f_rest = f_stem[len("project-"):]
+                if f_hostname and f_rest.startswith(f"{f_hostname}-"):
+                    f_base = f_rest[len(f"{f_hostname}-"):]
+                else:
+                    f_base = f_rest
+                if f_base == base_name:
+                    all_files.append((f, f_fm, f_hostname or "legacy"))
+
+        # Sort by hostname for consistent display
+        all_files.sort(key=lambda x: x[2])
+
+        # If only one host, show normal detail view
+        if len(all_files) == 1:
+            f, fm, _ = all_files[0]
+            name = fm.get("source_title") or "(no name)"
+            url = fm.get("source_url") or ""
+            local = fm.get("local_path") or ""
+            langs = ", ".join(fm.get("languages") or []) or "unknown"
+            last = (fm.get("last_scanned") or "")[:10]
+            summary = fm.get("summary") or ""
+            tags = fm.get("tags") or []
+            tag_str = f"\nTags: {', '.join(tags)}" if tags else ""
+            cat = fm.get("category") or "code"
+
+            lines = [
+                f"{name} [{cat}]",
+                url,
+                f"Local: {local}",
+                f"Languages: {langs}",
+                f"Last scanned: {last}{tag_str}",
+                "",
+                summary,
+            ]
+            await update.message.reply_text("\n".join(lines))
+        else:
+            # Multiple hosts — show stacked entries
+            lines = []
+            for i, (f, fm, h) in enumerate(all_files):
+                if i > 0:
+                    lines.append("\n---\n")
+                name = fm.get("source_title") or "(no name)"
+                url = fm.get("source_url") or ""
+                local = fm.get("local_path") or ""
+                last = (fm.get("last_scanned") or "")[:10]
+                summary = fm.get("summary") or ""
+                cat = fm.get("category") or "code"
+
+                lines.append(f"{name} [{cat}] @ {h}")
+                lines.append(url)
+                lines.append(f"Local: {local}")
+                lines.append(f"Last scanned: {last}")
+                if summary:
+                    lines.append("")
+                    lines.append(summary)
+
+            await self._send_reply(update, "\n".join(lines))
 
     # ── /events and /event commands ───────────────────────────────────────────
 

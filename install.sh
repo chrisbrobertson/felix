@@ -283,35 +283,33 @@ if [ "$ROLE" = "full" ]; then
     fi
 fi
 
-# ── 4c. Slack credentials (full role only, optional) ──────────────────────────
+# ── 4c. Slack credentials (optional — both roles) ─────────────────────────────
 SLACK_USER_TOKEN=""
-if [ "$ROLE" = "full" ]; then
-    # Migration detection: if old bot token exists but no user token, force re-prompt
-    FORCE_SLACK_PROMPT=false
-    if [ -n "$EXISTING_SLACK_BOT_TOKEN" ] && [ -z "$EXISTING_SLACK_USER_TOKEN" ]; then
-        printf "${YELLOW}  ⚠${NC}  Slack scanner now uses a user token (xoxp-...) instead of a bot token. Re-prompting.\n"
-        FORCE_SLACK_PROMPT=true
-    fi
+# Migration detection: if old bot token exists but no user token, force re-prompt
+FORCE_SLACK_PROMPT=false
+if [ -n "$EXISTING_SLACK_BOT_TOKEN" ] && [ -z "$EXISTING_SLACK_USER_TOKEN" ]; then
+    printf "${YELLOW}  ⚠${NC}  Slack scanner now uses a user token (xoxp-...) instead of a bot token. Re-prompting.\n"
+    FORCE_SLACK_PROMPT=true
+fi
 
-    if [ "$FORCE_SLACK_PROMPT" = "false" ] && [ -n "$EXISTING_SLACK_USER_TOKEN" ]; then
-        ok "Slack user token (from existing config)"
-        SLACK_USER_TOKEN="$EXISTING_SLACK_USER_TOKEN"
-    elif [ "$FORCE_SLACK_PROMPT" = "false" ] && [ -n "${SLACK_USER_TOKEN:-}" ]; then
-        ok "Slack user token (from environment)"
+if [ "$FORCE_SLACK_PROMPT" = "false" ] && [ -n "$EXISTING_SLACK_USER_TOKEN" ]; then
+    ok "Slack user token (from existing config)"
+    SLACK_USER_TOKEN="$EXISTING_SLACK_USER_TOKEN"
+elif [ "$FORCE_SLACK_PROMPT" = "false" ] && [ -n "${SLACK_USER_TOKEN:-}" ]; then
+    ok "Slack user token (from environment)"
+else
+    echo ""
+    echo "Slack (optional — leave blank to skip Slack thread scanning)"
+    echo "────────────────────────────────────────────────────────────"
+    echo "  Create a Slack app at https://api.slack.com/apps"
+    echo "  Required user scopes: channels:history, channels:read, groups:history,"
+    echo "                        groups:read, users:read"
+    echo ""
+    read -r -p "  Slack User Token (xoxp-..., Enter to skip): " SLACK_USER_TOKEN
+    if [ -n "$SLACK_USER_TOKEN" ]; then
+        ok "Slack credentials configured"
     else
-        echo ""
-        echo "Slack (optional — leave blank to skip Slack thread scanning)"
-        echo "────────────────────────────────────────────────────────────"
-        echo "  Create a Slack app at https://api.slack.com/apps"
-        echo "  Required user scopes: channels:history, channels:read, groups:history,"
-        echo "                        groups:read, users:read"
-        echo ""
-        read -r -p "  Slack User Token (xoxp-..., Enter to skip): " SLACK_USER_TOKEN
-        if [ -n "$SLACK_USER_TOKEN" ]; then
-            ok "Slack credentials configured"
-        else
-            skip "Slack credentials skipped — thread scanning disabled"
-        fi
+        skip "Slack credentials skipped — thread scanning disabled"
     fi
 fi
 
@@ -391,7 +389,7 @@ echo "Checking Python dependencies..."
 REQS_HASH_FILE="$DEPLOY_DIR/.requirements-hash"
 if [ "$ROLE" = "watcher" ]; then
     # Fixed set for watcher — hash the package names directly
-    REQS_HASH="$(echo 'litellm httpx beautifulsoup4 lxml pyyaml' | shasum -a 256 | cut -d' ' -f1)"
+    REQS_HASH="$(echo 'litellm httpx beautifulsoup4 lxml pyyaml pyobjc-framework-EventKit' | shasum -a 256 | cut -d' ' -f1)"
 else
     REQS_HASH="$(shasum -a 256 "$REPO_DIR/requirements.txt" | cut -d' ' -f1)"
 fi
@@ -402,7 +400,7 @@ else
     info "Installing dependencies..."
     "$VENV/bin/pip" install -q --upgrade pip
     if [ "$ROLE" = "watcher" ]; then
-        "$VENV/bin/pip" install -q litellm httpx beautifulsoup4 lxml pyyaml
+        "$VENV/bin/pip" install -q litellm httpx beautifulsoup4 lxml pyyaml pyobjc-framework-EventKit
     else
         "$VENV/bin/pip" install -q -r "$REPO_DIR/requirements.txt"
     fi
@@ -630,50 +628,40 @@ else
     fi
 fi
 
-# ── 16. Full Disk Access check (full role only) ───────────────────────────────
-if [ "$ROLE" = "full" ]; then
-    echo ""
-    echo "Checking Full Disk Access for email scanner..."
+# ── 16. Full Disk Access check (both roles) ───────────────────────────────────
+echo ""
+echo "Checking Full Disk Access for email scanner..."
 
-    # NOTE: macOS Sonoma (14+) does not reliably grant Full Disk Access to
-    # ad-hoc signed binaries (no Team Identifier), which includes all Homebrew
-    # Python builds. The System Settings UI accepts the drag-and-drop but TCC
-    # silently ignores it at runtime. Confirming FDA from inside the installer
-    # is also unreliable — a subprocess inherits Terminal's TCC context, not
-    # the binary's own grant.
-    #
-    # If this terminal can read the Envelope Index (i.e. Terminal.app has FDA),
-    # we confirm it. Otherwise we explain the limitation and note that the
-    # AppleScript fallback will be used instead.
+# NOTE: macOS Sonoma (14+) does not reliably grant Full Disk Access to
+# ad-hoc signed binaries (no Team Identifier), which includes all Homebrew
+# Python builds. The System Settings UI accepts the drag-and-drop but TCC
+# silently ignores it at runtime. Confirming FDA from inside the installer
+# is also unreliable — a subprocess inherits Terminal's TCC context, not
+# the binary's own grant.
+#
+# If this terminal can read the Envelope Index (i.e. Terminal.app has FDA),
+# we confirm it. Otherwise we explain the limitation and note that the
+# AppleScript fallback will be used instead.
 
-    ENVELOPE_INDEX="$(ls "$HOME/Library/Mail"/V*/Envelope\ Index 2>/dev/null | sort -V | tail -1)"
+ENVELOPE_INDEX="$(ls "$HOME/Library/Mail"/V*/Envelope\ Index 2>/dev/null | sort -V | tail -1)"
 
-    if [ -n "$ENVELOPE_INDEX" ] && [ -r "$ENVELOPE_INDEX" ]; then
-        ok "Envelope Index readable — Full Disk Access confirmed"
-    elif [ -n "$ENVELOPE_INDEX" ]; then
-        # Homebrew Python is ad-hoc signed (no Team ID); macOS Sonoma silently
-        # rejects FDA grants for unsigned binaries. The AppleScript fallback
-        # handles this case — it requires Mail.app to be running.
-        printf "${YELLOW}  –${NC}  Full Disk Access not available for Homebrew Python on macOS Sonoma.\n"
-        echo "     Email scanner will use the AppleScript fallback (Mail.app must be open)."
-        echo "     The fallback scans your last 500 Inbox/Sent messages per account."
-    else
-        printf "${YELLOW}  –${NC}  No Envelope Index found — Mail.app may not be set up.\n"
-        echo "     The email scanner will use the AppleScript fallback (requires Mail.app open)."
-    fi
-
-    # ── Calendar.app Automation permission ───────────────────────────────────────
-    echo ""
-    echo "Checking Calendar.app Automation permission..."
-    echo ""
-    echo "  The calendar scanner reads Apple Calendar.app data."
-    echo "  Primary path: SQLite cache at ~/Library/Calendars/Calendar Cache (no permission needed)"
-    echo "  Fallback: AppleScript → requires Automation permission to Calendar.app"
-    echo ""
-    printf "${YELLOW}  !${NC}  If prompted, grant Automation permission to Terminal/iTerm in:\n"
-    echo "     System Settings → Privacy & Security → Automation → Terminal/iTerm → Calendar"
-    echo ""
+if [ -n "$ENVELOPE_INDEX" ] && [ -r "$ENVELOPE_INDEX" ]; then
+    ok "Envelope Index readable — Full Disk Access confirmed"
+elif [ -n "$ENVELOPE_INDEX" ]; then
+    # Homebrew Python is ad-hoc signed (no Team ID); macOS Sonoma silently
+    # rejects FDA grants for unsigned binaries. The AppleScript fallback
+    # handles this case — it requires Mail.app to be running.
+    printf "${YELLOW}  –${NC}  Full Disk Access not available for Homebrew Python on macOS Sonoma.\n"
+    echo "     Email scanner will use the AppleScript fallback (Mail.app must be open)."
+    echo "     The fallback scans your last 500 Inbox/Sent messages per account."
+else
+    printf "${YELLOW}  –${NC}  No Envelope Index found — Mail.app may not be set up.\n"
+    echo "     The email scanner will use the AppleScript fallback (requires Mail.app open)."
 fi
+
+# ── Calendar.app Automation permission ───────────────────────────────────────
+echo ""
+info "Calendar scanner will request Automation permission for Calendar.app on first scan — allow it when prompted."
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""

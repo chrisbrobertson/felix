@@ -218,7 +218,8 @@ def test_write_memory_field_order(tmp_path):
     memories_dir.mkdir()
 
     scanner = ProjectScanner()
-    with patch.object(ps, "MEMORIES_DIR", memories_dir):
+    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
+         patch("project_scanner._hostname", return_value="testhost"):
         scanner._write_memory({
             "name": "testproject",
             "local_path": "/Users/chris/repos/testproject",
@@ -233,7 +234,7 @@ def test_write_memory_field_order(tmp_path):
             "related": [],
         })
 
-    mem = memories_dir / "project-testproject.md"
+    mem = memories_dir / "project-testhost-testproject.md"
     assert mem.exists()
     lines = mem.read_text().splitlines()
     # First line is "---", second is first frontmatter field
@@ -249,7 +250,8 @@ def test_write_memory_atomic(tmp_path):
     memories_dir.mkdir()
 
     scanner = ProjectScanner()
-    with patch.object(ps, "MEMORIES_DIR", memories_dir):
+    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
+         patch("project_scanner._hostname", return_value="testhost"):
         scanner._write_memory({
             "name": "atomictest",
             "local_path": str(tmp_path),
@@ -267,7 +269,7 @@ def test_write_memory_atomic(tmp_path):
     # No leftover .tmp file
     tmp_files = list(memories_dir.glob("*.tmp"))
     assert tmp_files == []
-    assert (memories_dir / "project-atomictest.md").exists()
+    assert (memories_dir / "project-testhost-atomictest.md").exists()
 
 
 def test_write_memory_type_is_project(tmp_path):
@@ -275,7 +277,8 @@ def test_write_memory_type_is_project(tmp_path):
     memories_dir.mkdir()
 
     scanner = ProjectScanner()
-    with patch.object(ps, "MEMORIES_DIR", memories_dir):
+    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
+         patch("project_scanner._hostname", return_value="testhost"):
         scanner._write_memory({
             "name": "typecheck",
             "local_path": str(tmp_path),
@@ -290,7 +293,7 @@ def test_write_memory_type_is_project(tmp_path):
             "related": [],
         })
 
-    mem = memories_dir / "project-typecheck.md"
+    mem = memories_dir / "project-testhost-typecheck.md"
     text = mem.read_text()
     fm = _parse_frontmatter(text)
     assert fm["type"] == "project"
@@ -302,7 +305,8 @@ def test_write_memory_frontmatter_parseable(tmp_path):
     memories_dir.mkdir()
 
     scanner = ProjectScanner()
-    with patch.object(ps, "MEMORIES_DIR", memories_dir):
+    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
+         patch("project_scanner._hostname", return_value="testhost"):
         scanner._write_memory({
             "name": "parsetest",
             "local_path": "/tmp/parsetest",
@@ -317,7 +321,7 @@ def test_write_memory_frontmatter_parseable(tmp_path):
             "related": [{"name": "other", "summary": "Another project."}],
         })
 
-    mem = memories_dir / "project-parsetest.md"
+    mem = memories_dir / "project-testhost-parsetest.md"
     fm = _parse_frontmatter(mem.read_text())
     assert fm["source_title"] == "parsetest"
     assert fm["head_sha"] == "sha42"
@@ -474,3 +478,129 @@ async def test_backfill_deletes_and_recreates_memory_files(tmp_path):
     # Verify scan was called
     mock_run_scan.assert_called_once()
     assert result["notes"].startswith("Deleted")
+
+
+# ── Hostname-scoped filenames ─────────────────────────────────────────────────
+
+def test_hostname_scoped_filename_written(tmp_path):
+    """Written memory files use project-{hostname}-{name}.md format."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    scanner = ProjectScanner()
+    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
+         patch("project_scanner._hostname", return_value="testhost"):
+        scanner._write_memory({
+            "name": "myrepo",
+            "local_path": str(tmp_path),
+            "remote_url": "git@github.com:org/myrepo.git",
+            "head_sha": "abc123",
+            "default_branch": "main",
+            "recent_commits": [],
+            "branches": [],
+            "languages": ["python"],
+            "summary": "Test repo.",
+            "tags": ["python"],
+            "related": [],
+        })
+
+    # Should write project-testhost-myrepo.md
+    expected = memories_dir / "project-testhost-myrepo.md"
+    assert expected.exists()
+    fm = _parse_frontmatter(expected.read_text())
+    assert fm["hostname"] == "testhost"
+    assert fm["source_title"] == "myrepo"
+
+
+def test_migration_renames_legacy_file(tmp_path):
+    """Migration renames project-{name}.md → project-{hostname}-{name}.md if hostname matches."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    # Create legacy file with matching hostname in frontmatter
+    legacy_file = memories_dir / "project-oldrepo.md"
+    legacy_file.write_text(
+        "---\nsource_title: oldrepo\nhostname: testhost\nhead_sha: abc\n"
+        "type: project\ncategory: code\n---\n\nBody\n"
+    )
+
+    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
+         patch("project_scanner._hostname", return_value="testhost"):
+        scanner = ProjectScanner(role="full")  # triggers migration in __init__
+
+    # Legacy file should be renamed
+    assert not legacy_file.exists()
+    new_file = memories_dir / "project-testhost-oldrepo.md"
+    assert new_file.exists()
+    fm = _parse_frontmatter(new_file.read_text())
+    assert fm["source_title"] == "oldrepo"
+
+
+def test_migration_leaves_other_hosts_file(tmp_path):
+    """Migration does not rename files with a different hostname."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    # Create file with different hostname
+    other_file = memories_dir / "project-otherrepo.md"
+    other_file.write_text(
+        "---\nsource_title: otherrepo\nhostname: otherhost\nhead_sha: xyz\n"
+        "type: project\ncategory: code\n---\n\nBody\n"
+    )
+
+    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
+         patch("project_scanner._hostname", return_value="testhost"):
+        scanner = ProjectScanner(role="full")
+
+    # File should remain unchanged
+    assert other_file.exists()
+    assert not (memories_dir / "project-testhost-otherrepo.md").exists()
+
+
+def test_migration_handles_already_scoped_files(tmp_path):
+    """Migration skips files already in project-{hostname}-{name}.md format."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    scoped_file = memories_dir / "project-testhost-myrepo.md"
+    scoped_file.write_text(
+        "---\nsource_title: myrepo\nhostname: testhost\nhead_sha: abc\n"
+        "type: project\ncategory: code\n---\n\nBody\n"
+    )
+
+    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
+         patch("project_scanner._hostname", return_value="testhost"):
+        scanner = ProjectScanner(role="full")
+
+    # Should remain unchanged
+    assert scoped_file.exists()
+    fm = _parse_frontmatter(scoped_file.read_text())
+    assert fm["source_title"] == "myrepo"
+
+
+@pytest.mark.asyncio
+async def test_backfill_only_deletes_own_host_files(tmp_path):
+    """backfill() only deletes project files for the current hostname."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    # Create files for different hosts
+    (memories_dir / "project-testhost-a.md").write_text("---\nhostname: testhost\n---\n")
+    (memories_dir / "project-otherhost-a.md").write_text("---\nhostname: otherhost\n---\n")
+
+    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
+         patch.object(ps, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch("project_scanner._hostname", return_value="testhost"):
+
+        scanner = ProjectScanner(role="full")
+        mock_run_scan = AsyncMock()
+        scanner._run_scan = mock_run_scan
+
+        (tmp_path / "config.yaml").write_text("project_scanner:\n  repo_dirs: []\n")
+
+        await scanner.backfill(0)
+
+    # testhost file should be deleted
+    assert not (memories_dir / "project-testhost-a.md").exists()
+    # otherhost file should remain
+    assert (memories_dir / "project-otherhost-a.md").exists()

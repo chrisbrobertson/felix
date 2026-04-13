@@ -6,6 +6,10 @@ import yaml
 from pathlib import Path
 
 from browser_watcher import BrowserWatcher
+from project_scanner import ProjectScanner
+from email_scanner import EmailScanner
+from calendar_scanner import CalendarScanner
+from slack_scanner import SlackScanner
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,46 +28,50 @@ async def main():
     role = os.environ.get("SECOND_BRAIN_ROLE") or config.get("daemon", {}).get("role", "full")
     log.info(f"Starting second-brain daemon — role: {role}")
 
+    # Tier 1: local-source scanners — run on both watcher and full roles
     watcher = BrowserWatcher(role=role)
-    tasks = [watcher.run_loop]
+    project_scanner = ProjectScanner(role=role)
+    email_scanner = EmailScanner(role=role)
+    calendar_scanner = CalendarScanner(role=role)
+    slack_scanner = SlackScanner(role=role)
 
-    # Full node only: import and instantiate after role check so watcher
-    # nodes never touch packages that may not be installed.
+    tasks = [
+        watcher.run_loop,
+        project_scanner.run_loop,
+        email_scanner.run_loop,
+        calendar_scanner.run_loop,
+        slack_scanner.run_loop,
+    ]
+
+    # Tier 2: full node only — chat handler, cloud scanners, aggregators, optimizer
+    # Import after role check so watcher nodes never touch packages that may not be installed.
     chat = None
     if role == "full":
         from chat_handler import TelegramChatHandler
         from skill_optimizer import SkillOptimizer
         from index_builder import IndexBuilder
-        from project_scanner import ProjectScanner
-        from email_scanner import EmailScanner
         from zoom_scanner import ZoomScanner
         from commitment_tracker import CommitmentTracker
         from contact_tracker import ContactTracker
-        from slack_scanner import SlackScanner
-        from calendar_scanner import CalendarScanner
         from notification_manager import NotificationManager
         from skill_creator import SkillCreator
         from report_scheduler import ReportScheduler
 
-        # Instantiate scanners first
+        # Instantiate tier-2 scanners and services
         optimizer = SkillOptimizer(config)
         indexer = IndexBuilder()
-        scanner = ProjectScanner(role=role)
-        email_scanner = EmailScanner(role=role)
         zoom_scanner = ZoomScanner(role=role)
         commitment_tracker = CommitmentTracker(role=role)
         contact_tracker = ContactTracker(role=role)
-        slack_scanner = SlackScanner(role=role)
-        calendar_scanner = CalendarScanner(role=role)
 
-        # Build scanners dict for backfill command
+        # Build scanners dict for backfill command (tier-1 scanners already instantiated)
         scanners_dict = {
             "readings": watcher,
             "email": email_scanner,
             "zoom": zoom_scanner,
             "calendar": calendar_scanner,
             "slack": slack_scanner,
-            "projects": scanner,
+            "projects": project_scanner,
         }
 
         # Instantiate chat handler with scanners
@@ -96,13 +104,9 @@ async def main():
             optimizer.run_loop,
             optimizer.run_urgent_loop,
             indexer.run_loop,
-            scanner.run_loop,
-            email_scanner.run_loop,
             zoom_scanner.run_loop,
             commitment_tracker.run_loop,
             contact_tracker.run_loop,
-            slack_scanner.run_loop,
-            calendar_scanner.run_loop,
             notification_mgr.run_loop,
             report_scheduler.run_loop,
         ]

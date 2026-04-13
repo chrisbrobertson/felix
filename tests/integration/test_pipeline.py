@@ -350,6 +350,7 @@ async def test_scanner_writes_memory_for_git_repo(tmp_path):
 
     with patch.object(ps, "MEMORIES_DIR", memories_dir), \
          patch.object(ps, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch("project_scanner._hostname", return_value="testhost"), \
          patch("project_scanner.acompletion", new=AsyncMock(
              return_value=MagicMock(
                  choices=[MagicMock(message=MagicMock(
@@ -363,7 +364,8 @@ async def test_scanner_writes_memory_for_git_repo(tmp_path):
 
         await scanner._run_scan()
 
-    mem = memories_dir / "project-myrepo.md"
+    # File is now hostname-scoped
+    mem = memories_dir / "project-testhost-myrepo.md"
     assert mem.exists(), "Memory file was not created"
 
     import yaml as _yaml
@@ -410,6 +412,7 @@ async def test_scanner_skips_write_when_no_changes(tmp_path):
 
     with patch.object(ps, "MEMORIES_DIR", memories_dir), \
          patch.object(ps, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch("project_scanner._hostname", return_value="testhost"), \
          patch("project_scanner.acompletion", new=AsyncMock(
              return_value=MagicMock(
                  choices=[MagicMock(message=MagicMock(
@@ -423,7 +426,7 @@ async def test_scanner_skips_write_when_no_changes(tmp_path):
 
         # First scan — writes the file
         await scanner._run_scan()
-        mem = memories_dir / "project-stable.md"
+        mem = memories_dir / "project-testhost-stable.md"
         assert mem.exists()
         first_mtime = mem.stat().st_mtime
 
