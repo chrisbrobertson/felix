@@ -412,6 +412,30 @@ def test_applescript_generated_script_has_no_literal_newline_in_string():
             raise AssertionError("literal LF inside AppleScript string literal")
 
 
+def test_applescript_extracts_display_name_from_sender():
+    """'Alice Jones <alice@a.com>' should produce a participant dict with name+email."""
+    src = AppleScriptSource()
+    raw = 'RE: Budget|||"Alice Jones" <alice@a.com>|||2026-04-10T09:00:00|||id1|||\n'
+    threads, _ = src._parse_raw(raw, set())
+    assert len(threads) == 1
+    participants = threads[0]["participants"]
+    assert len(participants) == 1
+    p = participants[0]
+    assert isinstance(p, dict)
+    assert p["name"] == "Alice Jones"
+    assert p["email"] == "alice@a.com"
+
+
+def test_applescript_bare_email_has_no_name():
+    """A bare email with no display name should produce a plain string participant."""
+    src = AppleScriptSource()
+    raw = "Meeting Follow-up|||bob@b.com|||2026-04-10T09:00:00|||id2|||\n"
+    threads, _ = src._parse_raw(raw, set())
+    assert len(threads) == 1
+    p = threads[0]["participants"][0]
+    assert p == "bob@b.com"
+
+
 # ── Archive threshold ─────────────────────────────────────────────────────────
 
 def test_archive_skips_stale_threads(tmp_path):

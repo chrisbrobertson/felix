@@ -414,16 +414,24 @@ end tell
                 t["last_message"] = recv_str
             if recv_str < t["first_message"]:
                 t["first_message"] = recv_str
-            # Extract email address from "Name <email>" format
-            m = re.search(r'<([^>]+)>', sender)
-            addr = m.group(1).lower() if m else sender.lower()
-            t["participants"].add(addr)
+            # Parse "Name <email>" or bare email address
+            m = re.match(r'^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$', sender)
+            if m:
+                name = m.group(1).strip() or None
+                addr = m.group(2).strip().lower()
+            else:
+                name = None
+                addr = sender.strip().lower()
+            t["participants"].add((name, addr))
             if msg_line.strip():
                 t["messages"].append(msg_line)
 
         result = []
         for t in threads.values():
-            t["participants"] = sorted(t["participants"])
+            t["participants"] = [
+                {"name": n, "email": e} if n else e
+                for (n, e) in sorted(t["participants"], key=lambda x: x[1])
+            ]
             result.append(t)
         return result, max_rowid
 
@@ -626,7 +634,7 @@ class EmailScanner:
         prompt = (
             "You are summarizing an email thread for a personal knowledge base.\n\n"
             f"Subject: {subject}\n"
-            f"Participants: {', '.join(participants[:10])}\n"
+            f"Participants: {', '.join(p['email'] if isinstance(p, dict) else p for p in participants[:10])}\n"
             f"Messages ({thread.get('message_count', 0)} total):\n"
             f"{msg_block}\n\n"
             "Respond with EXACTLY this format (no other text):\n"
@@ -658,7 +666,8 @@ class EmailScanner:
     def _tags_from_participants(self, thread: dict) -> list:
         """Fallback tags derived from participant email domains."""
         tags = []
-        for addr in thread.get("participants", [])[:5]:
+        for p in thread.get("participants", [])[:5]:
+            addr = p["email"] if isinstance(p, dict) else p
             domain = addr.split("@")[-1].split(".")[0].lower() if "@" in addr else ""
             if domain and domain not in ("gmail", "yahoo", "hotmail", "icloud", "me", "mac"):
                 tags.append(domain)
