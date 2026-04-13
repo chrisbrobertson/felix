@@ -175,3 +175,88 @@ async def test_error_score_logged_as_zero(executor_full, skills_dir, tmp_path):
         await executor_full.run({"url": "u", "title": "t", "content": "c"})
     skill_text = (skills_dir / "summarize-webpage.md").read_text()
     assert "| 0.00 |" in skill_text
+
+
+# --- Fallback model support ---
+
+async def test_run_falls_back_on_error(skills_dir):
+    """When preferred model fails, fallback model is tried and result returned."""
+    with patch.object(se, "SKILLS_DIR", skills_dir):
+        executor = se.SkillExecutor("summarize-webpage", role="full")
+
+    call_count = 0
+    def side_effect(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise Exception("rate limit")
+        mock = MagicMock()
+        mock.choices[0].message.content = "fallback result"
+        return mock
+
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=side_effect)), \
+         patch.object(se, "BRAIN_DIR", skills_dir.parent):
+        result = await executor.run({"url": "u", "title": "t", "content": "c"})
+
+    assert result == "fallback result"
+    assert call_count == 2
+
+
+async def test_run_happy_path_does_not_call_fallback(executor_full):
+    mock_resp = MagicMock()
+    mock_resp.choices[0].message.content = "primary result"
+    with patch("skill_executor.acompletion", new=AsyncMock(return_value=mock_resp)) as mock_ac:
+        result = await executor_full.run({"url": "u", "title": "t", "content": "c"})
+    assert result == "primary result"
+    assert mock_ac.call_count == 1
+
+
+async def test_run_both_models_fail_writes_error_log(executor_full, tmp_path):
+    error_log = tmp_path / "errors.log"
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=Exception("all down"))), \
+         patch.object(se, "ERROR_LOG", error_log):
+        result = await executor_full.run({"url": "u", "title": "t", "content": "c"})
+    assert result is None
+    assert error_log.exists()
+    assert "all down" in error_log.read_text()
+
+
+async def test_run_no_fallback_when_field_missing(skills_dir, tmp_path):
+    """Skill without fallback_model: only one attempt, existing error-log behavior."""
+    content_no_fallback = SKILL_CONTENT.replace("fallback_model: claude-haiku-4-5-20251001\n", "")
+    (skills_dir / "summarize-webpage.md").write_text(content_no_fallback)
+    with patch.object(se, "SKILLS_DIR", skills_dir):
+        executor = se.SkillExecutor("summarize-webpage", role="full")
+
+    error_log = tmp_path / "errors.log"
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=Exception("fail"))) as mock_ac, \
+         patch.object(se, "ERROR_LOG", error_log):
+        result = await executor.run({"url": "u", "title": "t", "content": "c"})
+
+    assert result is None
+    assert mock_ac.call_count == 1
+    assert error_log.exists()
+
+
+async def test_run_execution_log_records_fallback_model_when_used(skills_dir, tmp_path):
+    """When fallback succeeds, the execution history row records the fallback model."""
+    with patch.object(se, "SKILLS_DIR", skills_dir):
+        executor = se.SkillExecutor("summarize-webpage", role="full")
+
+    call_count = 0
+    def side_effect(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise Exception("primary down")
+        mock = MagicMock()
+        mock.choices[0].message.content = "fallback"
+        return mock
+
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=side_effect)):
+        await executor.run({"url": "u", "title": "t", "content": "c"})
+
+    skill_text = (skills_dir / "summarize-webpage.md").read_text()
+    # The execution history row should show the fallback model, not the preferred model
+    # SKILL_CONTENT has preferred_model: gemini/gemini-2.0-flash, fallback: claude-haiku-4-5-20251001
+    assert "claude-haiku-4-5-20251001" in skill_text  # fallback model in history

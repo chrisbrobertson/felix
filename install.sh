@@ -122,6 +122,7 @@ _config_yaml_val() {
 }
 
 EXISTING_ROLE=""
+EXISTING_PROVIDER=""
 EXISTING_GEMINI_KEY=""
 EXISTING_ANTHROPIC_KEY=""
 EXISTING_TELEGRAM_TOKEN=""
@@ -136,6 +137,7 @@ EXISTING_GITHUB_REPO=""
 
 if [ -f "$PLIST_DEST" ]; then
     EXISTING_ROLE="$(_plist_env_val SECOND_BRAIN_ROLE)"
+    EXISTING_PROVIDER="$(_plist_env_val SECOND_BRAIN_PROVIDER)"
     EXISTING_GEMINI_KEY="$(_plist_env_val GEMINI_API_KEY)"
     EXISTING_ANTHROPIC_KEY="$(_plist_env_val ANTHROPIC_API_KEY)"
     EXISTING_ZOOM_ACCOUNT_ID="$(_plist_env_val ZOOM_ACCOUNT_ID)"
@@ -176,25 +178,44 @@ else
     ok "Role: $ROLE"
 fi
 
-# ── 3. API keys ───────────────────────────────────────────────────────────────
+# ── 3. LLM provider choice ────────────────────────────────────────────────────
+echo ""
+echo "LLM provider"
+echo "────────────"
+printf "  Which LLM providers do you want this daemon to use?\n"
+printf "    gemini  Gemini only (cheap, fast; no Anthropic key needed)\n"
+printf "    claude  Claude only (higher quality; no Gemini key needed)\n"
+printf "    both    Prefer Claude, fall back to Gemini on errors (recommended)\n"
+echo ""
+DEFAULT_PROVIDER="${EXISTING_PROVIDER:-both}"
+read -r -p "  Provider [$DEFAULT_PROVIDER]: " PROVIDER
+PROVIDER="${PROVIDER:-$DEFAULT_PROVIDER}"
+[[ "$PROVIDER" == "gemini" || "$PROVIDER" == "claude" || "$PROVIDER" == "both" ]] \
+    || die "Provider must be 'gemini', 'claude', or 'both'."
+ok "Provider: $PROVIDER"
+
+# ── 4. API keys ───────────────────────────────────────────────────────────────
 echo ""
 echo "API keys"
 echo "────────"
 
-if [ -n "${GEMINI_API_KEY:-}" ]; then
-    ok "GEMINI_API_KEY (from environment)"
-    GEMINI_KEY="$GEMINI_API_KEY"
-elif [ -n "$EXISTING_GEMINI_KEY" ]; then
-    ok "Gemini API key (from existing config)"
-    GEMINI_KEY="$EXISTING_GEMINI_KEY"
-else
-    echo "  Get one at: https://aistudio.google.com/app/apikey"
-    read -r -p "  Gemini API key: " GEMINI_KEY
-    [ -z "$GEMINI_KEY" ] && die "Gemini API key is required."
+GEMINI_KEY=""
+if [ "$PROVIDER" != "claude" ]; then
+    if [ -n "${GEMINI_API_KEY:-}" ]; then
+        ok "GEMINI_API_KEY (from environment)"
+        GEMINI_KEY="$GEMINI_API_KEY"
+    elif [ -n "$EXISTING_GEMINI_KEY" ]; then
+        ok "Gemini API key (from existing config)"
+        GEMINI_KEY="$EXISTING_GEMINI_KEY"
+    else
+        echo "  Get one at: https://aistudio.google.com/app/apikey"
+        read -r -p "  Gemini API key: " GEMINI_KEY
+        [ -z "$GEMINI_KEY" ] && die "Gemini API key is required for provider '$PROVIDER'."
+    fi
 fi
 
 ANTHROPIC_KEY=""
-if [ "$ROLE" = "full" ]; then
+if [ "$PROVIDER" != "gemini" ]; then
     if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
         ok "ANTHROPIC_API_KEY (from environment)"
         ANTHROPIC_KEY="$ANTHROPIC_API_KEY"
@@ -204,7 +225,7 @@ if [ "$ROLE" = "full" ]; then
     else
         echo "  Get one at: https://console.anthropic.com/"
         read -r -p "  Anthropic API key: " ANTHROPIC_KEY
-        [ -z "$ANTHROPIC_KEY" ] && die "Anthropic API key is required for the full role."
+        [ -z "$ANTHROPIC_KEY" ] && die "Anthropic API key is required for provider '$PROVIDER'."
     fi
 fi
 
@@ -482,6 +503,12 @@ for SKILL in "$REPO_DIR/skills/"*.md; do
     fi
 done
 
+# ── 12b. Apply LLM provider preference to deployed skills ─────────────────────
+echo ""
+echo "Applying LLM provider preference to skill files..."
+PROVIDER="$PROVIDER" "$VENV/bin/python3" "$REPO_DIR/scripts/apply_skill_provider.py" \
+    "$BRAIN_DIR/skills"
+
 # ── 13. LiteLLM config ────────────────────────────────────────────────────────
 echo ""
 echo "Setting up LiteLLM config..."
@@ -545,6 +572,8 @@ cat > "$PLIST_TMP" << PLIST_EOF
   <dict>
     <key>SECOND_BRAIN_ROLE</key>
     <string>${ROLE}</string>
+    <key>SECOND_BRAIN_PROVIDER</key>
+    <string>${PROVIDER}</string>
     <key>SECOND_BRAIN_DIR</key>
     <string>${DEPLOY_DIR}</string>
     <key>GEMINI_API_KEY</key>

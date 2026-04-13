@@ -50,29 +50,37 @@ class SkillExecutor:
         self._reload_if_modified()
 
         meta = self._skill["meta"]
-        model = meta.get("preferred_model", "gemini/gemini-2.0-flash")
+        preferred = meta.get("preferred_model", "gemini/gemini-2.0-flash")
+        fallback = meta.get("fallback_model")  # may be None
         user_msg = "\n".join(f"**{k}:**\n{v}" for k, v in inputs.items())
+        messages = [
+            {"role": "system", "content": self._skill["instructions"]},
+            {"role": "user", "content": user_msg},
+        ]
 
-        try:
-            response = await acompletion(
-                model=model,
-                messages=[
-                    {"role": "system", "content": self._skill["instructions"]},
-                    {"role": "user", "content": user_msg}
-                ],
-                max_tokens=1000
-            )
-            result = response.choices[0].message.content
-            await self._log_execution(inputs, model, score=score)
-            return result
+        models_to_try = [preferred, fallback] if fallback else [preferred]
+        last_err = None
+        for model in models_to_try:
+            try:
+                response = await acompletion(model=model, messages=messages, max_tokens=1000)
+                result = response.choices[0].message.content
+                await self._log_execution(inputs, model, score=score)
+                if model != preferred:
+                    log.warning(f"{self.skill_name} succeeded on fallback {model} "
+                                f"(preferred {preferred} failed: {last_err})")
+                return result
+            except Exception as e:
+                last_err = e
+                log.warning(f"{self.skill_name} failed on {model}: {e}")
+                continue
 
-        except Exception as e:
-            err_msg = f"{datetime.now().isoformat()} [{self.skill_name}] {model} ERROR: {e}\n"
-            log.error(err_msg.strip())
-            with open(ERROR_LOG, "a") as f:
-                f.write(err_msg)
-            await self._log_execution(inputs, model, score=0.0, notes=str(e)[:80])
-            return None
+        # Every attempt failed
+        err_msg = f"{datetime.now().isoformat()} [{self.skill_name}] {preferred} ERROR: {last_err}\n"
+        log.error(err_msg.strip())
+        with open(ERROR_LOG, "a") as f:
+            f.write(err_msg)
+        await self._log_execution(inputs, preferred, score=0.0, notes=str(last_err)[:80])
+        return None
 
     async def _log_execution(self, inputs: dict, model: str,
                               score, notes: str = ""):
