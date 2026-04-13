@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from litellm import acompletion
+from llm_routes import resolve
 
 log = logging.getLogger("skill-executor")
 
@@ -63,24 +64,24 @@ class SkillExecutor:
         last_err = None
         for model in models_to_try:
             try:
-                response = await acompletion(model=model, messages=messages, max_tokens=1000)
+                response = await acompletion(model=resolve(model), messages=messages, max_tokens=1000)
                 result = response.choices[0].message.content
-                await self._log_execution(inputs, model, score=score)
+                await self._log_execution(inputs, resolve(model), score=score)
                 if model != preferred:
-                    log.warning(f"{self.skill_name} succeeded on fallback {model} "
-                                f"(preferred {preferred} failed: {last_err})")
+                    log.warning(f"{self.skill_name} succeeded on fallback {resolve(model)} "
+                                f"(preferred {resolve(preferred)} failed: {last_err})")
                 return result
             except Exception as e:
                 last_err = e
-                log.warning(f"{self.skill_name} failed on {model}: {e}")
+                log.warning(f"{self.skill_name} failed on {resolve(model)}: {e}")
                 continue
 
         # Every attempt failed
-        err_msg = f"{datetime.now().isoformat()} [{self.skill_name}] {preferred} ERROR: {last_err}\n"
+        err_msg = f"{datetime.now().isoformat()} [{self.skill_name}] {resolve(preferred)} ERROR: {last_err}\n"
         log.error(err_msg.strip())
         with open(ERROR_LOG, "a") as f:
             f.write(err_msg)
-        await self._log_execution(inputs, preferred, score=0.0, notes=str(last_err)[:80])
+        await self._log_execution(inputs, resolve(preferred), score=0.0, notes=str(last_err)[:80])
         return None
 
     async def _log_execution(self, inputs: dict, model: str,
@@ -166,7 +167,7 @@ class SkillExecutor:
             try:
                 for _iteration in range(max_iterations):
                     response = await acompletion(
-                        model=model,
+                        model=resolve(model),
                         messages=messages,
                         tools=tools,
                         max_tokens=2000,
@@ -176,7 +177,7 @@ class SkillExecutor:
 
                     if not tool_calls:
                         result = msg.content or ""
-                        await self._log_execution(inputs, model, score=None)
+                        await self._log_execution(inputs, resolve(model), score=None)
                         return result
 
                     messages.append({
@@ -222,12 +223,12 @@ class SkillExecutor:
 
             except Exception as e:
                 last_err = e
-                log.warning(f"{self.skill_name} (tools) failed on {model}: {e}")
+                log.warning(f"{self.skill_name} (tools) failed on {resolve(model)}: {e}")
                 continue
 
-        err_msg = f"{datetime.now().isoformat()} [{self.skill_name}] {preferred} TOOLS ERROR: {last_err}\n"
+        err_msg = f"{datetime.now().isoformat()} [{self.skill_name}] {resolve(preferred)} TOOLS ERROR: {last_err}\n"
         log.error(err_msg.strip())
         with open(ERROR_LOG, "a") as f:
             f.write(err_msg)
-        await self._log_execution(inputs, preferred, score=0.0, notes=str(last_err)[:80])
+        await self._log_execution(inputs, resolve(preferred), score=0.0, notes=str(last_err)[:80])
         return None

@@ -260,3 +260,70 @@ async def test_run_execution_log_records_fallback_model_when_used(skills_dir, tm
     # The execution history row should show the fallback model, not the preferred model
     # SKILL_CONTENT has preferred_model: gemini/gemini-2.0-flash, fallback: claude-haiku-4-5-20251001
     assert "claude-haiku-4-5-20251001" in skill_text  # fallback model in history
+
+
+# --- LLM route resolution ---
+
+async def test_run_resolves_alias_model(skills_dir):
+    """preferred_model alias in skill frontmatter is resolved before acompletion call."""
+    # Overwrite the fixture skill to use a route alias
+    skill_path = skills_dir / "test_skill.md"
+    skill_path.write_text(
+        "---\nname: test_skill\nversion: 1\n"
+        "preferred_model: summarize\nfallback_model: claude-haiku-4-5-20251001\n---\n\n"
+        "## Instructions\n\nYou are a helpful assistant.\n\n## Execution History\n\n"
+        "| date | input_slug | model | score | notes |\n"
+        "|------|-----------|-------|-------|-------|\n"
+    )
+
+    msg = MagicMock()
+    msg.content = "Result"
+    msg.tool_calls = []
+    choice = MagicMock()
+    choice.message = msg
+    response = MagicMock()
+    response.choices = [choice]
+    mock_acompletion = AsyncMock(return_value=response)
+
+    with patch.object(se, "SKILLS_DIR", skills_dir), \
+         patch("skill_executor.acompletion", mock_acompletion):
+        executor = se.SkillExecutor("test_skill", role="full")
+        await executor.run(inputs={"query": "test"})
+
+    call_kwargs = mock_acompletion.call_args
+    called_model = call_kwargs[1].get("model") or call_kwargs[0][0]
+    assert called_model == "gemini/gemini-2.0-flash", (
+        f"Expected alias 'summarize' to resolve to 'gemini/gemini-2.0-flash', got {called_model!r}"
+    )
+
+
+async def test_run_with_tools_resolves_alias_model(skills_dir):
+    """preferred_model alias is resolved in run_with_tools() too."""
+    skill_path = skills_dir / "test_skill.md"
+    skill_path.write_text(
+        "---\nname: test_skill\nversion: 1\n"
+        "preferred_model: summarize\nfallback_model: claude-haiku-4-5-20251001\n---\n\n"
+        "## Instructions\n\nYou are a helpful assistant.\n\n## Execution History\n\n"
+        "| date | input_slug | model | score | notes |\n"
+        "|------|-----------|-------|-------|-------|\n"
+    )
+
+    msg = MagicMock()
+    msg.content = "Result"
+    msg.tool_calls = []
+    choice = MagicMock()
+    choice.message = msg
+    response = MagicMock()
+    response.choices = [choice]
+    mock_acompletion = AsyncMock(return_value=response)
+
+    with patch.object(se, "SKILLS_DIR", skills_dir), \
+         patch("skill_executor.acompletion", mock_acompletion):
+        executor = se.SkillExecutor("test_skill", role="full")
+        await executor.run_with_tools(inputs={"query": "test"}, tools=[], tool_dispatch=AsyncMock())
+
+    call_kwargs = mock_acompletion.call_args
+    called_model = call_kwargs[1].get("model") or call_kwargs[0][0]
+    assert called_model == "gemini/gemini-2.0-flash", (
+        f"Expected alias 'summarize' to resolve to 'gemini/gemini-2.0-flash', got {called_model!r}"
+    )
