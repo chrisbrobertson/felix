@@ -450,6 +450,122 @@ class SlackScanner:
             except asyncio.TimeoutError:
                 pass
 
+    async def backfill(self, days: int) -> dict:
+        """Reprocess Slack threads from the last N days (max 90). Returns dict with counts."""
+        days = min(days, 90)
+        state = self._load_state()
+
+        # Clear high_water for all channels to force reprocessing
+        for channel_id in state.get("channels", {}):
+            state["channels"][channel_id]["high_water"] = None
+
+        sc = self._scanner_config()
+        min_thread_messages = int(sc.get("min_thread_messages", 2))
+
+        processed = 0
+        skipped = 0
+        errors = 0
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            # Discover channels
+            all_channels = await self._list_channels(client)
+            if not all_channels:
+                return {
+                    "processed": 0,
+                    "skipped": 0,
+                    "errors": 0,
+                    "notes": "No channels found or API error"
+                }
+
+            channels = self._filter_channels(all_channels, sc)
+            if not channels:
+                return {
+                    "processed": 0,
+                    "skipped": 0,
+                    "errors": 0,
+                    "notes": "No channels after filtering"
+                }
+
+            # Process all channels
+            for channel_id, channel_name in channels:
+                log.info("Backfill: scanning channel %s", channel_name)
+
+                channel_state = state["channels"].setdefault(channel_id, {"name": channel_name, "threads": {}})
+
+                # Fetch messages with no high_water (full lookback)
+                messages = await self._fetch_channel_messages(client, channel_id, None, days)
+                if messages is None:
+                    errors += 1
+                    continue
+
+                # Find thread roots
+                thread_roots = []
+                for msg in messages:
+                    reply_count = msg.get("reply_count", 0)
+                    thread_ts = msg.get("thread_ts")
+                    ts = msg.get("ts")
+                    if reply_count >= min_thread_messages and thread_ts == ts:
+                        thread_roots.append(msg)
+
+                # Process all threads (no limit for backfill)
+                for thread_msg in thread_roots:
+                    thread_ts = thread_msg["ts"]
+                    thread_state = channel_state["threads"].setdefault(thread_ts, {})
+
+                    # Fetch full thread
+                    full_thread = await self._fetch_thread_replies(client, channel_id, thread_ts)
+                    if full_thread is None:
+                        errors += 1
+                        continue
+
+                    current_count = len(full_thread)
+                    current_last_ts = full_thread[-1].get("ts", "") if full_thread else ""
+
+                    # Resolve user names
+                    for msg in full_thread:
+                        user_id = msg.get("user", "")
+                        if user_id:
+                            name = await self._resolve_user(client, user_id)
+                            msg["_resolved_name"] = name
+                        else:
+                            msg["_resolved_name"] = "Unknown User"
+
+                    # Extract unique participants
+                    participants = list({msg.get("_resolved_name", "Unknown User") for msg in full_thread if msg.get("user")})
+
+                    # Generate summary
+                    try:
+                        llm_result = await self._generate_summary(channel_name, full_thread, participants)
+
+                        # Write memory file
+                        self._write_memory(channel_id, channel_name, thread_ts, full_thread, llm_result)
+
+                        # Update thread state
+                        thread_state["message_count"] = current_count
+                        thread_state["last_ts"] = current_last_ts
+
+                        processed += 1
+                    except Exception as e:
+                        log.error(f"Backfill error processing Slack thread {thread_ts}: {e}")
+                        errors += 1
+
+                # Update high-water mark
+                if messages:
+                    newest_ts = max(msg.get("ts", "0") for msg in messages)
+                    channel_state["high_water"] = newest_ts
+
+                # Save state after each channel
+                self._save_state(state)
+
+        self._save_state(state)
+
+        return {
+            "processed": processed,
+            "skipped": skipped,
+            "errors": errors,
+            "notes": f"Scanned {days} days of Slack history across {len(channels)} channel(s)"
+        }
+
     async def _run_scan(self):
         sc = self._scanner_config()
         lookback_days = int(sc.get("lookback_days", 7))

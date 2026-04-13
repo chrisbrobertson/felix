@@ -442,3 +442,35 @@ def test_parse_frontmatter_returns_dict():
 def test_parse_frontmatter_returns_empty_on_no_delimiters():
     fm = _parse_frontmatter("no frontmatter here")
     assert fm == {}
+
+
+# ── Backfill ──────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_backfill_deletes_and_recreates_memory_files(tmp_path):
+    """backfill() deletes project-*.md files then runs scan."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    # Create some existing project files
+    (memories_dir / "project-foo.md").write_text("old content 1")
+    (memories_dir / "project-bar.md").write_text("old content 2")
+
+    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
+         patch.object(ps, "CONFIG_PATH", tmp_path / "config.yaml"):
+
+        scanner = ProjectScanner(role="full")
+        mock_run_scan = AsyncMock()
+        scanner._run_scan = mock_run_scan
+
+        (tmp_path / "config.yaml").write_text("project_scanner:\n  repo_dirs: []\n")
+
+        result = await scanner.backfill(0)  # days ignored
+
+    # Original files should be deleted
+    assert not (memories_dir / "project-foo.md").exists()
+    assert not (memories_dir / "project-bar.md").exists()
+
+    # Verify scan was called
+    mock_run_scan.assert_called_once()
+    assert result["notes"].startswith("Deleted")

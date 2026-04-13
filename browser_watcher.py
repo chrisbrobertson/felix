@@ -219,6 +219,51 @@ class BrowserWatcher:
             self.seen_urls.add(entry["url"])
             self.save_seen_urls()
 
+    async def backfill(self, days: int) -> dict:
+        """Reprocess URLs from the last N days (max 90). Returns dict with counts."""
+        days = min(days, 90)
+        since = datetime.now() - timedelta(days=days)
+
+        try:
+            config = yaml.safe_load(CONFIG_PATH.read_text())
+        except Exception as e:
+            log.warning(f"Config read failed during backfill: {e}")
+            config = {}
+
+        entries = self._fetch_recent_urls(since)
+
+        processed = 0
+        skipped = 0
+        errors = 0
+
+        for entry in entries:
+            url = entry["url"]
+
+            # Remove from seen_urls so _should_process will return True
+            if url in self.seen_urls:
+                self.seen_urls.discard(url)
+
+            # Now check if we should process (domain filter, etc.)
+            if not self._should_process(entry, config):
+                skipped += 1
+                continue
+
+            try:
+                await self.process_url(entry)
+                processed += 1
+            except Exception as e:
+                log.error(f"Backfill error processing {url}: {e}")
+                errors += 1
+
+        self.save_seen_urls()
+
+        return {
+            "processed": processed,
+            "skipped": skipped,
+            "errors": errors,
+            "notes": f"Scanned {days} days of browser history"
+        }
+
     async def run_loop(self, stop_event: asyncio.Event):
         while not stop_event.is_set():
             # Re-read config every iteration — picks up skip_domain edits, interval

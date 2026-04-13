@@ -1486,3 +1486,63 @@ async def test_features_index_snapshot_written_on_create(handler, brain_dir):
     assert index_file.exists()
     content = index_file.read_text()
     assert "feature_request_index" in content
+
+
+# ── Backfill ──────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_backfill_rejects_unknown_type(handler):
+    update, ctx = _make_update(12345, ["unknown_type"])
+    await handler.cmd_backfill(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Unknown type" in reply
+
+
+@pytest.mark.asyncio
+async def test_backfill_rejects_mismatched_hostname(handler):
+    mock_scanner = AsyncMock()
+    handler.scanners = {"readings": mock_scanner}
+    update, ctx = _make_update(12345, ["readings", "different-host"])
+    with patch("chat_handler.socket.gethostname", return_value="local-host"):
+        await handler.cmd_backfill(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Cross-node" in reply or "not yet implemented" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_backfill_uses_default_days_when_omitted(handler):
+    mock_scanner = AsyncMock()
+    mock_scanner.backfill = AsyncMock(return_value={"processed": 5, "skipped": 0, "errors": 0, "notes": ""})
+    handler.scanners = {"readings": mock_scanner}
+    update, ctx = _make_update(12345, ["readings"])
+    with patch("chat_handler.socket.gethostname", return_value="local-host"):
+        await handler.cmd_backfill(update, ctx)
+    # Default for readings is 30 days
+    mock_scanner.backfill.assert_called_once_with(30)
+
+
+@pytest.mark.asyncio
+async def test_backfill_calls_scanner_backfill_with_parsed_days(handler):
+    mock_scanner = AsyncMock()
+    mock_scanner.backfill = AsyncMock(return_value={"processed": 10, "skipped": 2, "errors": 0, "notes": "test"})
+    handler.scanners = {"email": mock_scanner}
+    update, ctx = _make_update(12345, ["email", "60"])
+    with patch("chat_handler.socket.gethostname", return_value="local-host"):
+        await handler.cmd_backfill(update, ctx)
+    mock_scanner.backfill.assert_called_once_with(60)
+
+
+@pytest.mark.asyncio
+async def test_backfill_reply_formats_result_dict(handler):
+    mock_scanner = AsyncMock()
+    mock_scanner.backfill = AsyncMock(return_value={"processed": 15, "skipped": 3, "errors": 1, "notes": "Done!"})
+    handler.scanners = {"projects": mock_scanner}
+    update, ctx = _make_update(12345, ["projects"])
+    with patch("chat_handler.socket.gethostname", return_value="local-host"):
+        await handler.cmd_backfill(update, ctx)
+    replies = [call[0][0] for call in update.message.reply_text.call_args_list]
+    final_reply = replies[-1]
+    assert "15 processed" in final_reply
+    assert "3 skipped" in final_reply
+    assert "1 errors" in final_reply
+    assert "Done!" in final_reply

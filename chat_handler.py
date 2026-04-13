@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+import socket
 import yaml
 from pathlib import Path
 
@@ -98,16 +99,30 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("commands", "Alias of /help"),
         ("settings", "View or change display settings (date_format, timezone)"),
     ],
+    "System": [
+        ("backfill", "Reprocess historical data: /backfill <type> [days] [host]. Types: readings, email, zoom, calendar, slack, projects"),
+    ],
+}
+
+# Backfill configuration: default and max days per scanner type
+BACKFILL_CONFIG = {
+    "readings": {"default_days": 30, "max_days": 90},
+    "email":    {"default_days": 30, "max_days": 90},
+    "zoom":     {"default_days": 30, "max_days": 180},
+    "calendar": {"default_days": 30, "max_days": 180},
+    "slack":    {"default_days": 30, "max_days": 90},
+    "projects": {"default_days": 0,  "max_days": 0},
 }
 
 
 class TelegramChatHandler:
-    def __init__(self):
+    def __init__(self, scanners: dict = None):
         config = yaml.safe_load((BRAIN_DIR / "config.yaml").read_text())
         self.token = config["telegram"]["bot_token"]
         self.allowed_user_id = int(config["user"]["telegram_user_id"])
         self.executor = SkillExecutor("chat")
         self.app = ApplicationBuilder().token(self.token).build()
+        self.scanners = scanners or {}
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
         )
@@ -175,6 +190,8 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("report_pause", self.cmd_report_pause))
         self.app.add_handler(CommandHandler("report_resume", self.cmd_report_resume))
         self.app.add_handler(CommandHandler("report_run", self.cmd_report_run))
+        # System
+        self.app.add_handler(CommandHandler("backfill", self.cmd_backfill))
         # Cache: path -> (mtime, header_text). Invalidated when mtime changes.
         # Avoids reading every file on every chat message.
         self._header_cache: dict = {}
@@ -1270,6 +1287,81 @@ class TelegramChatHandler:
         await update.message.reply_text("\n".join(lines))
 
     # ── /help command ─────────────────────────────────────────────────────────
+
+    async def cmd_backfill(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+
+        args = context.args or []
+        if not args:
+            await self._send_reply(
+                update,
+                "Usage: /backfill <type> [days] [hostname]\n"
+                "Types: readings, email, zoom, calendar, slack, projects"
+            )
+            return
+
+        memory_type = args[0].lower()
+        if memory_type not in BACKFILL_CONFIG:
+            await self._send_reply(
+                update,
+                f"Unknown type '{memory_type}'. Valid types: {', '.join(BACKFILL_CONFIG)}"
+            )
+            return
+
+        if memory_type not in self.scanners:
+            await self._send_reply(
+                update,
+                f"Scanner for '{memory_type}' not available on this node."
+            )
+            return
+
+        cfg = BACKFILL_CONFIG[memory_type]
+        days = cfg["default_days"]
+        hostname_arg = None
+
+        # Parse args: could be [type, days] or [type, hostname] or [type, days, hostname]
+        if len(args) >= 2:
+            try:
+                days = int(args[1])
+                if len(args) >= 3:
+                    hostname_arg = args[2]
+            except ValueError:
+                # args[1] is not an int, treat as hostname
+                hostname_arg = args[1]
+
+        # Check hostname match
+        local_hostname = socket.gethostname()
+        if hostname_arg and hostname_arg != local_hostname:
+            await self._send_reply(
+                update,
+                f"Cross-node dispatch not yet implemented. This node is `{local_hostname}`. "
+                f"Rerun on `{hostname_arg}` directly."
+            )
+            return
+
+        # Clamp days
+        if cfg["max_days"] > 0:
+            days = min(days, cfg["max_days"])
+
+        days_str = f"{days} days" if memory_type != "projects" else "all"
+        await self._send_reply(
+            update,
+            f"Starting backfill of {memory_type} ({days_str}) on {local_hostname}..."
+        )
+
+        try:
+            result = await self.scanners[memory_type].backfill(days)
+            msg = (
+                f"Backfill complete: {result['processed']} processed, "
+                f"{result['skipped']} skipped, {result['errors']} errors."
+            )
+            if result.get('notes'):
+                msg += f"\n{result['notes']}"
+            await self._send_reply(update, msg)
+        except Exception as e:
+            log.exception("Backfill failed")
+            await self._send_reply(update, f"Backfill failed: {e}")
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):

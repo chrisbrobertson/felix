@@ -709,6 +709,63 @@ class EmailScanner:
             except Exception:
                 pass
 
+    async def backfill(self, days: int) -> dict:
+        """Reprocess email threads from the last N days (max 90). Returns dict with counts."""
+        days = min(days, 90)
+        state = self._load_state()
+        saved_high_water = state.get("high_water_rowid", 0)
+
+        # Temporarily zero high_water_rowid to force rescan
+        state["high_water_rowid"] = 0
+
+        sc = self._scanner_config()
+        since = datetime.now() - timedelta(days=days)
+        excluded = self._excluded_mailboxes(sc)
+
+        source = self._get_data_source()
+        if source is None:
+            return {"processed": 0, "skipped": 0, "errors": 0, "notes": "No mail data source available"}
+
+        threads, new_max_rowid = source.get_threads_since(since, excluded)
+
+        processed = 0
+        skipped = 0
+        errors = 0
+
+        for thread in threads:
+            try:
+                memory_path = self._memory_path(thread)
+                if not self._needs_update(thread, memory_path):
+                    skipped += 1
+                    continue
+
+                summary, tags = self._get_existing_summary_and_tags(memory_path, thread)
+                if not summary or not tags:
+                    summary, tags = await self._generate_summary_and_tags(thread)
+                if not summary:
+                    summary = thread.get("subject", "")
+                if not tags:
+                    tags = self._tags_from_participants(thread)
+
+                self._write_memory(thread, summary, tags)
+                processed += 1
+            except Exception as e:
+                log.error(f"Backfill error processing thread {thread.get('subject')}: {e}")
+                errors += 1
+
+        # Update state with new high_water (don't restore saved value)
+        if new_max_rowid > 0:
+            state["high_water_rowid"] = new_max_rowid
+        state["last_scan_time"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        self._save_state(state)
+
+        return {
+            "processed": processed,
+            "skipped": skipped,
+            "errors": errors,
+            "notes": f"Scanned {days} days of email history"
+        }
+
     def _clear_full_rescan_flag(self):
         """Set full_rescan: false in config.yaml after a forced rescan."""
         try:

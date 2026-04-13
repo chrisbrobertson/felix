@@ -547,6 +547,74 @@ class ZoomScanner:
             except asyncio.TimeoutError:
                 pass
 
+    async def backfill(self, days: int) -> dict:
+        """Reprocess Zoom meetings from the last N days (max 180). Returns dict with counts."""
+        days = min(days, 180)
+        state = self._load_state()
+
+        # Clear processed_uuids in memory to force reprocessing
+        state["processed_uuids"] = []
+        state["last_poll"] = None
+
+        since = datetime.now() - timedelta(days=days)
+
+        processed = 0
+        skipped = 0
+        errors = 0
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            recordings = await self._poll_recordings(client, since)
+
+            if not recordings:
+                self._save_state(state)
+                return {
+                    "processed": 0,
+                    "skipped": 0,
+                    "errors": 0,
+                    "notes": f"No Zoom meetings found in last {days} days"
+                }
+
+            count = min(len(recordings), MAX_MEETINGS_PER_CYCLE * 3)  # Higher limit for backfill
+            log.info("Backfill: processing %d Zoom meeting(s)", count)
+
+            for uuid, meeting, download_url in recordings[:count]:
+                try:
+                    vtt_text = await self._download_transcript(download_url)
+                    if vtt_text is None:
+                        errors += 1
+                        continue
+
+                    parsed = self._parse_vtt(vtt_text)
+                    if not parsed.get("segments"):
+                        skipped += 1
+                        self._add_processed_uuid(state, uuid)
+                        continue
+
+                    participants = await self._get_participants(client, uuid)
+                    matched_speakers = self._match_speakers(
+                        parsed.get("speakers", []), participants
+                    )
+                    llm_result = await self._generate_summary(
+                        meeting, parsed, matched_speakers
+                    )
+                    self._write_memory(meeting, parsed, matched_speakers, llm_result)
+                    self._add_processed_uuid(state, uuid)
+                    processed += 1
+
+                except Exception as e:
+                    log.error(f"Backfill error processing Zoom meeting {uuid}: {e}")
+                    errors += 1
+
+        state["last_poll"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        self._save_state(state)
+
+        return {
+            "processed": processed,
+            "skipped": skipped,
+            "errors": errors,
+            "notes": f"Scanned {days} days of Zoom recordings"
+        }
+
     async def _run_scan(self):
         sc = self._scanner_config()
         lookback_days = int(sc.get("initial_lookback_days", 30))

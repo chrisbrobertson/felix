@@ -492,3 +492,32 @@ def test_full_rescan_resets_high_water(tmp_path):
     # get_threads_since (not updated_since) should be called for full rescan
     mock_source.get_threads_since.assert_called_once()
     mock_source.get_threads_updated_since.assert_not_called()
+
+
+async def test_backfill_resets_high_water_and_rescans(tmp_path):
+    """backfill() zeros high_water_rowid and triggers scan."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    scanner = EmailScanner()
+
+    with patch.object(es, "MEMORIES_DIR", memories_dir), \
+         patch.object(es, "STATE_FILE", tmp_path / "state.json"), \
+         patch.object(es, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch.object(scanner, "_get_data_source") as mock_src:
+
+        mock_source = MagicMock()
+        mock_source.get_threads_since.return_value = ([], 0)
+        mock_src.return_value = mock_source
+
+        (tmp_path / "config.yaml").write_text(
+            "email_scanner:\n  archive_after_days: 90\n  initial_lookback_days: 30\n"
+            "  skip_mailboxes: []\n"
+        )
+        scanner._save_state({"high_water_rowid": 9999, "last_scan_time": "2026-04-10T00:00:00"})
+
+        result = await scanner.backfill(30)
+
+    assert result["processed"] >= 0
+    # get_threads_since should be called (not updated_since)
+    mock_source.get_threads_since.assert_called_once()
+    mock_source.get_threads_updated_since.assert_not_called()

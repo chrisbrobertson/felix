@@ -44,7 +44,8 @@ async def main():
         from notification_manager import NotificationManager
         from skill_creator import SkillCreator
         from report_scheduler import ReportScheduler
-        chat = TelegramChatHandler()
+
+        # Instantiate scanners first
         optimizer = SkillOptimizer(config)
         indexer = IndexBuilder()
         scanner = ProjectScanner(role=role)
@@ -54,6 +55,19 @@ async def main():
         contact_tracker = ContactTracker(role=role)
         slack_scanner = SlackScanner(role=role)
         calendar_scanner = CalendarScanner(role=role)
+
+        # Build scanners dict for backfill command
+        scanners_dict = {
+            "readings": watcher,
+            "email": email_scanner,
+            "zoom": zoom_scanner,
+            "calendar": calendar_scanner,
+            "slack": slack_scanner,
+            "projects": scanner,
+        }
+
+        # Instantiate chat handler with scanners
+        chat = TelegramChatHandler(scanners=scanners_dict)
         await chat.start()
 
         # Instantiate notification manager and wire up cross-references

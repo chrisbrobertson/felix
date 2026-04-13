@@ -369,3 +369,25 @@ async def test_watcher_role_skips_zoom_scanner():
         await scanner.run_loop(stop_event)
 
     mock_scan.assert_not_called()
+
+
+# ── Backfill ──────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_backfill_clears_processed_uuids(tmp_path):
+    """backfill() clears processed_uuids before scanning."""
+    scanner = ZoomScanner(role="full")
+
+    with patch.object(zs, "MEMORIES_DIR", tmp_path / "memories"), \
+         patch.object(zs, "STATE_FILE", tmp_path / "zoom-state.json"), \
+         patch.object(scanner, "_poll_recordings", new=AsyncMock(return_value=[])):
+
+        (tmp_path / "memories").mkdir()
+        scanner._save_state({"processed_uuids": ["old-uuid-1", "old-uuid-2"]})
+
+        result = await scanner.backfill(30)
+
+    # State should have empty processed_uuids after backfill
+    state = scanner._load_state()
+    assert state.get("processed_uuids") == []
+    assert result["processed"] == 0  # No recordings in this mock

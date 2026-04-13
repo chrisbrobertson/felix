@@ -597,3 +597,46 @@ async def test_watcher_role_skips_slack_scanner():
         # Should log debug and exit
         mock_log.debug.assert_called()
         assert "skipped" in mock_log.debug.call_args[0][0]
+
+
+# ── Backfill ──────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_backfill_clears_high_water_per_channel(tmp_path):
+    """backfill() clears high_water for all channels."""
+    scanner = SlackScanner(role="full")
+
+    with patch.object(ss, "MEMORIES_DIR", tmp_path / "memories"), \
+         patch.object(ss, "STATE_FILE", tmp_path / "state.json"), \
+         patch.object(ss, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch("httpx.AsyncClient") as mock_client_cls, \
+         patch("os.environ.get", return_value="xoxp-test-token"):
+
+        # Mock httpx.AsyncClient context manager
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        # Mock scanner methods - return a channel to process
+        scanner._list_channels = AsyncMock(return_value=[("C123", "general")])
+        scanner._filter_channels = MagicMock(return_value=[("C123", "general")])
+        scanner._fetch_channel_messages = AsyncMock(return_value=[])  # No messages
+
+        (tmp_path / "memories").mkdir()
+        (tmp_path / "config.yaml").write_text("slack_scanner:\n  channel_include: []\n")
+
+        scanner._save_state({
+            "channels": {
+                "C123": {"name": "general", "high_water": "1234567890.123456", "threads": {}},
+                "C456": {"name": "random", "high_water": "1234567890.654321", "threads": {}}
+            }
+        })
+
+        result = await scanner.backfill(30)
+
+        # All channels' high_water should be cleared (None) by backfill
+        state = scanner._load_state()
+        assert state["channels"]["C123"].get("high_water") is None
+        assert state["channels"]["C456"].get("high_water") is None
+        assert result["processed"] == 0  # No threads processed

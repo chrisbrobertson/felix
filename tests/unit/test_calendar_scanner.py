@@ -881,3 +881,34 @@ def test_applescript_timeout_kills_process():
     with patch('subprocess.Popen', side_effect=slow_script):
         result = source._run_osascript("test script", timeout=1)
         assert result == ""
+
+
+# ── Backfill ──────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_backfill_clears_processed_map_and_widens_window(tmp_path):
+    """backfill() clears processed map and uses wider window."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "STATE_FILE", tmp_path / "state.json"), \
+         patch.object(cs, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch.object(cs, "CalendarDataSource") as mock_cds, \
+         patch("litellm.acompletion", new=AsyncMock()):
+
+        scanner = CalendarScanner(role="full")
+
+        mock_source = MagicMock()
+        mock_source.get_events.return_value = []
+        mock_cds.detect.return_value = mock_source
+
+        (tmp_path / "config.yaml").write_text("calendar_scanner:\n  skip_calendars: []\n")
+        scanner._save_state({"processed": {"old-event.md": "2026-04-01T00:00:00"}})
+
+        result = await scanner.backfill(30)
+
+        # State should have empty processed map after backfill
+        state = scanner._load_state()
+        assert state.get("processed") == {}
+        assert result["processed"] == 0

@@ -529,6 +529,97 @@ class CalendarScanner:
             except asyncio.TimeoutError:
                 pass
 
+    async def backfill(self, days: int) -> dict:
+        """Reprocess calendar events from the last N days (max 180). Returns dict with counts."""
+        days = min(days, 180)
+        state = self._load_state()
+
+        # Clear processed map to force reprocessing
+        state["processed"] = {}
+
+        sc = self._scanner_config()
+        skip_calendars = set(sc.get("skip_calendars", []))
+
+        # Use days for both lookback and forward window
+        start_date = datetime.now() - timedelta(days=days)
+        end_date = datetime.now() + timedelta(days=days)
+
+        source = CalendarDataSource.detect()
+        if source is None:
+            return {
+                "processed": 0,
+                "skipped": 0,
+                "errors": 0,
+                "notes": "No calendar data source available"
+            }
+
+        events = source.get_events(start_date, end_date, skip_calendars)
+
+        # Deduplicate (same logic as _run_scan)
+        dedup: dict = {}
+        for event in events:
+            key = (
+                event["title"].lower().strip(),
+                event["start_time"].strftime("%Y-%m-%dT%H:%M"),
+            )
+            if key not in dedup:
+                event["calendar_names"] = [event["calendar_name"]]
+                dedup[key] = event
+            else:
+                merged = dedup[key]
+                cal = event["calendar_name"]
+                if cal not in merged["calendar_names"]:
+                    merged["calendar_names"].append(cal)
+                if event["modified_time"] > merged["modified_time"]:
+                    merged["modified_time"] = event["modified_time"]
+                seen = {p["email"] or p["name"] for p in merged.get("participants", [])}
+                for p in event.get("participants", []):
+                    pk = p["email"] or p["name"]
+                    if pk and pk not in seen:
+                        merged.setdefault("participants", []).append(p)
+                        seen.add(pk)
+
+        deduplicated = list(dedup.values())
+
+        processed = 0
+        skipped = 0
+        errors = 0
+
+        for event in deduplicated:
+            try:
+                memory_path = self._memory_path(event)
+                filename = memory_path.name
+
+                # Generate summary and tags
+                summary, tags = await self._generate_summary_and_tags(event)
+                if not summary:
+                    summary = event["title"]
+                if not tags:
+                    tags = ["calendar"]
+
+                # Write memory file
+                self._write_memory(event, summary, tags)
+
+                # Update state
+                modified_str = event["modified_time"].isoformat()
+                state.setdefault("processed", {})[filename] = modified_str
+                self._save_state(state)
+
+                processed += 1
+            except Exception as e:
+                log.error(f"Backfill error processing event {event.get('title')}: {e}")
+                errors += 1
+
+        state["last_scan_time"] = datetime.now().isoformat()
+        self._save_state(state)
+
+        return {
+            "processed": processed,
+            "skipped": skipped,
+            "errors": errors,
+            "notes": f"Scanned ±{days} days of calendar events"
+        }
+
     async def _run_scan(self):
         sc = self._scanner_config()
         state = self._load_state()

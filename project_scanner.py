@@ -93,6 +93,34 @@ class ProjectScanner:
         cfg = self._load_config()
         return cfg.get("project_scanner", {})
 
+    async def backfill(self, days: int) -> dict:
+        """Delete all project memories and recreate from current state. days parameter ignored."""
+        # Delete all existing project-*.md files
+        deleted = 0
+        if MEMORIES_DIR.exists():
+            for path in MEMORIES_DIR.glob("project-*.md"):
+                try:
+                    path.unlink()
+                    deleted += 1
+                except Exception as e:
+                    log.error(f"Failed to delete {path}: {e}")
+
+        # Run full scan
+        await self._run_scan()
+
+        # Count newly created files
+        created = 0
+        if MEMORIES_DIR.exists():
+            for path in MEMORIES_DIR.glob("project-*.md"):
+                created += 1
+
+        return {
+            "processed": created,
+            "skipped": 0,
+            "errors": 0,
+            "notes": f"Deleted {deleted} and recreated {created} project memories"
+        }
+
     async def run_loop(self, stop_event: asyncio.Event):
         sc = self._scanner_config()
         interval = sc.get("interval_seconds", 300)
