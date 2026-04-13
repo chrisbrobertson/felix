@@ -160,6 +160,7 @@ class SkillExecutor:
         ]
         models_to_try = [preferred, fallback] if fallback else [preferred]
         last_err = None
+        dispatched: list[str] = []  # tool calls made across all iterations, for fallback message
 
         for model in models_to_try:
             try:
@@ -198,6 +199,9 @@ class SkillExecutor:
                             args = _json.loads(tc.function.arguments or "{}")
                         except Exception:
                             args = {}
+                        dispatched.append(
+                            f"{tc.function.name}({(tc.function.arguments or '{}')[:60]})"
+                        )
                         tool_result = await tool_dispatch(tc.function.name, args)
                         messages.append({
                             "role": "tool",
@@ -205,10 +209,16 @@ class SkillExecutor:
                             "content": tool_result,
                         })
 
+                tool_trace = "\n".join(f"  {i + 1}. {t}" for i, t in enumerate(dispatched))
                 log.warning(
-                    f"{self.skill_name} hit max_iterations={max_iterations} without final answer"
+                    f"{self.skill_name} hit max_iterations={max_iterations}. "
+                    f"Tools called: {dispatched}"
                 )
-                return "(I kept fetching data but ran out of iterations before answering. Try a more specific question.)"
+                return (
+                    f"(I ran out of iterations after {max_iterations} tool calls without "
+                    f"deciding on an answer. What I tried:\n{tool_trace}\n"
+                    f"Try asking a more specific question, or ask for a single list at a time.)"
+                )
 
             except Exception as e:
                 last_err = e

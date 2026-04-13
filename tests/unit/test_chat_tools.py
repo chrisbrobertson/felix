@@ -101,6 +101,16 @@ def test_tools_schema_valid():
         assert fn["description"], f"Tool {fn['name']} has empty description"
 
 
+async def test_dispatch_logs_success(mock_handler, caplog):
+    """Successful dispatch emits two INFO log lines: entry and exit with char count."""
+    import logging
+    with caplog.at_level(logging.INFO, logger="chat-tools"):
+        await chat_tools.dispatch("list_projects", {"limit": 5}, mock_handler)
+    info_messages = [r.message for r in caplog.records if r.levelname == "INFO"]
+    assert any("dispatch list_projects" in m and "args=" in m for m in info_messages)
+    assert any("dispatch list_projects" in m and "chars" in m for m in info_messages)
+
+
 def test_all_tool_names_in_dispatcher():
     """Every tool name in TOOLS is handled by dispatch (checked via no 'unknown tool' return)."""
     # We don't run dispatch here (async) — just verify the names are in the known set

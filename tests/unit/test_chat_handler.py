@@ -817,6 +817,31 @@ async def test_cmd_projects_groups_by_base_name(handler, brain_dir):
     assert "studio" in reply
 
 
+@pytest.mark.asyncio
+async def test_cmd_projects_single_host_always_shown(handler, brain_dir):
+    """A single-host project must include '· host: <hostname>' so the LLM
+    can answer 'group by laptop' questions without burning tool iterations."""
+    m = brain_dir / "memories"
+    write_project_memory(m, "solo", hostname="macbook-air")
+    update, ctx = _make_update(12345)
+    await handler.cmd_projects(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "· host: macbook-air" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_projects_legacy_no_hostname_omitted(handler, brain_dir):
+    """Legacy files without a hostname field must not print '· host: legacy'."""
+    m = brain_dir / "memories"
+    write_project_memory(m, "oldrepo", hostname="")  # no hostname in frontmatter
+    update, ctx = _make_update(12345)
+    await handler.cmd_projects(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    # The sentinel "legacy" must not appear in the host column
+    assert "· host: legacy" not in reply
+    assert "· hosts:" not in reply
+
+
 # ── /events and /event commands ───────────────────────────────────────────────
 
 def write_event_memory(memories_dir: Path, slug: str,

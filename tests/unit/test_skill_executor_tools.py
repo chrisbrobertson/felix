@@ -160,6 +160,7 @@ async def test_run_with_tools_max_iterations(tmp_skills_dir, mock_tool_dispatch,
         )
 
         assert "ran out of iterations" in result
+        assert "What I tried:" in result
         assert mock_tool_dispatch.call_count == 2
 
 

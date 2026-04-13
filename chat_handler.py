@@ -1481,9 +1481,16 @@ class TelegramChatHandler:
             cat = fm_latest.get("category") or fm_latest.get("type", "code").replace("_project", "")
             last = (fm_latest.get("last_scanned") or "")[:10]
 
-            # Show hostnames if multiple hosts have this project
-            hostnames = sorted(set(h for _, _, h in items))
-            host_str = f" · hosts: {', '.join(hostnames)}" if len(hostnames) > 1 else ""
+            # Always show host(s) so the LLM can group by laptop.
+            # Exclude the "legacy" sentinel written for files that pre-date
+            # hostname-scoped naming (hostname or "legacy" in the grouping step).
+            hostnames = sorted(set(h for _, _, h in items) - {"legacy"})
+            if len(hostnames) > 1:
+                host_str = f" · hosts: {', '.join(hostnames)}"
+            elif len(hostnames) == 1:
+                host_str = f" · host: {hostnames[0]}"
+            else:
+                host_str = ""
 
             lines.append(f"{idx}. {name} [{cat}] ({last}){host_str}")
             idx += 1

@@ -139,48 +139,59 @@ TOOLS: list[dict] = [
 ]
 
 
+def _call(name: str, arguments: dict, handler) -> str:
+    """Pure routing from tool name → handler method. Raises on unknown name or missing args."""
+    if name == "list_projects":
+        return handler._list_projects_text(
+            category=arguments.get("category"),
+            limit=min(int(arguments.get("limit", 50)), 100),
+        )
+    if name == "list_commitments":
+        return handler._list_commitments_text(
+            limit=min(int(arguments.get("limit", 20)), 100),
+        )
+    if name == "list_events":
+        return handler._list_events_text(
+            limit=min(int(arguments.get("limit", 20)), 100),
+        )
+    if name == "list_meetings":
+        return handler._list_meetings_text(
+            limit=min(int(arguments.get("limit", 20)), 100),
+        )
+    if name == "list_contacts":
+        return handler._list_contacts_text(
+            limit=min(int(arguments.get("limit", 30)), 200),
+        )
+    if name == "list_comms":
+        return handler._list_comms_text(
+            kind=arguments.get("kind"),
+            limit=min(int(arguments.get("limit", 20)), 100),
+        )
+    if name == "list_readings":
+        return handler._list_readings_text(
+            limit=min(int(arguments.get("limit", 20)), 50),
+        )
+    if name == "search_memories":
+        return handler._search_memories_text(
+            query=arguments["query"],
+            type_filter=arguments.get("type"),
+        )
+    if name == "get_memory":
+        return handler._get_memory_text(arguments["name"])
+    raise ValueError(f"unknown tool {name!r}")
+
+
 async def dispatch(name: str, arguments: dict, handler) -> str:
     """Route a tool call to the right TelegramChatHandler helper.
-    Returns a string. Catches exceptions so a tool failure doesn't kill the loop."""
+    Logs every dispatch so failures are visible in error.log without reading LiteLLM internals."""
+    log.info(f"dispatch {name} args={arguments}")
     try:
-        if name == "list_projects":
-            return handler._list_projects_text(
-                category=arguments.get("category"),
-                limit=min(int(arguments.get("limit", 50)), 100),
-            )
-        if name == "list_commitments":
-            return handler._list_commitments_text(
-                limit=min(int(arguments.get("limit", 20)), 100),
-            )
-        if name == "list_events":
-            return handler._list_events_text(
-                limit=min(int(arguments.get("limit", 20)), 100),
-            )
-        if name == "list_meetings":
-            return handler._list_meetings_text(
-                limit=min(int(arguments.get("limit", 20)), 100),
-            )
-        if name == "list_contacts":
-            return handler._list_contacts_text(
-                limit=min(int(arguments.get("limit", 30)), 200),
-            )
-        if name == "list_comms":
-            return handler._list_comms_text(
-                kind=arguments.get("kind"),
-                limit=min(int(arguments.get("limit", 20)), 100),
-            )
-        if name == "list_readings":
-            return handler._list_readings_text(
-                limit=min(int(arguments.get("limit", 20)), 50),
-            )
-        if name == "search_memories":
-            return handler._search_memories_text(
-                query=arguments["query"],
-                type_filter=arguments.get("type"),
-            )
-        if name == "get_memory":
-            return handler._get_memory_text(arguments["name"])
-        return f"Error: unknown tool {name!r}"
+        result = _call(name, arguments, handler)
+        log.info(f"dispatch {name} → {len(result)} chars")
+        return result
+    except KeyError as e:
+        log.exception(f"Tool {name} missing required arg: {e}")
+        return f"Error running {name}: missing required argument {e}"
     except Exception as e:
         log.exception(f"Tool {name} failed: {e}")
         return f"Error running {name}: {e}"
