@@ -110,16 +110,15 @@ def test_budget_exhaustion_drops_lowest_relevance(handler, brain_dir):
 
 def test_context_with_no_memories_and_no_index(handler, brain_dir):
     ctx = handler._load_context("query")
-    # Command list is always injected; no memories or index → only the command block
-    assert "Available Telegram Commands" in ctx
-    assert "Memory Index" not in ctx
+    # No memories or index → empty context
+    assert ctx == ""
 
 
 def test_context_with_only_index(handler, brain_dir):
     (brain_dir / "index.md").write_text("Only the index exists.")
     ctx = handler._load_context("query")
     assert "Only the index exists." in ctx
-    assert "Available Telegram Commands" in ctx
+    assert "Memory Index" in ctx
 
 
 def test_header_cache_persists_across_queries(handler, brain_dir):
@@ -142,7 +141,7 @@ async def test_handle_message_builds_context_and_calls_executor(handler, brain_d
                  "Transformers Paper", "attention is all you need")
 
     handler.executor = MagicMock()
-    handler.executor.run = AsyncMock(return_value="Here is what I found.")
+    handler.executor.run_with_tools = AsyncMock(return_value="Here is what I found.")
 
     mock_update = MagicMock()
     mock_update.effective_user.id = 12345
@@ -151,8 +150,8 @@ async def test_handle_message_builds_context_and_calls_executor(handler, brain_d
 
     await handler.handle_message(mock_update, MagicMock())
 
-    # executor.run must have been called with the query and memory context
-    call_kwargs = handler.executor.run.call_args[0][0]
+    # executor.run_with_tools must have been called with the query and memory context
+    call_kwargs = handler.executor.run_with_tools.call_args.kwargs["inputs"]
     assert "user_query" in call_kwargs
     assert "memory_context" in call_kwargs
     assert "transformers" in call_kwargs["memory_context"].lower()
@@ -163,7 +162,7 @@ async def test_handle_message_builds_context_and_calls_executor(handler, brain_d
 
 async def test_handle_message_chunks_long_response(handler, brain_dir):
     handler.executor = MagicMock()
-    handler.executor.run = AsyncMock(return_value="X" * 10000)
+    handler.executor.run_with_tools = AsyncMock(return_value="X" * 10000)
 
     mock_update = MagicMock()
     mock_update.effective_user.id = 12345

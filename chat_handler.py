@@ -5,6 +5,7 @@ import re
 import socket
 import yaml
 from pathlib import Path
+from typing import Optional
 
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
@@ -373,11 +374,6 @@ class TelegramChatHandler:
         parts = []
         budget = MAX_CONTEXT_CHARS
 
-        # Always inject the full command list so the LLM knows what's available
-        cmd_block = self._fmt_command_list()
-        parts.append(cmd_block)
-        budget -= len(cmd_block)
-
         index_path = BRAIN_DIR / "index.md"
         if index_path.exists():
             chunk = f"# Memory Index\n{index_path.read_text()}"
@@ -539,19 +535,12 @@ class TelegramChatHandler:
 
     # ── /readings command ─────────────────────────────────────────────────────
 
-    async def cmd_readings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self._check_auth(update):
-            return
-        try:
-            limit = int(context.args[0]) if context.args else 10
-            limit = max(1, min(limit, 50))
-        except (ValueError, IndexError):
-            limit = 10
-
+    def _list_readings_text(self, limit: int = 10) -> str:
+        """Return formatted readings list text (called by cmd_readings and tool dispatch)."""
+        limit = max(1, min(limit, 50))
         files = list((BRAIN_DIR / "memories").glob("*.md"))
         if not files:
-            await update.message.reply_text("No memories found.")
-            return
+            return "No memories found."
 
         # Sort by mtime descending (fast — no file reads needed)
         files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
@@ -563,7 +552,17 @@ class TelegramChatHandler:
         for i, f in enumerate(files, 1):
             fm = self._parse_frontmatter(f)
             lines.append(self._fmt_memory_line(i, fm))
-        await update.message.reply_text("\n".join(lines))
+        return "\n".join(lines)
+
+    async def cmd_readings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        try:
+            limit = int(context.args[0]) if context.args else 10
+        except (ValueError, IndexError):
+            limit = 10
+        text = self._list_readings_text(limit)
+        await update.message.reply_text(text)
 
     # ── /search command ───────────────────────────────────────────────────────
 
@@ -637,30 +636,15 @@ class TelegramChatHandler:
         date = str(fm.get("created") or "")[:10]
         return f"  {i}. {title}  ({date})"
 
-    async def cmd_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self._check_auth(update):
-            return
-        if not context.args:
-            await update.message.reply_text(
-                "Usage: /search <query>\n"
-                "       /search <type> <query>  (types: email, slack, meeting, project, commitment, event, contact, web)"
-            )
-            return
-
-        # Detect optional type-filter prefix
-        type_filter: set | None = None
-        filter_keyword: str | None = None
-        if context.args[0].lower() in self._SEARCH_TYPE_FILTERS:
-            if len(context.args) < 2:
-                await update.message.reply_text(
-                    f"Usage: /search {context.args[0].lower()} <query>"
-                )
-                return
-            filter_keyword = context.args[0].lower()
-            type_filter = self._SEARCH_TYPE_FILTERS[filter_keyword]
-            query = " ".join(context.args[1:])
-        else:
-            query = " ".join(context.args)
+    def _search_memories_text(self, query: str, type_filter: Optional[str] = None) -> str:
+        """Return formatted search results text (called by cmd_search and tool dispatch).
+        type_filter is the keyword string like "email", "meeting", not the set."""
+        # Resolve type_filter keyword to set
+        filter_set: Optional[set] = None
+        if type_filter:
+            filter_set = self._SEARCH_TYPE_FILTERS.get(type_filter.lower())
+            if filter_set is None:
+                return f"Unknown type filter: {type_filter!r}. Valid types: email, slack, meeting, project, commitment, event, contact, web"
 
         files = list((BRAIN_DIR / "memories").glob("*.md"))
         scored = [
@@ -674,34 +658,29 @@ class TelegramChatHandler:
         )[:50]
 
         if not matches:
-            await update.message.reply_text(f"No memories match '{query}'.")
-            return
+            return f"No memories match '{query}'."
 
         # Apply type filter if specified
-        if type_filter is not None:
+        if filter_set is not None:
             def _matches_type(f):
                 fm = self._parse_frontmatter(f)
                 t = fm.get("type") or None
-                return t in type_filter
+                return t in filter_set
             matches = [(s, mt, f) for s, mt, f in matches if _matches_type(f)]
             if not matches:
-                await update.message.reply_text(
-                    f"No {filter_keyword} memories match '{query}'."
-                )
-                return
+                return f"No {type_filter} memories match '{query}'."
 
-        if type_filter is not None:
+        if filter_set is not None:
             # Flat list for filtered mode
             self._last_results = [f for _, _, f in matches]
             self._active_list = self._last_results
-            lines = [f"Search results for \"{query}\" ({filter_keyword}) — {len(matches)} match{'es' if len(matches) != 1 else ''}:"]
+            lines = [f"Search results for \"{query}\" ({type_filter}) — {len(matches)} match{'es' if len(matches) != 1 else ''}:"]
             for i, (_, _, f) in enumerate(matches, 1):
                 fm = self._parse_frontmatter(f)
                 mem_type = fm.get("type") or None
                 lines.append(self._fmt_search_line(i, fm, mem_type))
             lines.append("\nUse /reading N for detail on any item.")
-            await self._send_reply(update, "\n".join(lines))
-            return
+            return "\n".join(lines)
 
         # Grouped mode: assign global indices in group-display order
         # Build lookup: path → (score, mtime, fm, type)
@@ -746,7 +725,33 @@ class TelegramChatHandler:
         self._active_list = ordered_paths
         lines.append("\nUse /reading N for detail on any item.")
 
-        await self._send_reply(update, "\n".join(lines))
+        return "\n".join(lines)
+
+    async def cmd_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /search <query>\n"
+                "       /search <type> <query>  (types: email, slack, meeting, project, commitment, event, contact, web)"
+            )
+            return
+
+        # Detect optional type-filter prefix
+        filter_keyword: Optional[str] = None
+        if context.args[0].lower() in self._SEARCH_TYPE_FILTERS:
+            if len(context.args) < 2:
+                await update.message.reply_text(
+                    f"Usage: /search {context.args[0].lower()} <query>"
+                )
+                return
+            filter_keyword = context.args[0].lower()
+            query = " ".join(context.args[1:])
+        else:
+            query = " ".join(context.args)
+
+        text = self._search_memories_text(query, filter_keyword)
+        await self._send_reply(update, text)
 
     # ── /reading command ──────────────────────────────────────────────────────
 
@@ -842,42 +847,67 @@ class TelegramChatHandler:
         results.sort(key=_sort_key)
         return results
 
-    async def cmd_commitments(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self._check_auth(update):
-            return
-        type_filter = context.args[0] if context.args else None
-        items = self._load_active_commitments(type_filter)
+    def _list_commitments_text(self, limit: int = 20) -> str:
+        """Return formatted commitments list text (called by cmd_commitments and tool dispatch)."""
+        limit = max(1, min(limit, 100))
+        items = self._load_active_commitments(type_filter=None)
 
         if not items:
-            msg = (
-                f"No active {type_filter} commitments."
-                if type_filter
-                else "No active commitments."
-            )
-            await update.message.reply_text(msg)
-            self._last_commitment_set = []
-            return
+            return "No active commitments."
 
         self._last_commitment_set = [f for f, _ in items]
         self._active_list = self._last_commitment_set
         total = len(items)
         lines = [f"Active commitments ({total} total):"]
 
-        for i, (_, fm) in enumerate(items[:20], 1):
+        for i, (_, fm) in enumerate(items[:limit], 1):
             ct = fm.get("commitment_type", "outbound")
             desc = (fm.get("source_title") or fm.get("summary") or "")[:50]
             owner = fm.get("owner", "")
             due = fm.get("due_date")
             due_str = f" — due {due}" if due else " — due unknown"
             needs_review = "needs-review" in (fm.get("tags") or [])
-            flag = " \u26a0\ufe0f" if needs_review else ""
+            flag = " ⚠️" if needs_review else ""
             lines.append(f"{i}. [{ct}] {desc} — {owner}{due_str}{flag}")
 
-        if total > 20:
-            lines.append(f"... and {total - 20} more.")
+        if total > limit:
+            lines.append(f"... and {total - limit} more.")
 
         lines.append("\nUse /complete N or /dismiss N to update status.")
-        await update.message.reply_text("\n".join(lines))
+        return "\n".join(lines)
+
+    async def cmd_commitments(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        type_filter = context.args[0] if context.args else None
+        # For cmd, we allow type_filter but the tool doesn't expose it — the tool always passes None
+        if type_filter:
+            # Custom logic for filtered cmd
+            items = self._load_active_commitments(type_filter)
+            if not items:
+                await update.message.reply_text(f"No active {type_filter} commitments.")
+                self._last_commitment_set = []
+                return
+            self._last_commitment_set = [f for f, _ in items]
+            self._active_list = self._last_commitment_set
+            total = len(items)
+            lines = [f"Active {type_filter} commitments ({total} total):"]
+            for i, (_, fm) in enumerate(items[:20], 1):
+                ct = fm.get("commitment_type", "outbound")
+                desc = (fm.get("source_title") or fm.get("summary") or "")[:50]
+                owner = fm.get("owner", "")
+                due = fm.get("due_date")
+                due_str = f" — due {due}" if due else " — due unknown"
+                needs_review = "needs-review" in (fm.get("tags") or [])
+                flag = " ⚠️" if needs_review else ""
+                lines.append(f"{i}. [{ct}] {desc} — {owner}{due_str}{flag}")
+            if total > 20:
+                lines.append(f"... and {total - 20} more.")
+            lines.append("\nUse /complete N or /dismiss N to update status.")
+            await update.message.reply_text("\n".join(lines))
+        else:
+            text = self._list_commitments_text(limit=20)
+            await update.message.reply_text(text)
 
     def _resolve_commitment_index(self, n: str):
         """Convert 1-based index string to a Path from _last_commitment_set, or None."""
@@ -1142,19 +1172,12 @@ class TelegramChatHandler:
 
     # ── /contacts command ─────────────────────────────────────────────────────
 
-    async def cmd_contacts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self._check_auth(update):
-            return
-        try:
-            limit = int(context.args[0]) if context.args else 20
-            limit = max(1, min(limit, 50))
-        except (ValueError, IndexError):
-            limit = 20
-
+    def _list_contacts_text(self, limit: int = 30) -> str:
+        """Return formatted contacts list text (called by cmd_contacts and tool dispatch)."""
+        limit = max(1, min(limit, 200))
         files = list((BRAIN_DIR / "memories").glob("contact-*.md"))
         if not files:
-            await update.message.reply_text("No contacts found.")
-            return
+            return "No contacts found."
 
         # Load frontmatter and sort by last_interaction descending
         contacts = []
@@ -1170,7 +1193,6 @@ class TelegramChatHandler:
         )
         contacts = contacts[:limit]
         self._last_contact_set = [f for f, _ in contacts]
-        # contacts are aggregated — /forget N not supported for this list
 
         total = len(list((BRAIN_DIR / "memories").glob("contact-*.md")))
         lines = [f"Contacts ({total} total):"]
@@ -1179,11 +1201,20 @@ class TelegramChatHandler:
             name = fm.get("name", "(no name)")
             last_interaction = (fm.get("last_interaction") or "")[:10]
             score = fm.get("relationship_score", 0.0)
-            # Note: source types would require tracking, simplified for now
             lines.append(f"{i}. {name} — last: {last_interaction} — score: {score}")
 
         lines.append("\nUse /contact <name> or /contact <N> for details.")
-        await update.message.reply_text("\n".join(lines))
+        return "\n".join(lines)
+
+    async def cmd_contacts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        try:
+            limit = int(context.args[0]) if context.args else 20
+        except (ValueError, IndexError):
+            limit = 20
+        text = self._list_contacts_text(limit)
+        await update.message.reply_text(text)
 
     # ── /contact command ──────────────────────────────────────────────────────
 
@@ -1386,39 +1417,23 @@ class TelegramChatHandler:
             return self._last_project_set[idx]
         return None
 
-    async def cmd_projects(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self._check_auth(update):
-            return
-
-        args = list(context.args) if context.args else []
-        category_filter = None
-        limit = 10
-
-        # Parse: /projects [category] [N]
-        if args and not args[0].isdigit():
-            category_filter = args[0].lower()
-            args = args[1:]
-        if args:
-            try:
-                limit = max(1, min(int(args[0]), 50))
-            except ValueError:
-                pass
-
+    def _list_projects_text(self, category: Optional[str] = None, limit: int = 50) -> str:
+        """Return formatted projects list text (called by cmd_projects and tool dispatch)."""
+        limit = max(1, min(limit, 100))
         files = list((BRAIN_DIR / "memories").glob("project-*.md"))
         projects = []
         for f in files:
             fm = self._parse_frontmatter(f)
             if fm.get("type") not in ("project", "code_project"):
                 continue
-            if category_filter and fm.get("category", "code") != category_filter:
+            if category and fm.get("category", "code") != category:
                 continue
             projects.append((f, fm))
 
         if not projects:
-            msg = (f"No {category_filter} projects found." if category_filter
+            msg = (f"No {category} projects found." if category
                    else "No projects found.")
-            await update.message.reply_text(msg)
-            return
+            return msg
 
         # Group by base name (hostname-scoped files share same base name)
         # Format: project-{hostname}-{base_name}.md or legacy project-{base_name}.md
@@ -1474,7 +1489,28 @@ class TelegramChatHandler:
             idx += 1
 
         lines.append("\nUse /project <N> for details.")
-        await update.message.reply_text("\n".join(lines))
+        return "\n".join(lines)
+
+    async def cmd_projects(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+
+        args = list(context.args) if context.args else []
+        category_filter = None
+        limit = 10
+
+        # Parse: /projects [category] [N]
+        if args and not args[0].isdigit():
+            category_filter = args[0].lower()
+            args = args[1:]
+        if args:
+            try:
+                limit = max(1, min(int(args[0]), 50))
+            except ValueError:
+                pass
+
+        text = self._list_projects_text(category_filter, limit)
+        await update.message.reply_text(text)
 
     async def cmd_project(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -1577,15 +1613,9 @@ class TelegramChatHandler:
             return self._last_event_set[idx]
         return None
 
-    async def cmd_events(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self._check_auth(update):
-            return
-        try:
-            limit = int(context.args[0]) if context.args else 10
-            limit = max(1, min(limit, 50))
-        except (ValueError, IndexError):
-            limit = 10
-
+    def _list_events_text(self, limit: int = 20) -> str:
+        """Return formatted events list text (called by cmd_events and tool dispatch)."""
+        limit = max(1, min(limit, 100))
         files = list((BRAIN_DIR / "memories").glob("calendar-event-*.md"))
         events = []
         for f in files:
@@ -1595,8 +1625,7 @@ class TelegramChatHandler:
             events.append((f, fm))
 
         if not events:
-            await update.message.reply_text("No calendar events found.")
-            return
+            return "No calendar events found."
 
         events.sort(key=lambda x: x[1].get("start_time") or "", reverse=False)
         events = events[:limit]
@@ -1613,7 +1642,17 @@ class TelegramChatHandler:
             loc_str = f" — {location[:30]}" if location else ""
             lines.append(f"{i}. {start}{dur_str} {title}{loc_str}")
         lines.append("\nUse /event <N> for details.")
-        await update.message.reply_text("\n".join(lines))
+        return "\n".join(lines)
+
+    async def cmd_events(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        try:
+            limit = int(context.args[0]) if context.args else 10
+        except (ValueError, IndexError):
+            limit = 10
+        text = self._list_events_text(limit)
+        await update.message.reply_text(text)
 
     async def cmd_event(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -1668,15 +1707,9 @@ class TelegramChatHandler:
             return self._last_meeting_set[idx]
         return None
 
-    async def cmd_meetings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self._check_auth(update):
-            return
-        try:
-            limit = int(context.args[0]) if context.args else 10
-            limit = max(1, min(limit, 50))
-        except (ValueError, IndexError):
-            limit = 10
-
+    def _list_meetings_text(self, limit: int = 20) -> str:
+        """Return formatted meetings list text (called by cmd_meetings and tool dispatch)."""
+        limit = max(1, min(limit, 100))
         files = list((BRAIN_DIR / "memories").glob("meeting-*.md"))
         meetings = []
         for f in files:
@@ -1686,8 +1719,7 @@ class TelegramChatHandler:
             meetings.append((f, fm))
 
         if not meetings:
-            await update.message.reply_text("No meeting transcripts found.")
-            return
+            return "No meeting transcripts found."
 
         meetings.sort(key=lambda x: x[1].get("start_time") or x[1].get("created") or "", reverse=True)
         meetings = meetings[:limit]
@@ -1702,7 +1734,17 @@ class TelegramChatHandler:
             n_parts = len(participants)
             lines.append(f"{i}. [{date}] {title} — {n_parts} participant{'s' if n_parts != 1 else ''}")
         lines.append("\nUse /meeting <N> for details.")
-        await update.message.reply_text("\n".join(lines))
+        return "\n".join(lines)
+
+    async def cmd_meetings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        try:
+            limit = int(context.args[0]) if context.args else 10
+        except (ValueError, IndexError):
+            limit = 10
+        text = self._list_meetings_text(limit)
+        await update.message.reply_text(text)
 
     async def cmd_meeting(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -1928,33 +1970,30 @@ class TelegramChatHandler:
             lines.append(f"{idx}. {kind_tag}[{status}] [{priority}] {title} ({created}) #{issue['number']}")
         await self._send_reply(update, "\n".join(lines))
 
-    async def cmd_comms(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self._check_auth(update):
-            return
+    def _get_memory_text(self, name: str) -> str:
+        """Search memories by title or filename and return full file contents.
+        Called by tool dispatch for get_memory tool."""
+        name_lower = name.lower()
+        files = list((BRAIN_DIR / "memories").glob("*.md"))
 
-        args = list(context.args) if context.args else []
-        type_filter = None
-        limit = 10
+        for f in files:
+            # Check filename match
+            if name_lower in f.stem.lower():
+                return f.read_text()
+            # Check frontmatter source_title match
+            fm = self._parse_frontmatter(f)
+            source_title = (fm.get("source_title") or "").lower()
+            if name_lower in source_title:
+                return f.read_text()
 
-        # Parse: /comms [email|slack] [N]
-        if args and args[0].lower() in ("email", "slack"):
-            type_filter = args[0].lower()
-            args = args[1:]
-        elif args and not args[0].isdigit():
-            await update.message.reply_text(
-                "Usage: /comms [email|slack] [N]\n"
-                "Filter must be 'email' or 'slack'. Example: /comms email 5"
-            )
-            return
+        return f"Memory not found: {name}"
 
-        if args:
-            try:
-                limit = max(1, min(int(args[0]), 50))
-            except ValueError:
-                pass
-
+    def _list_comms_text(self, kind: Optional[str] = None, limit: int = 20) -> str:
+        """Return formatted comms list text (called by cmd_comms and tool dispatch).
+        kind: 'email' or 'slack' or None for both."""
+        limit = max(1, min(limit, 100))
         type_map = {"email": "email_thread", "slack": "slack_thread"}
-        wanted_types = {type_map[type_filter]} if type_filter else {"email_thread", "slack_thread"}
+        wanted_types = {type_map[kind]} if kind else {"email_thread", "slack_thread"}
 
         comms = []
         for glob_pattern, mem_type in [("email-thread-*.md", "email_thread"), ("slack-thread-*.md", "slack_thread")]:
@@ -1967,10 +2006,9 @@ class TelegramChatHandler:
                 comms.append((f, fm, mem_type))
 
         if not comms:
-            msg = (f"No {type_filter} threads found." if type_filter
+            msg = (f"No {kind} threads found." if kind
                    else "No communications found.")
-            await update.message.reply_text(msg)
-            return
+            return msg
 
         def _sort_key(item):
             _, fm, mem_type = item
@@ -2000,7 +2038,35 @@ class TelegramChatHandler:
                 date = (fm.get("last_reply") or fm.get("created") or "")[:10]
                 lines.append(f"{i}. {source_tag} #{channel[:30]}{opener_str} ({date})")
         lines.append("\nUse /comm <N> for details.")
-        await update.message.reply_text("\n".join(lines))
+        return "\n".join(lines)
+
+    async def cmd_comms(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+
+        args = list(context.args) if context.args else []
+        type_filter = None
+        limit = 10
+
+        # Parse: /comms [email|slack] [N]
+        if args and args[0].lower() in ("email", "slack"):
+            type_filter = args[0].lower()
+            args = args[1:]
+        elif args and not args[0].isdigit():
+            await update.message.reply_text(
+                "Usage: /comms [email|slack] [N]\n"
+                "Filter must be 'email' or 'slack'. Example: /comms email 5"
+            )
+            return
+
+        if args:
+            try:
+                limit = max(1, min(int(args[0]), 50))
+            except ValueError:
+                pass
+
+        text = self._list_comms_text(type_filter, limit)
+        await update.message.reply_text(text)
 
     async def cmd_comm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -2216,8 +2282,8 @@ class TelegramChatHandler:
             return
 
         arg = context.args[0].lower() if context.args else None
-        kind_filter: str | None = None
-        status_filter: str | None = None
+        kind_filter: Optional[str] = None
+        status_filter: Optional[str] = None
         show_all = False
         if arg in ("bug", "bugs"):
             kind_filter = "bug"
@@ -2912,10 +2978,21 @@ class TelegramChatHandler:
         memory_context = self._load_context(query)
         log.info(f"Context loaded: {len(memory_context)} chars")
 
-        response = await self.executor.run({
-            "memory_context": memory_context,
-            "user_query": query
-        })
+        from chat_tools import TOOLS, dispatch as _tool_dispatch
+
+        async def tool_dispatch(name: str, args: dict) -> str:
+            return await _tool_dispatch(name, args, self)
+
+        response = await self.executor.run_with_tools(
+            inputs={"memory_context": memory_context, "user_query": query},
+            tools=TOOLS,
+            tool_dispatch=tool_dispatch,
+        )
 
         log.info(f"Response: {len(response) if response else 0} chars")
+        if response is None:
+            await update.message.reply_text(
+                "Sorry — the chat model failed. Check ~/secondbrain/errors.log."
+            )
+            return
         await self._send_reply(update, response)

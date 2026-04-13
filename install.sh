@@ -417,6 +417,7 @@ DAEMON_FILES=(
     browser_watcher.py
     calendar_scanner.py
     chat_handler.py
+    chat_tools.py
     commitment_tracker.py
     contact_tracker.py
     email_scanner.py

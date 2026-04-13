@@ -128,11 +128,9 @@ def test_header_cache_reused_when_mtime_unchanged(handler, brain_dir):
 def test_context_prepends_index_when_present(handler, brain_dir):
     (brain_dir / "index.md").write_text("Weekly index content.")
     ctx = handler._load_context("anything")
-    # Command list is always first; index follows
-    assert "Available Telegram Commands" in ctx
+    # Index is prepended when present
     assert "Weekly index content." in ctx
-    # Index appears after the command block
-    assert ctx.index("Memory Index") > ctx.index("Available Telegram Commands")
+    assert "Memory Index" in ctx
 
 
 def test_context_includes_all_memories(handler, brain_dir):
@@ -163,8 +161,8 @@ def test_context_respects_char_budget(handler, brain_dir):
 
 def test_context_empty_when_no_memories_and_no_index(handler, brain_dir):
     ctx = handler._load_context("anything")
-    # Command list is always injected even when no memories or index exist
-    assert "Available Telegram Commands" in ctx
+    # Context is empty when no memories or index exist
+    assert ctx == ""
 
 
 def test_context_index_only_when_no_memories(handler, brain_dir):
@@ -226,7 +224,7 @@ async def test_handle_message_processes_authorised_user(handler, brain_dir):
     mock_resp = MagicMock()
     mock_resp.choices[0].message.content = "Here is your answer."
     handler.executor = MagicMock()
-    handler.executor.run = AsyncMock(return_value="Here is your answer.")
+    handler.executor.run_with_tools = AsyncMock(return_value="Here is your answer.")
 
     mock_update = MagicMock()
     mock_update.effective_user.id = 12345

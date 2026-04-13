@@ -5,6 +5,7 @@ import re
 import yaml
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from litellm import acompletion
 
@@ -126,3 +127,97 @@ class SkillExecutor:
             text = "".join(lines)
 
         self.skill_path.write_text(text)
+
+    async def run_with_tools(
+        self,
+        inputs: dict,
+        tools: list[dict],
+        tool_dispatch,
+        max_iterations: int = 5,
+    ) -> Optional[str]:
+        """Tool-use loop variant of run(). Drives OpenAI-style tool-calling in a
+        multi-turn conversation until the LLM returns a final content-only response.
+
+        Args:
+            inputs: dict of input fields (e.g., {"memory_context": "...", "user_query": "..."})
+            tools: list of OpenAI function-calling tool schemas
+            tool_dispatch: async callable(name: str, args: dict) -> str
+            max_iterations: max turns before aborting (default 5)
+
+        Returns:
+            Final content string from the LLM, or None if all models failed.
+        """
+        import json as _json
+        self._reload_if_modified()
+
+        meta = self._skill["meta"]
+        preferred = meta.get("preferred_model", "gemini/gemini-2.0-flash")
+        fallback = meta.get("fallback_model")
+        user_msg = "\n".join(f"**{k}:**\n{v}" for k, v in inputs.items())
+        messages = [
+            {"role": "system", "content": self._skill["instructions"]},
+            {"role": "user", "content": user_msg},
+        ]
+        models_to_try = [preferred, fallback] if fallback else [preferred]
+        last_err = None
+
+        for model in models_to_try:
+            try:
+                for _iteration in range(max_iterations):
+                    response = await acompletion(
+                        model=model,
+                        messages=messages,
+                        tools=tools,
+                        max_tokens=2000,
+                    )
+                    msg = response.choices[0].message
+                    tool_calls = getattr(msg, "tool_calls", None) or []
+
+                    if not tool_calls:
+                        result = msg.content or ""
+                        await self._log_execution(inputs, model, score=None)
+                        return result
+
+                    messages.append({
+                        "role": "assistant",
+                        "content": msg.content,
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments,
+                                },
+                            }
+                            for tc in tool_calls
+                        ],
+                    })
+                    for tc in tool_calls:
+                        try:
+                            args = _json.loads(tc.function.arguments or "{}")
+                        except Exception:
+                            args = {}
+                        tool_result = await tool_dispatch(tc.function.name, args)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": tool_result,
+                        })
+
+                log.warning(
+                    f"{self.skill_name} hit max_iterations={max_iterations} without final answer"
+                )
+                return "(I kept fetching data but ran out of iterations before answering. Try a more specific question.)"
+
+            except Exception as e:
+                last_err = e
+                log.warning(f"{self.skill_name} (tools) failed on {model}: {e}")
+                continue
+
+        err_msg = f"{datetime.now().isoformat()} [{self.skill_name}] {preferred} TOOLS ERROR: {last_err}\n"
+        log.error(err_msg.strip())
+        with open(ERROR_LOG, "a") as f:
+            f.write(err_msg)
+        await self._log_execution(inputs, preferred, score=0.0, notes=str(last_err)[:80])
+        return None
