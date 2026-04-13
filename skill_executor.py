@@ -135,6 +135,7 @@ class SkillExecutor:
         tools: list[dict],
         tool_dispatch,
         max_iterations: int = 5,
+        history: list = None,
     ) -> Optional[str]:
         """Tool-use loop variant of run(). Drives OpenAI-style tool-calling in a
         multi-turn conversation until the LLM returns a final content-only response.
@@ -155,10 +156,10 @@ class SkillExecutor:
         preferred = meta.get("preferred_model", "summarize")
         fallback = meta.get("fallback_model")
         user_msg = "\n".join(f"**{k}:**\n{v}" for k, v in inputs.items())
-        messages = [
-            {"role": "system", "content": self._skill["instructions"]},
-            {"role": "user", "content": user_msg},
-        ]
+        messages = [{"role": "system", "content": self._skill["instructions"]}]
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": user_msg})
         models_to_try = [preferred, fallback] if fallback else [preferred]
         last_err = None
         dispatched: list[str] = []  # tool calls made across all iterations, for fallback message

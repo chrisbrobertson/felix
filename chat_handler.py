@@ -100,6 +100,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("help",     "Show this list"),
         ("commands", "Alias of /help"),
         ("settings", "View or change display settings (date_format, timezone)"),
+        ("reset",    "Clear conversation history (history is lost on daemon restart anyway)"),
     ],
     "System": [
         ("backfill", "Reprocess historical data: /backfill <type> [days] [host]. Types: readings, email, zoom, calendar, slack, projects"),
@@ -159,6 +160,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("help", self.cmd_help))
         self.app.add_handler(CommandHandler("commands", self.cmd_help))
         self.app.add_handler(CommandHandler("settings", self.cmd_settings))
+        self.app.add_handler(CommandHandler("reset", self.cmd_reset))
         self.app.add_handler(CommandHandler("briefing", self.cmd_briefing))
         self.app.add_handler(CommandHandler("mute", self.cmd_mute))
         self.app.add_handler(CommandHandler("unmute", self.cmd_unmute))
@@ -218,6 +220,10 @@ class TelegramChatHandler:
         self._last_feature_set: list = []
         # Last /skill-drafts result set
         self._last_skill_draft_set: list = []
+        # Conversation history per chat_id — {role, content} pairs, last N turns
+        self._chat_history: dict = {}       # chat_id → list of {role, content}
+        self._chat_history_locks: dict = {} # chat_id → asyncio.Lock
+        self.HISTORY_WINDOW_TURNS = 6       # keep last 6 user+assistant pairs (12 messages)
         # GitHub backing for feature/bug commands
         gh_cfg = config.get("github", {}) or {}
         repo = os.environ.get("GITHUB_REPO") or gh_cfg.get("repo", "")
@@ -2995,6 +3001,19 @@ class TelegramChatHandler:
         except Exception as e:
             await self._send_reply(update, f"Report failed: {e}")
 
+    async def cmd_reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Clear the conversation history for this chat session."""
+        if not self._check_auth(update):
+            return
+        chat_id = update.effective_chat.id
+        cleared = len(self._chat_history.pop(chat_id, []))
+        msg = (
+            f"Conversation history cleared ({cleared // 2} turn(s) removed)."
+            if cleared else
+            "No conversation history to clear."
+        )
+        await update.message.reply_text(msg)
+
     async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """View or change display settings: date_format, timezone.
 
@@ -3127,11 +3146,18 @@ class TelegramChatHandler:
             return
 
         query = update.message.text
+        chat_id = update.effective_chat.id
         log.info(f"Processing query: {query[:80]!r}")
 
-        try:
+        # Serialise per-chat to preserve turn ordering
+        lock = self._chat_history_locks.setdefault(chat_id, asyncio.Lock())
+
+        async with lock:
+          try:
             memory_context = self._load_context(query)
             log.info(f"Context loaded: {len(memory_context)} chars")
+
+            history = self._chat_history.get(chat_id, [])
 
             from chat_tools import TOOLS, dispatch as _tool_dispatch
 
@@ -3142,6 +3168,7 @@ class TelegramChatHandler:
                 inputs={"memory_context": memory_context, "user_query": query},
                 tools=TOOLS,
                 tool_dispatch=tool_dispatch,
+                history=history,
             )
 
             log.info(f"Response: {len(response) if response else 0} chars")
@@ -3154,12 +3181,21 @@ class TelegramChatHandler:
                 except Exception:
                     pass
                 return
+            # Persist turn to conversation history (cap at 4 KB per assistant reply)
+            assistant_text = response[:4096] if response else ""
+            turns = self._chat_history.setdefault(chat_id, [])
+            turns.append({"role": "user", "content": query})
+            turns.append({"role": "assistant", "content": assistant_text})
+            # Keep only the last HISTORY_WINDOW_TURNS pairs (2 messages per turn)
+            max_msgs = self.HISTORY_WINDOW_TURNS * 2
+            if len(turns) > max_msgs:
+                self._chat_history[chat_id] = turns[-max_msgs:]
             await self._send_reply(update, response)
             try:
                 await update.message.set_reaction("✅")
             except Exception:
                 pass
-        except Exception as e:
+          except Exception as e:
             log.error(f"Error processing message: {e}", exc_info=True)
             await update.message.reply_text(
                 f"Sorry — processing failed: {e}"

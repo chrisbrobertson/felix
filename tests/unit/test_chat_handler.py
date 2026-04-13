@@ -324,6 +324,109 @@ async def test_handle_message_reaction_failure_does_not_crash(handler, brain_dir
     handler.executor.run_with_tools.assert_called_once()
 
 
+# ── conversation history ──────────────────────────────────────────────────────
+
+def _make_handle_message_mocks(handler):
+    """Return (update, context) mocks suitable for handle_message tests."""
+    handler.executor = MagicMock()
+    handler.executor.run_with_tools = AsyncMock(return_value="The answer is 42.")
+    update = MagicMock()
+    update.effective_user.id = 12345
+    update.effective_chat.id = 99001
+    update.message = AsyncMock()
+    update.message.text = "Hello"
+    update.message.set_reaction = AsyncMock()
+    context = MagicMock()
+    return update, context
+
+
+@pytest.mark.asyncio
+async def test_handle_message_appends_to_history(handler, brain_dir):
+    """After one turn, _chat_history holds user + assistant messages."""
+    update, context = _make_handle_message_mocks(handler)
+    await handler.handle_message(update, context)
+    history = handler._chat_history.get(99001, [])
+    assert len(history) == 2
+    assert history[0]["role"] == "user"
+    assert history[0]["content"] == "Hello"
+    assert history[1]["role"] == "assistant"
+    assert history[1]["content"] == "The answer is 42."
+
+
+@pytest.mark.asyncio
+async def test_handle_message_passes_history_to_executor(handler, brain_dir):
+    """Second message passes prior turns as history kwarg to run_with_tools."""
+    update, context = _make_handle_message_mocks(handler)
+    # Prime the history
+    await handler.handle_message(update, context)
+    # Second turn
+    update.message.text = "And what is 7 × 6?"
+    handler.executor.run_with_tools = AsyncMock(return_value="It is 42.")
+    await handler.handle_message(update, context)
+    call_kwargs = handler.executor.run_with_tools.call_args.kwargs
+    history_passed = call_kwargs.get("history", [])
+    assert any(m["role"] == "user" and "Hello" in m["content"] for m in history_passed)
+
+
+@pytest.mark.asyncio
+async def test_chat_history_window_truncates_to_six_turns(handler, brain_dir):
+    """Sending 10 turns keeps only the last 6 pairs (12 messages)."""
+    update, context = _make_handle_message_mocks(handler)
+    for i in range(10):
+        update.message.text = f"Message {i}"
+        handler.executor.run_with_tools = AsyncMock(return_value=f"Reply {i}")
+        await handler.handle_message(update, context)
+    history = handler._chat_history.get(99001, [])
+    assert len(history) == handler.HISTORY_WINDOW_TURNS * 2
+
+
+@pytest.mark.asyncio
+async def test_chat_history_isolated_per_chat_id(handler, brain_dir):
+    """Two different chat IDs do not share history."""
+    update_a = MagicMock()
+    update_a.effective_user.id = 12345
+    update_a.effective_chat.id = 11111
+    update_a.message = AsyncMock()
+    update_a.message.text = "Chat A message"
+    update_a.message.set_reaction = AsyncMock()
+
+    update_b = MagicMock()
+    update_b.effective_user.id = 12345
+    update_b.effective_chat.id = 22222
+    update_b.message = AsyncMock()
+    update_b.message.text = "Chat B message"
+    update_b.message.set_reaction = AsyncMock()
+
+    context = MagicMock()
+    handler.executor = MagicMock()
+    handler.executor.run_with_tools = AsyncMock(return_value="Reply")
+
+    await handler.handle_message(update_a, context)
+    await handler.handle_message(update_b, context)
+
+    assert 11111 in handler._chat_history
+    assert 22222 in handler._chat_history
+    # Neither history should contain the other chat's message
+    h_a = handler._chat_history[11111]
+    h_b = handler._chat_history[22222]
+    assert not any("Chat B" in m["content"] for m in h_a)
+    assert not any("Chat A" in m["content"] for m in h_b)
+
+
+@pytest.mark.asyncio
+async def test_reset_command_clears_history(handler):
+    """cmd_reset removes all history for the chat."""
+    handler._chat_history[12345] = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+    update, ctx = _make_update(12345)
+    update.effective_chat.id = 12345  # must match the key in _chat_history
+    await handler.cmd_reset(update, ctx)
+    assert handler._chat_history.get(12345, []) == []
+    assert "1 turn" in update.message.reply_text.call_args[0][0]
+
+
 # ── _edit_skip_domains ────────────────────────────────────────────────────────
 
 def test_edit_skip_domains_add(handler, brain_dir):
