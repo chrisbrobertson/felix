@@ -1,18 +1,16 @@
 <div align="center">
 
-# Second Brain
+# Felix
 
-**A personal knowledge system that automatically captures everything you interact with — web pages, emails, meetings, calendar events, Slack threads, code projects — summarizes it all with LLMs, and makes it queryable through a Telegram bot that acts as your extended memory.**
+**A personal agent for your knowledge and activity.**
 
 ![Python](https://img.shields.io/badge/python-3.11+-blue?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-macOS-lightgrey?logo=apple)
 ![LLM](https://img.shields.io/badge/LLM-Gemini%20%7C%20Claude-orange)
 ![iCloud](https://img.shields.io/badge/sync-iCloud-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
+![License](https://img.shields.io/badge/license-All%20Rights%20Reserved-red)
 
 *Ask questions like "What did I read about Rust async last week?" or "Who was on that call about the API redesign?" and get instant answers pulled from your accumulated context.*
-
-**Philosophy:** No vector DB, no embeddings, no graph. Files + LLM = database.
 
 </div>
 
@@ -43,11 +41,16 @@
 - [Skill optimization and quality](#skill-optimization-and-quality)
 - [macOS permissions](#macos-permissions)
 - [Optional integrations](#optional-integrations)
+- [License](#license)
 - [Files never to commit](#files-never-to-commit)
 
 ---
 
 ## What you can do with it
+
+Felix is a personal knowledge system that automatically captures everything you interact with — web pages, emails, meetings, calendar events, Slack threads, code projects — summarizes it all with LLMs, and stores it as searchable flat files in iCloud Drive. A Telegram bot gives you instant access.
+
+**Philosophy:** No vector DB, no embeddings, no graph. Files + LLM = database.
 
 **Never lose track of what you've read.** Browse an article on your laptop, summarize it automatically, ask your bot about it days later from your phone. Works across all your devices via iCloud sync.
 
@@ -61,47 +64,94 @@
 
 **Control what gets captured.** Skip noisy domains with `/skip reddit.com`, purge unwanted memories with `/purge <domain>`, and manage your ignore list with `/skiplist` and `/unskip`.
 
-**Get better summaries as the system learns.** Second Brain routes each captured page to a specialized summarizer — research papers, API docs, code repos, and video transcripts each get their own prompt. A nightly optimizer scores past runs, catches declining skills early, and rewrites the weakest ones. Check skill health any time with `/skill-health`.
+**Get better summaries as the system learns.** Felix routes each captured page to a specialized summarizer — research papers, API docs, code repos, and video transcripts each get their own prompt. A nightly optimizer scores past runs, catches declining skills early, and rewrites the weakest ones. Check skill health any time with `/skill-health`.
 
 ---
 
 ## Architecture
 
-Second Brain runs on two kinds of machines: a **full node** (always-on Mac like a Mac Studio or Mac Mini) that runs all the processing, and optional **watcher nodes** (laptops) that capture browser history while you're traveling. Both sync through iCloud Drive.
+Felix runs on two kinds of machines: a **full node** (always-on Mac like a Mac Studio or Mac Mini) that runs all the processing, and optional **watcher nodes** (laptops) that capture browser history while you're traveling. Both sync through iCloud Drive.
+
+### Deployment topology
+
+Two kinds of machines, one shared filesystem.
+
+```mermaid
+graph LR
+    subgraph WATCHER["💻 Watcher Node (optional)"]
+        WB[Browser Watcher]
+    end
+    subgraph CLOUD["☁️ iCloud Drive"]
+        BUS["memories · skills · index · config"]
+    end
+    subgraph FULL["🖥️ Full Node (always-on)"]
+        LOOPS["12 async loops"]
+    end
+    WATCHER -- "writes memories" --> CLOUD
+    FULL -- "reads + writes" --> CLOUD
+```
+
+### Full node loops
+
+The full node runs 12 async loops, grouped by purpose.
 
 ```mermaid
 graph TB
-    subgraph iCloud["☁️  iCloud Drive  ~/Library/Mobile Documents/com~apple~CloudDocs/second-brain/"]
-        MEM["memories/\nall knowledge files"]
-        SKILLS["skills/\nLLM prompt templates"]
-        INDEX["index.md\nhourly rolling synthesis"]
-        CONFIG["config.yaml\nshared config"]
+    subgraph CAPTURE["📥 Capture loops"]
+        BW[Browser Watcher]
+        ES[Email Scanner]
+        ZS[Zoom Scanner]
+        CS[Calendar Scanner]
+        SS[Slack Scanner]
+        PS[Project Scanner]
     end
-
-    subgraph WATCHER["💻  Watcher Node  MacBook"]
-        W_ROLE["Role: watcher\nBrowser Watcher only"]
-        W_DEPS["Needs: GEMINI_API_KEY"]
+    subgraph DERIVE["🔄 Derivative loops"]
+        CT[Commitment Tracker]
+        CON[Contact Tracker]
+        IB[Index Builder]
     end
-
-    subgraph FULL["🖥️  Full Node  Mac Studio / Mac Mini"]
-        F1["1. Browser Watcher"]
-        F2["2. Telegram Bot ◄── YOU"]
-        F3["3. Index Builder"]
-        F4["4. Skill Optimizer"]
-        F5["5. Project Scanner"]
-        F6["6. Email Scanner"]
-        F7["7. Zoom Scanner"]
-        F8["8. Commitment Tracker"]
-        F9["9. Calendar Scanner"]
-        F10["10. Contact Tracker"]
-        F11["11. Slack Scanner"]
-        F12["12. Notification Manager"]
-        F_DEPS["Needs: GEMINI_API_KEY\nANTHROPIC_API_KEY"]
+    subgraph INTERACT["💬 Interaction loops"]
+        TG[Telegram Bot]
+        NM[Notification Manager]
     end
-
-    WATCHER -- "write memories · read config" --> iCloud
-    FULL -- "write memories · read config" --> iCloud
+    subgraph MAINTAIN["🛠 Maintenance"]
+        SO[Skill Optimizer]
+    end
 ```
+
+### Watcher node
+
+A watcher machine does one thing: capture pages you read and push memory files to iCloud.
+
+```mermaid
+flowchart LR
+    YOU((You on\nMacBook)) -->|browse web| CHROME[Chrome / Firefox]
+    CHROME --> HIST[history SQLite]
+    HIST --> BW[Browser Watcher]
+    BW -->|summarize| GEM[Gemini]
+    GEM --> BW
+    BW -->|write memory file| CLOUD[(iCloud Drive)]
+    CLOUD -.->|auto-synced| FULL[Full Node picks it up]
+```
+
+### Telegram interaction
+
+Everything you do with Felix goes through Telegram, in one of two directions: you ask, or Felix proactively tells you.
+
+```mermaid
+flowchart LR
+    YOU((You)) -->|slash command\nor question| TG[Telegram Bot]
+    TG -->|load relevant\nmemories| MEMS[(memory files)]
+    MEMS --> TG
+    TG -->|query + context| CLAUDE[Claude Sonnet]
+    CLAUDE -->|answer| TG
+    TG -->|reply| YOU
+    NM[Notification Manager] -.->|proactive:\nbriefing · pre-meeting\ndeadlines| TG
+```
+
+### End-to-end data flow
+
+Putting it all together, here is how data moves from sources through scanners to memories and back to you:
 
 ```mermaid
 flowchart LR
@@ -148,7 +198,7 @@ flowchart LR
 
 **Key design:** iCloud Drive is the shared bus. Watcher nodes write memories, full node picks them up and indexes them. Config is shared via iCloud; per-machine role is set via `SECOND_BRAIN_ROLE` env var in the launchd plist (NOT in config.yaml, which would sync everywhere).
 
-**Specialized summarizers.** The browser watcher doesn't use one generic prompt for everything. It classifies each URL into one of five content types (research paper, API docs, code repo, video transcript, or default web page) and routes to a specialized skill — `summarize-paper.md`, `summarize-docs.md`, `summarize-repo.md`, `summarize-transcript.md`, or `summarize-webpage.md`. When a new content type appears that has no matching skill, the daemon can draft one automatically. See *Skill optimization and quality* below.
+**Specialized summarizers.** Felix doesn't use one generic prompt for everything. It classifies each URL into one of five content types (research paper, API docs, code repo, video transcript, or default web page) and routes to a specialized skill — `summarize-paper.md`, `summarize-docs.md`, `summarize-repo.md`, `summarize-transcript.md`, or `summarize-webpage.md`. When a new content type appears that has no matching skill, the daemon can draft one automatically. See *Skill optimization and quality* below.
 
 ---
 
@@ -235,7 +285,7 @@ The skip list is stored in `config.yaml` under `browser_watcher.skip_domains`. C
 
 ### Managing summarizer quality
 
-Second Brain runs a pool of specialized summarizer skills and improves them automatically. You can check their health, review auto-drafted skills before they go live, and control the approval workflow.
+Felix runs a pool of specialized summarizer skills and improves them automatically. You can check their health, review auto-drafted skills before they go live, and control the approval workflow.
 
 ```
 /skill-health             # utility scores and trend arrows for every skill
@@ -258,7 +308,7 @@ If you'd rather review drafts before they run, send `/skill-approval on`. New dr
 
 ### Feature and bug tracking
 
-Second Brain includes a lightweight feature/bug tracker accessible via Telegram. You can optionally back it with GitHub Issues for full history and web UI access.
+Felix includes a lightweight feature/bug tracker accessible via Telegram. You can optionally back it with GitHub Issues for full history and web UI access.
 
 **Basic usage (local files):**
 
@@ -958,6 +1008,12 @@ slack_scanner:
 **Migrating from the old bot-token setup:** replace your `xoxb-` token with an `xoxp-` user token from the same app (add user scopes under OAuth & Permissions and reinstall to workspace). Re-run `./install.sh`; it detects the old token and re-prompts.
 
 The scanner is skipped gracefully if the token is missing.
+
+---
+
+## License
+
+Felix is source-visible but proprietary. Copyright © 2026 Chris Robertson, all rights reserved. You may view the source and run an unmodified copy for personal use. Derivative works, redistribution, and commercial use are not permitted. See [LICENSE](LICENSE) for full terms.
 
 ---
 

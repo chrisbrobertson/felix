@@ -1,0 +1,37 @@
+Copyright (c) 2026 Chris Robertson. All rights reserved.
+
+This software and its associated documentation files (the "Software")
+are the proprietary work of Chris Robertson. The Software is made
+visible in source form for informational and educational purposes
+only. No license, express or implied, is granted beyond what is
+expressly stated below.
+
+Permitted without prior written consent:
+
+  1. Viewing the source code in this repository.
+  2. Running an unmodified copy of the Software on a personal machine
+     for personal, non-commercial use by the copyright holder and
+     individuals explicitly authorized by the copyright holder.
+
+Not permitted without prior written consent from the copyright holder:
+
+  1. Redistribution of the Software or any portion of it, in source
+     or compiled form, to any third party.
+  2. Creation of derivative works, modifications, adaptations, or
+     translations of the Software.
+  3. Incorporation of any portion of this code, in whole or in part,
+     into any other software or system.
+  4. Commercial use of any kind, including use by an organization,
+     paid services, or products that depend on the Software.
+  5. Use of the name "Felix" or any associated branding in other
+     projects or products.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM THE USE OF OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+To request permissions not granted above, contact the copyright
+holder.
