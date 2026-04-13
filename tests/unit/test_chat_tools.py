@@ -17,6 +17,7 @@ def mock_handler():
     h._list_readings_text.return_value = "readings result"
     h._search_memories_text.return_value = "search result"
     h._get_memory_text.return_value = "memory content"
+    h._list_commands_text.return_value = "commands text"
     return h
 
 
@@ -78,6 +79,12 @@ async def test_dispatch_get_memory(mock_handler):
     assert result == "memory content"
 
 
+async def test_dispatch_list_commands(mock_handler):
+    result = await chat_tools.dispatch("list_commands", {}, mock_handler)
+    assert result == "commands text"
+    mock_handler._list_commands_text.assert_called_once_with()
+
+
 async def test_dispatch_unknown_tool_returns_error_string(mock_handler):
     result = await chat_tools.dispatch("delete_everything", {}, mock_handler)
     assert "unknown tool" in result.lower() or "Error" in result
@@ -117,6 +124,7 @@ def test_all_tool_names_in_dispatcher():
     dispatched_names = {
         "list_projects", "list_commitments", "list_events", "list_meetings",
         "list_contacts", "list_comms", "list_readings", "search_memories", "get_memory",
+        "list_commands",
     }
     for tool in chat_tools.TOOLS:
         name = tool["function"]["name"]

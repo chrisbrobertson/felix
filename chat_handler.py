@@ -278,6 +278,9 @@ class TelegramChatHandler:
                 lines.append(f"/{cmd} — {desc}")
         return "\n".join(lines)
 
+    def _list_commands_text(self) -> str:
+        return self._fmt_command_list()
+
     def _get_display_config(self) -> dict:
         """Read display config from config.yaml (live, so /settings changes take effect)."""
         try:

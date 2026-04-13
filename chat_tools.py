@@ -136,6 +136,20 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_commands",
+            "description": (
+                "List every Telegram slash command this assistant supports, with a "
+                "one-line description of each. Call this when the user asks what "
+                "they can do, what commands exist, or references a feature whose "
+                "exact command they can't recall (e.g. 'how do I mute?', 'is there "
+                "a way to see my meetings?')."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
 
@@ -178,6 +192,8 @@ def _call(name: str, arguments: dict, handler) -> str:
         )
     if name == "get_memory":
         return handler._get_memory_text(arguments["name"])
+    if name == "list_commands":
+        return handler._list_commands_text()
     raise ValueError(f"unknown tool {name!r}")
 
 
