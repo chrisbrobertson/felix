@@ -1,9 +1,10 @@
 """Unit tests for index_builder.py."""
+import errno
 import logging
 import os
 import time
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -162,3 +163,86 @@ def test_health_only_reads_first_20_files(builder, brain_dir):
         builder._log_watcher_health(paths)
 
     assert read_count <= 20
+
+
+# --- iCloud deadlock retry ---
+
+async def test_build_retries_on_errno_11_and_succeeds(builder, brain_dir):
+    """errno 11 (EDEADLK) on first attempt retried; succeeds on second attempt."""
+    make_memory(brain_dir / "memories", "2026-04-11-test-abc123.md", body="retried content")
+
+    deadlock_err = OSError(errno.EDEADLK, "Resource deadlock avoided")
+    original_read = Path.read_text
+    # Track per-file call counts so _log_watcher_health's read doesn't interfere.
+    # _log_watcher_health reads the file first (call 1); the build retry loop
+    # reads it second (call 2 = first attempt, call 3 = retry that succeeds).
+    file_call_count: dict = {}
+
+    def flaky_read(self, *args, **kwargs):
+        key = str(self)
+        file_call_count[key] = file_call_count.get(key, 0) + 1
+        # Raise deadlock on the 2nd call total (first call in the build retry loop)
+        if "abc123" in self.name and file_call_count[key] == 2:
+            raise deadlock_err
+        return original_read(self, *args, **kwargs)
+
+    mock_resp = MagicMock()
+    mock_resp.choices[0].message.content = "Index after retry."
+
+    with patch.object(Path, "read_text", flaky_read):
+        with patch("index_builder.acompletion", new=AsyncMock(return_value=mock_resp)):
+            with patch("index_builder.asyncio.sleep", new=AsyncMock()) as mock_sleep:
+                await builder._build()
+
+    # Should have slept at least once (retry backoff) and still written the index
+    mock_sleep.assert_called()
+    assert (brain_dir / "index.md").exists()
+
+
+async def test_build_skips_file_after_3_deadlock_retries(builder, brain_dir, caplog):
+    """File that deadlocks 3 times is skipped with a warning; build continues."""
+    make_memory(brain_dir / "memories", "2026-04-11-good-aaa111.md", body="good content")
+    make_memory(brain_dir / "memories", "2026-04-11-locked-bbb222.md", body="locked")
+
+    deadlock_err = OSError(errno.EDEADLK, "Resource deadlock avoided")
+    original_read = Path.read_text
+
+    def always_deadlock_locked(self, *args, **kwargs):
+        if "locked" in self.name:
+            raise deadlock_err
+        return original_read(self, *args, **kwargs)
+
+    mock_resp = MagicMock()
+    mock_resp.choices[0].message.content = "Partial index."
+
+    with caplog.at_level(logging.WARNING, logger="index-builder"):
+        with patch.object(Path, "read_text", always_deadlock_locked):
+            with patch("index_builder.acompletion", new=AsyncMock(return_value=mock_resp)):
+                with patch("index_builder.asyncio.sleep", new=AsyncMock()):
+                    await builder._build()
+
+    # Index should still be written (from the readable file)
+    assert (brain_dir / "index.md").exists()
+    # Should warn about the skipped file
+    assert any("iCloud lock" in r.message for r in caplog.records)
+
+
+async def test_run_loop_continues_after_build_crash(builder, brain_dir):
+    """If _build raises unexpectedly, run_loop logs error and continues (no propagation)."""
+    stop_event = ib.asyncio.Event()
+
+    call_count = {"n": 0}
+
+    async def mock_build():
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("Unexpected crash")
+        stop_event.set()  # Stop after second call
+
+    with patch.object(builder, "_build", mock_build):
+        with patch("index_builder.yaml.safe_load", return_value={}):
+            with patch("index_builder.asyncio.sleep", new=AsyncMock()):
+                await builder.run_loop(stop_event)
+
+    # Should have called _build at least twice (continued after crash)
+    assert call_count["n"] >= 2

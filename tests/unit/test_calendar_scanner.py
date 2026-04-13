@@ -506,10 +506,10 @@ async def test_change_detection_same_modified(tmp_path):
     event = make_event()
     modified_str = event["modified_time"].isoformat()
 
-    # Pre-populate state
+    # Pre-populate state using hostname-scoped filename
     state = {
         "processed": {
-            f"calendar-event-2026-04-11-team-standup-{_event_hash('', 'Team Standup', event['start_time'].strftime('%Y-%m-%dT%H:%M'))}.md": modified_str
+            f"calendar-event-test-host-2026-04-11-team-standup-{_event_hash('', 'Team Standup', event['start_time'].strftime('%Y-%m-%dT%H:%M'))}.md": modified_str
         }
     }
     state_file.write_text(json.dumps(state))
@@ -517,6 +517,7 @@ async def test_change_detection_same_modified(tmp_path):
     with patch.object(cs, 'MEMORIES_DIR', memories_dir), \
          patch.object(cs, 'STATE_FILE', state_file), \
          patch.object(cs, 'CONFIG_PATH', config_path), \
+         patch.object(cs, '_hostname', return_value='test-host'), \
          patch('calendar_scanner.CalendarDataSource.detect') as mock_detect, \
          patch('litellm.acompletion', new_callable=AsyncMock) as mock_llm:
 
@@ -543,10 +544,10 @@ async def test_change_detection_updated_event(tmp_path):
     event = make_event()
     old_modified = datetime(2026, 4, 9, 10, 0, 0).isoformat()
 
-    # Pre-populate state with old modified time
+    # Pre-populate state with old modified time (hostname-scoped filename)
     state = {
         "processed": {
-            f"calendar-event-2026-04-11-team-standup-{_event_hash('', 'Team Standup', event['start_time'].strftime('%Y-%m-%dT%H:%M'))}.md": old_modified
+            f"calendar-event-test-host-2026-04-11-team-standup-{_event_hash('', 'Team Standup', event['start_time'].strftime('%Y-%m-%dT%H:%M'))}.md": old_modified
         }
     }
     state_file.write_text(json.dumps(state))
@@ -554,6 +555,7 @@ async def test_change_detection_updated_event(tmp_path):
     with patch.object(cs, 'MEMORIES_DIR', memories_dir), \
          patch.object(cs, 'STATE_FILE', state_file), \
          patch.object(cs, 'CONFIG_PATH', config_path), \
+         patch.object(cs, '_hostname', return_value='test-host'), \
          patch('calendar_scanner.CalendarDataSource.detect') as mock_detect, \
          patch('litellm.acompletion', new_callable=AsyncMock) as mock_llm:
 
@@ -573,8 +575,8 @@ async def test_change_detection_updated_event(tmp_path):
         # LLM should be called
         mock_llm.assert_called_once()
 
-        # File should exist
-        expected_file = memories_dir / f"calendar-event-2026-04-11-team-standup-{_event_hash('', 'Team Standup', event['start_time'].strftime('%Y-%m-%dT%H:%M'))}.md"
+        # File should exist (hostname-scoped)
+        expected_file = memories_dir / f"calendar-event-test-host-2026-04-11-team-standup-{_event_hash('', 'Team Standup', event['start_time'].strftime('%Y-%m-%dT%H:%M'))}.md"
         assert expected_file.exists()
 
 
@@ -592,6 +594,7 @@ async def test_new_event_written(tmp_path):
     with patch.object(cs, 'MEMORIES_DIR', memories_dir), \
          patch.object(cs, 'STATE_FILE', state_file), \
          patch.object(cs, 'CONFIG_PATH', config_path), \
+         patch.object(cs, '_hostname', return_value='test-host'), \
          patch('calendar_scanner.CalendarDataSource.detect') as mock_detect, \
          patch('litellm.acompletion', new_callable=AsyncMock) as mock_llm:
 
@@ -611,24 +614,25 @@ async def test_new_event_written(tmp_path):
         # LLM should be called
         mock_llm.assert_called_once()
 
-        # File should exist
-        expected_file = memories_dir / f"calendar-event-2026-04-11-team-standup-{_event_hash('', 'Team Standup', event['start_time'].strftime('%Y-%m-%dT%H:%M'))}.md"
+        # File should exist (hostname-scoped)
+        expected_file = memories_dir / f"calendar-event-test-host-2026-04-11-team-standup-{_event_hash('', 'Team Standup', event['start_time'].strftime('%Y-%m-%dT%H:%M'))}.md"
         assert expected_file.exists()
 
 
 # ── File formatting ───────────────────────────────────────────────────────────
 
 def test_filename_format():
-    """Filename matches calendar-event-{date}-{slug}-{hash}.md."""
+    """Filename matches calendar-event-{hostname}-{date}-{slug}-{hash}.md."""
     event = make_event(
         title="Team Standup",
         start_time=datetime(2026, 4, 11, 9, 0, 0),
         external_id="abc123"
     )
-    scanner = CalendarScanner()
-    path = scanner._memory_path(event)
+    with patch.object(cs, "_hostname", return_value="test-host"):
+        scanner = CalendarScanner()
+        path = scanner._memory_path(event)
 
-    assert path.name.startswith("calendar-event-2026-04-11-team-standup-")
+    assert path.name.startswith("calendar-event-test-host-2026-04-11-team-standup-")
     assert path.name.endswith(".md")
     assert len(path.name.split("-")[-1].replace(".md", "")) == 8  # 8-char hash
 
@@ -912,3 +916,119 @@ async def test_backfill_clears_processed_map_and_widens_window(tmp_path):
         state = scanner._load_state()
         assert state.get("processed") == {}
         assert result["processed"] == 0
+
+
+# ── Hostname in filename / frontmatter ────────────────────────────────────────
+
+def test_write_memory_hostname_in_frontmatter(tmp_path):
+    """`hostname:` field written to frontmatter so per-machine provenance is visible."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir(parents=True)
+    event = make_event()
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "_hostname", return_value="my-laptop"):
+        scanner = CalendarScanner()
+        scanner._write_memory(event, "Summary", ["tag"])
+        path = scanner._memory_path(event)
+        fm = _parse_frontmatter(path.read_text())
+
+    assert fm.get("hostname") == "my-laptop"
+
+
+def test_memory_path_hostname_scoped(tmp_path):
+    """_memory_path() embeds hostname so events from different machines don't collide."""
+    event = make_event(title="Standup", start_time=datetime(2026, 4, 11, 9, 0))
+
+    with patch.object(cs, "MEMORIES_DIR", tmp_path), \
+         patch.object(cs, "_hostname", return_value="mac-studio"):
+        scanner = CalendarScanner()
+        path = scanner._memory_path(event)
+
+    assert "mac-studio" in path.name
+
+
+# ── Legacy filename migration ─────────────────────────────────────────────────
+
+def test_migrate_calendar_filenames_renames_legacy_files(tmp_path):
+    """calendar-event-{date}-*.md renamed to calendar-event-{hostname}-{date}-*.md on init."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+
+    # Legacy file: no hostname in name, no hostname in frontmatter
+    legacy = memories_dir / "calendar-event-2026-04-11-standup-abc12345.md"
+    legacy.write_text("---\ntype: calendar_event\n---\n\n## Details\n")
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "STATE_FILE", state_file), \
+         patch.object(cs, "_hostname", return_value="mac-studio"):
+        CalendarScanner()  # migration runs in __init__
+
+    # Legacy file should be gone; new hostname-scoped file should exist
+    assert not legacy.exists()
+    scoped = memories_dir / "calendar-event-mac-studio-2026-04-11-standup-abc12345.md"
+    assert scoped.exists()
+
+
+def test_migrate_calendar_filenames_updates_state(tmp_path):
+    """State file remaps old filename key to new hostname-scoped key."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+
+    legacy_name = "calendar-event-2026-04-11-standup-abc12345.md"
+    legacy = memories_dir / legacy_name
+    legacy.write_text("---\ntype: calendar_event\n---\n\n## Details\n")
+
+    old_modified = "2026-04-11T08:00:00"
+    state_file.write_text(json.dumps({"processed": {legacy_name: old_modified}}))
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "STATE_FILE", state_file), \
+         patch.object(cs, "_hostname", return_value="mac-studio"):
+        CalendarScanner()
+
+    state = json.loads(state_file.read_text())
+    new_name = "calendar-event-mac-studio-2026-04-11-standup-abc12345.md"
+    assert new_name in state["processed"]
+    assert legacy_name not in state["processed"]
+    assert state["processed"][new_name] == old_modified
+
+
+def test_migrate_calendar_filenames_skips_other_host_files(tmp_path):
+    """Files with a different hostname in frontmatter are left untouched."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+
+    other_host_file = memories_dir / "calendar-event-other-host-2026-04-11-standup-abc12345.md"
+    other_host_file.write_text("---\nhostname: other-host\ntype: calendar_event\n---\n\n## Details\n")
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "STATE_FILE", state_file), \
+         patch.object(cs, "_hostname", return_value="mac-studio"):
+        CalendarScanner()
+
+    # Other host's file should not be touched
+    assert other_host_file.exists()
+
+
+def test_migrate_calendar_filenames_idempotent(tmp_path):
+    """Already hostname-scoped files are not renamed on second init."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+
+    scoped = memories_dir / "calendar-event-mac-studio-2026-04-11-standup-abc12345.md"
+    scoped.write_text("---\nhostname: mac-studio\ntype: calendar_event\n---\n\n## Details\n")
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "STATE_FILE", state_file), \
+         patch.object(cs, "_hostname", return_value="mac-studio"):
+        CalendarScanner()
+        CalendarScanner()  # second init should be a no-op
+
+    assert scoped.exists()
+    # No duplicate or double-prefixed file
+    assert len(list(memories_dir.glob("calendar-event-*.md"))) == 1

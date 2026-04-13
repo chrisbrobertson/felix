@@ -1053,3 +1053,84 @@ def test_cmd_unmute_clears_state(tmp_path):
 
     reloaded = json.loads(state_file.read_text())
     assert reloaded["muted"] is False
+
+
+# ── Duplicate-briefing regression (Bug 1) ────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_daily_briefing_state_saved_before_send(tmp_path):
+    """last_briefing_date is written to disk BEFORE the Telegram send call.
+
+    This is the critical ordering fix for the duplicate-briefing bug: if the
+    daemon crashes mid-send, the next restart must see today's date already
+    persisted and skip the briefing — not re-send it.
+    """
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "last_briefing_date": "2026-04-10"}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  briefing_time: '07:30'\n  enabled: true\n")
+
+    now = datetime(2026, 4, 11, 7, 35, tzinfo=ZoneInfo("America/Los_Angeles"))
+    state_at_send_time = {}
+
+    async def capturing_send(text, chat_id=None):
+        # Capture state file contents at the moment of the send call
+        state_at_send_time.update(json.loads(state_file.read_text()))
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock)
+        mgr.send_message = capturing_send
+        with patch.object(mgr, "_get_local_now", return_value=now):
+            await mgr._check_daily_briefing(nm._load_state())
+
+    # State must have been persisted BEFORE send was called
+    assert state_at_send_time.get("last_briefing_date") == "2026-04-11"
+
+
+@pytest.mark.asyncio
+async def test_daily_briefing_rolls_back_date_on_send_failure(tmp_path):
+    """If the Telegram send raises, last_briefing_date is rolled back to its
+    previous value so the briefing is retried next loop iteration.
+    """
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "last_briefing_date": "2026-04-10"}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  briefing_time: '07:30'\n  enabled: true\n")
+
+    now = datetime(2026, 4, 11, 7, 35, tzinfo=ZoneInfo("America/Los_Angeles"))
+    bot_mock = AsyncMock()
+    bot_mock.send_message.side_effect = RuntimeError("Telegram unavailable")
+
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock)
+        with patch.object(mgr, "_get_local_now", return_value=now):
+            with pytest.raises(RuntimeError):
+                await mgr._check_daily_briefing(nm._load_state())
+
+    reloaded = json.loads(state_file.read_text())
+    assert reloaded["last_briefing_date"] == "2026-04-10"
+
+
+def test_save_state_raises_on_failure(tmp_path):
+    """_save_state raises (instead of silently logging) so callers can react."""
+    state_file = tmp_path / "nonexistent-dir" / "notification-state.json"
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with pytest.raises(Exception):
+            nm._save_state({"chat_id": None})

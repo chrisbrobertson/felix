@@ -122,7 +122,18 @@ async def main():
         )
 
     try:
-        await asyncio.gather(*[t(stop_event) for t in tasks])
+        results = await asyncio.gather(
+            *[t(stop_event) for t in tasks],
+            return_exceptions=True,
+        )
+        for task_fn, result in zip(tasks, results):
+            if isinstance(result, Exception):
+                log.error(
+                    "Task %s crashed: %s",
+                    getattr(task_fn, "__qualname__", repr(task_fn)),
+                    result,
+                    exc_info=result,
+                )
     finally:
         log.info("Flushing state before exit")
         watcher.save_seen_urls()

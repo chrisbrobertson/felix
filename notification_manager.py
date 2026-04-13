@@ -51,13 +51,14 @@ def _load_state() -> dict:
 
 
 def _save_state(state: dict):
-    """Atomically save notification state."""
+    """Atomically save notification state. Raises on failure — callers must handle."""
     tmp = STATE_FILE.with_suffix(".tmp")
     try:
         tmp.write_text(json.dumps(state, indent=2))
         os.rename(str(tmp), str(STATE_FILE))
     except Exception as e:
-        log.warning("Failed to save notification state: %s", e)
+        log.error("Failed to save notification state: %s", e)
+        raise
 
 
 def _chunk_message(text: str, max_len: int = TG_MAX_CHARS) -> list:
@@ -231,14 +232,21 @@ class NotificationManager:
         if now < briefing_time:
             return  # Too early
 
-        # Send briefing
+        # Commit the attempt before the network call so a crash mid-send
+        # doesn't re-send the briefing on the next restart (send-before-save
+        # was the root cause of duplicate briefings from daemon crash loops).
         briefing_text = self._assemble_briefing()
-        await self.send_message(briefing_text)
-
-        # Update state
+        prev_date = state.get("last_briefing_date")
         state["last_briefing_date"] = today_str
         _save_state(state)
-        log.info("Daily briefing sent")
+        try:
+            await self.send_message(briefing_text)
+            log.info("Daily briefing sent")
+        except Exception:
+            log.exception("Briefing send failed — rolling back last_briefing_date")
+            state["last_briefing_date"] = prev_date
+            _save_state(state)
+            raise
 
     def _assemble_briefing(self) -> str:
         """Assemble daily briefing content from memory files."""

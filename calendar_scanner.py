@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shutil
+import socket
 import sqlite3
 import subprocess
 from datetime import datetime, timedelta
@@ -33,6 +34,10 @@ MAX_EVENTS_PER_CYCLE = 50
 
 # Max state entries before pruning
 MAX_STATE_ENTRIES = 5000
+
+
+def _hostname() -> str:
+    return socket.gethostname().split(".")[0]
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -286,7 +291,11 @@ class EventKitSource(CalendarDataSource):
             store = EK.EKEventStore.alloc().init()
             return cls(store)
         else:
-            log.debug("EventKit Calendar access denied (status %d)", status)
+            log.warning(
+                "EventKit Calendar access denied (status %d) — "
+                "grant Calendar access in System Settings → Privacy & Security → Calendars",
+                status,
+            )
             return None
 
     def get_events(self, start_date: datetime, end_date: datetime, skip_calendars: set):
@@ -479,6 +488,52 @@ output
 class CalendarScanner:
     def __init__(self, role: str = "full"):
         self.role = role
+        self._migrate_calendar_filenames()
+
+    def _migrate_calendar_filenames(self):
+        """Migrate calendar-event-*.md to calendar-event-{hostname}-*.md for this node's files.
+
+        Mirrors the project_scanner.py hostname-scoping migration so events from
+        different machines are distinguishable and never silently overwrite each other.
+        """
+        if not MEMORIES_DIR.exists():
+            return
+        my_hostname = _hostname()
+        migrated = 0
+        state = self._load_state()
+        processed = state.get("processed", {})
+
+        for path in MEMORIES_DIR.glob("calendar-event-*.md"):
+            try:
+                stem = path.stem
+                rest = stem[len("calendar-event-"):]
+                # Already hostname-scoped for this host?
+                if rest.startswith(f"{my_hostname}-"):
+                    continue
+                # Read frontmatter to check which host owns this file
+                text = path.read_text()
+                fm = _parse_frontmatter(text)
+                fm_hostname = fm.get("hostname", "")
+                # Claim the file if frontmatter hostname matches ours, or if it's a
+                # legacy file with no hostname (assume written by the current machine).
+                if fm_hostname == my_hostname or not fm_hostname:
+                    new_name = f"calendar-event-{my_hostname}-{rest}.md"
+                    new_path = path.parent / new_name
+                    path.rename(new_path)
+                    # Remap the state entry so the scanner doesn't re-process it
+                    if path.name in processed:
+                        processed[new_name] = processed.pop(path.name)
+                    migrated += 1
+                # If hostname is a different machine, leave it — that node will handle it
+            except (OSError, FileNotFoundError):
+                pass
+            except Exception:
+                log.exception("Calendar filename migration failed for %s", path)
+
+        if migrated:
+            state["processed"] = processed
+            self._save_state(state)
+            log.info("Migrated %d calendar-event files to hostname-scoped filenames", migrated)
 
     def _load_config(self) -> dict:
         if CONFIG_PATH.exists():
@@ -723,6 +778,7 @@ class CalendarScanner:
     def _memory_path(self, event: dict) -> Path:
         """Generate memory file path for event.
 
+        Filename includes hostname so events from different machines never collide.
         Hash is based on title + start-minute only — external_id is deliberately
         excluded so the same event appearing on multiple calendars always maps to
         the same file regardless of per-calendar identifier differences.
@@ -735,7 +791,8 @@ class CalendarScanner:
             event["title"],
             event["start_time"].strftime("%Y-%m-%dT%H:%M"),
         )
-        return MEMORIES_DIR / f"calendar-event-{start_date_str}-{slug}-{hash_val}.md"
+        hostname = _hostname()
+        return MEMORIES_DIR / f"calendar-event-{hostname}-{start_date_str}-{slug}-{hash_val}.md"
 
     async def _generate_summary_and_tags(self, event: dict) -> tuple:
         """Generate LLM summary and tags for event."""
@@ -807,6 +864,7 @@ Return JSON only:
             "last_scanned": now,
             "source_url": f"calendar:{_event_hash('', event['title'], event['start_time'].strftime('%Y-%m-%dT%H:%M'))}",
             "type": "calendar_event",
+            "hostname": _hostname(),
             "calendar_names": calendar_names,
             "start_time": event["start_time"].isoformat(),
             "end_time": event["end_time"].isoformat(),

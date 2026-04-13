@@ -49,10 +49,25 @@ class IndexBuilder:
         for f in memory_files:
             if budget <= 0:
                 break
-            try:
-                text = f.read_text()
-            except OSError as e:
-                log.warning("Skipping %s during index build: %s", f.name, e)
+            # Retry on iCloud deadlock (errno 11 — EDEADLK, transient advisory lock).
+            # A brief wait almost always clears it; skip the file on exhaustion rather
+            # than crashing the whole index build.
+            text = None
+            delays = (0.1, 0.5, 1.0)
+            for attempt, delay in enumerate(delays):
+                try:
+                    text = f.read_text()
+                    break
+                except OSError as e:
+                    if e.errno == 11:  # EDEADLK — iCloud file lock, transient
+                        if attempt < len(delays) - 1:
+                            await asyncio.sleep(delay)
+                            continue
+                        log.warning("Skipping %s — iCloud lock after 3 retries", f.name)
+                    else:
+                        log.warning("Skipping %s — read error: %s", f.name, e)
+                    break
+            if text is None:
                 continue
             chunks.append(text[:budget])
             budget -= len(text)
