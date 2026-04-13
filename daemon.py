@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import logging.handlers
 import os
 import signal
 import yaml
@@ -11,17 +12,65 @@ from email_scanner import EmailScanner
 from calendar_scanner import CalendarScanner
 from slack_scanner import SlackScanner
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
-    handlers=[logging.StreamHandler()]
-)
+LOG_FORMAT = "%(asctime)s [%(name)s] %(levelname)s %(message)s"
+LOG_MAX_BYTES = 10_000_000   # 10 MB per file
+LOG_BACKUP_COUNT = 5         # keep up to 5 rotated files → ~60 MB ceiling
+
+
+def _configure_logging(deploy_dir: Path) -> None:
+    """Set up Python-managed rotating log files under deploy_dir/logs/.
+
+    Writes to two files:
+      - error.log  — WARNING and above (same as what launchd StandardErrorPath was capturing)
+      - out.log    — INFO and above  (same as launchd StandardOutPath)
+
+    A StreamHandler(stderr) is kept so launchd still captures fatal tracebacks
+    that happen before logging is fully initialised on next restart.
+    """
+    logs_dir = deploy_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    fmt = logging.Formatter(LOG_FORMAT)
+
+    # Root logger receives everything at INFO+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    # out.log — INFO and above
+    out_handler = logging.handlers.RotatingFileHandler(
+        logs_dir / "out.log", maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT
+    )
+    out_handler.setLevel(logging.INFO)
+    out_handler.setFormatter(fmt)
+
+    # error.log — WARNING and above
+    err_handler = logging.handlers.RotatingFileHandler(
+        logs_dir / "error.log", maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT
+    )
+    err_handler.setLevel(logging.WARNING)
+    err_handler.setFormatter(fmt)
+
+    # stderr fallback — keeps launchd's StandardErrorPath useful for pre-init crashes
+    stderr_handler = logging.StreamHandler()
+    stderr_handler.setLevel(logging.WARNING)
+    stderr_handler.setFormatter(fmt)
+
+    root.handlers.clear()
+    root.addHandler(out_handler)
+    root.addHandler(err_handler)
+    root.addHandler(stderr_handler)
+
+
 log = logging.getLogger("second-brain")
 
 CONFIG_PATH = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain/config.yaml"
 
 
 async def main():
+    # Configure Python-managed rotating log files before any other logging
+    deploy_dir = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
+    _configure_logging(deploy_dir)
+
     config = yaml.safe_load(CONFIG_PATH.read_text())
     # Env var takes precedence over config.yaml — config is shared via iCloud,
     # role is per-machine. Set SECOND_BRAIN_ROLE in each machine's launchd plist.
@@ -79,7 +128,7 @@ async def main():
         await chat.start()
 
         # Instantiate notification manager and wire up cross-references
-        DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
+        DEPLOY_DIR = deploy_dir  # set at top of main() for _configure_logging
         notification_mgr = NotificationManager(bot=chat.app.bot, deploy_dir=DEPLOY_DIR)
         chat.notification_manager = notification_mgr
 
