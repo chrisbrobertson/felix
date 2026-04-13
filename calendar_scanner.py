@@ -12,6 +12,8 @@ from pathlib import Path
 
 import yaml
 
+from llm_routes import resolve
+
 log = logging.getLogger("calendar-scanner")
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
@@ -766,7 +768,7 @@ Return JSON only:
         try:
             from litellm import acompletion
             resp = await acompletion(
-                model="summarize",
+                model=resolve("summarize"),
                 messages=[{"role": "user", "content": prompt}],
                 timeout=30,
             )

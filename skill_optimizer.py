@@ -11,6 +11,8 @@ from typing import Optional
 
 from litellm import acompletion
 
+from llm_routes import resolve
+
 log = logging.getLogger("skill-optimizer")
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
@@ -385,7 +387,7 @@ Respond with JSON only:
 {{"score": 0.0, "reasoning": "one sentence explanation"}}"""
 
         response = await acompletion(
-            model=self.judge_model,
+            model=resolve(self.judge_model),
             messages=[{"role": "user", "content": prompt}],
             max_tokens=200
         )
@@ -695,7 +697,7 @@ Be specific. Cite evidence from the execution examples. Avoid generic observatio
 
         try:
             response = await acompletion(
-                model="optimizer",
+                model=resolve("optimizer"),
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=500
             )
@@ -798,7 +800,7 @@ Please rewrite the skill file following the meta-skill instructions."""
 
         try:
             response = await acompletion(
-                model="optimizer",
+                model=resolve("optimizer"),
                 messages=[
                     {"role": "system", "content": meta_instructions},
                     {"role": "user", "content": user_msg}
@@ -1077,7 +1079,7 @@ Respond with JSON only: {{"score": 1, "reasoning": "one sentence"}}"""
 
         try:
             response = await acompletion(
-                model=self.judge_model,
+                model=resolve(self.judge_model),
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=100,
             )

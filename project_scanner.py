@@ -10,6 +10,7 @@ from pathlib import Path
 
 import yaml
 
+from llm_routes import resolve
 from skill_executor import SkillExecutor
 
 log = logging.getLogger("project-scanner")
@@ -457,7 +458,7 @@ class ProjectScanner:
         try:
             from litellm import acompletion
             resp = await acompletion(
-                model="summarize",
+                model=resolve("summarize"),
                 messages=[{"role": "user", "content": prompt}],
                 timeout=30,
             )

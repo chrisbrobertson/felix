@@ -21,6 +21,8 @@ from typing import Optional, TYPE_CHECKING
 import yaml
 from litellm import acompletion
 
+from llm_routes import resolve
+
 if TYPE_CHECKING:
     from skill_optimizer import SkillOptimizer
 
@@ -207,7 +209,7 @@ Output ONLY the complete skill markdown file. No preamble, no explanation, no co
         for attempt in range(max_retries):
             try:
                 response = await acompletion(
-                    model=self.model_route,
+                    model=resolve(self.model_route),
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=1500
                 )

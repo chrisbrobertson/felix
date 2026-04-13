@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 
 import yaml
 
+from llm_routes import resolve
+
 if TYPE_CHECKING:
     from telegram import Bot
 
@@ -339,7 +341,7 @@ class AnalysisGenerator:
 
         try:
             response = await acompletion(
-                model=model_route,
+                model=resolve(model_route),
                 messages=messages,
                 max_tokens=500
             )

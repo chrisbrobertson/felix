@@ -10,6 +10,8 @@ from typing import Optional
 
 import yaml
 
+from llm_routes import resolve
+
 log = logging.getLogger("commitment-tracker")
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
@@ -262,7 +264,7 @@ class CommitmentTracker:
         try:
             from litellm import acompletion
             resp = await acompletion(
-                model="summarize",
+                model=resolve("summarize"),
                 messages=[{"role": "user", "content": prompt}],
                 timeout=30,
             )
