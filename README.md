@@ -1,10 +1,49 @@
+<div align="center">
+
 # Second Brain
 
-A personal knowledge system that automatically captures everything you interact with — web pages, emails, meetings, calendar events, Slack threads, code projects — summarizes it all with LLMs, and makes it queryable through a Telegram bot that acts as your extended memory.
+**A personal knowledge system that automatically captures everything you interact with — web pages, emails, meetings, calendar events, Slack threads, code projects — summarizes it all with LLMs, and makes it queryable through a Telegram bot that acts as your extended memory.**
 
-Ask questions like "What did I read about Rust async last week?" or "Who was on that call about the API redesign?" and get instant answers pulled from your accumulated context.
+![Python](https://img.shields.io/badge/python-3.11+-blue?logo=python&logoColor=white)
+![Platform](https://img.shields.io/badge/platform-macOS-lightgrey?logo=apple)
+![LLM](https://img.shields.io/badge/LLM-Gemini%20%7C%20Claude-orange)
+![iCloud](https://img.shields.io/badge/sync-iCloud-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+*Ask questions like "What did I read about Rust async last week?" or "Who was on that call about the API redesign?" and get instant answers pulled from your accumulated context.*
 
 **Philosophy:** No vector DB, no embeddings, no graph. Files + LLM = database.
+
+</div>
+
+---
+
+## Table of Contents
+
+- [What you can do with it](#what-you-can-do-with-it)
+- [Architecture](#architecture)
+- [How to use it](#how-to-use-it)
+  - [Finding information about a person](#finding-information-about-a-person)
+  - [Tracking commitments](#tracking-commitments)
+  - [Browsing recent activity](#browsing-recent-activity)
+  - [Searching across all your knowledge](#searching-across-all-your-knowledge)
+  - [Controlling what gets captured](#controlling-what-gets-captured)
+  - [Managing summarizer quality](#managing-summarizer-quality)
+  - [Feature and bug tracking](#feature-and-bug-tracking)
+  - [Managing proactive notifications](#managing-proactive-notifications)
+- [Complete command reference](#complete-command-reference)
+- [Quick install](#quick-install)
+- [What gets installed where](#what-gets-installed-where)
+- [Prerequisites](#prerequisites)
+- [Manual setup](#manual-setup)
+- [Running the daemon](#running-the-daemon)
+- [Verifying it works](#verifying-it-works)
+- [Multi-machine setup (watcher node)](#multi-machine-setup-watcher-node)
+- [LLM routing (LiteLLM)](#llm-routing-litellm)
+- [Skill optimization and quality](#skill-optimization-and-quality)
+- [macOS permissions](#macos-permissions)
+- [Optional integrations](#optional-integrations)
+- [Files never to commit](#files-never-to-commit)
 
 ---
 
@@ -30,62 +69,81 @@ Ask questions like "What did I read about Rust async last week?" or "Who was on 
 
 Second Brain runs on two kinds of machines: a **full node** (always-on Mac like a Mac Studio or Mac Mini) that runs all the processing, and optional **watcher nodes** (laptops) that capture browser history while you're traveling. Both sync through iCloud Drive.
 
+```mermaid
+graph TB
+    subgraph iCloud["☁️  iCloud Drive  ~/Library/Mobile Documents/com~apple~CloudDocs/second-brain/"]
+        MEM["memories/\nall knowledge files"]
+        SKILLS["skills/\nLLM prompt templates"]
+        INDEX["index.md\nhourly rolling synthesis"]
+        CONFIG["config.yaml\nshared config"]
+    end
+
+    subgraph WATCHER["💻  Watcher Node  MacBook"]
+        W_ROLE["Role: watcher\nBrowser Watcher only"]
+        W_DEPS["Needs: GEMINI_API_KEY"]
+    end
+
+    subgraph FULL["🖥️  Full Node  Mac Studio / Mac Mini"]
+        F1["1. Browser Watcher"]
+        F2["2. Telegram Bot ◄── YOU"]
+        F3["3. Index Builder"]
+        F4["4. Skill Optimizer"]
+        F5["5. Project Scanner"]
+        F6["6. Email Scanner"]
+        F7["7. Zoom Scanner"]
+        F8["8. Commitment Tracker"]
+        F9["9. Calendar Scanner"]
+        F10["10. Contact Tracker"]
+        F11["11. Slack Scanner"]
+        F12["12. Notification Manager"]
+        F_DEPS["Needs: GEMINI_API_KEY\nANTHROPIC_API_KEY"]
+    end
+
+    WATCHER -- "write memories · read config" --> iCloud
+    FULL -- "write memories · read config" --> iCloud
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                            iCloud Drive                                 │
-│  ~/Library/Mobile Documents/com~apple~CloudDocs/second-brain/          │
-│                                                                         │
-│  memories/        ← all knowledge files (.md per item)                 │
-│  skills/          ← LLM prompt templates with execution history        │
-│  index.md         ← hourly rolling synthesis of all memories           │
-│  config.yaml      ← shared config (DO NOT put role here)               │
-└─────────────────────────────────────────────────────────────────────────┘
-         ▲                                              ▲
-         │                                              │
-         │ write memories                               │ write memories
-         │ read config                                  │ read config
-         │                                              │
-┌────────┴────────────────────┐            ┌───────────┴──────────────────┐
-│   WATCHER NODE (MacBook)    │            │   FULL NODE (Mac Studio)     │
-│                             │            │                              │
-│  Role: watcher              │            │  Role: full                  │
-│  Runs: Browser Watcher only │            │  Runs: All 12 loops          │
-│                             │            │                              │
-│  • Polls Chrome/Firefox     │            │  1. Browser Watcher          │
-│  • Summarizes pages         │            │  2. Telegram Bot ◄───────────┼─── YOU
-│  • Writes to iCloud         │            │  3. Index Builder            │
-│                             │            │  4. Skill Optimizer          │
-│  Needs: GEMINI_API_KEY      │            │  5. Project Scanner          │
-│                             │            │  6. Email Scanner            │
-│                             │            │  7. Zoom Scanner             │
-│                             │            │  8. Commitment Tracker       │
-│                             │            │  9. Calendar Scanner         │
-│                             │            │ 10. Contact Tracker          │
-│                             │            │ 11. Slack Scanner            │
-│                             │            │ 12. Notification Manager     │
-│                             │            │                              │
-│                             │            │  Needs: GEMINI_API_KEY       │
-│                             │            │         ANTHROPIC_API_KEY    │
-└─────────────────────────────┘            └──────────────────────────────┘
 
-Data flows (full node):
+```mermaid
+flowchart LR
+    BH[Browser History] --> BW[Browser Watcher]
+    MAIL[Apple Mail] --> ES[Email Scanner]
+    ZOOM[Zoom API] --> ZS[Zoom Scanner]
+    GIT[git repos] --> PS[Project Scanner]
+    CAL[Apple Calendar] --> CS[Calendar Scanner]
+    SLACK[Slack API] --> SS[Slack Scanner]
 
-  Browser history ──► Browser Watcher ──► memories/ ──┬──► Index Builder ──► index.md
-                                                       │
-  Apple Mail ────────► Email Scanner ──► email-thread-*.md ──┬──► Commitment Tracker ──► commitment-*.md
-                                                              │
-  Zoom API ───────────► Zoom Scanner ──► meeting-*.md ───────┤
-                                                              │
-  git repos ──────────► Project Scanner ──► project-*.md     │
-                                                              ├──► Contact Tracker ──► contact-*.md
-  Apple Calendar ─────► Calendar Scanner ──► calendar-event-*.md
-                                                              │
-  Slack API ──────────► Slack Scanner ──► slack-thread-*.md ─┘
+    BW --> MEM[(memories/)]
+    ES --> ET[email-thread-*.md]
+    ZS --> MT[meeting-*.md]
+    PS --> PJ[project-*.md]
+    CS --> CE[calendar-event-*.md]
+    SS --> ST[slack-thread-*.md]
 
-  All memories ──► Telegram Bot (keyword relevance) ──► Claude API ──► answers
-  index.md ─────────────────────────────┘
+    ET --> MEM
+    MT --> MEM
+    PJ --> MEM
+    CE --> MEM
+    ST --> MEM
 
-  calendar-event-*.md + commitment-*.md ──► Notification Manager ──► Telegram (proactive)
+    MEM --> IB[Index Builder]
+    IB --> IDX[index.md]
+
+    ET --> CT[Commitment Tracker]
+    MT --> CT
+    CT --> CM[commitment-*.md]
+
+    MEM --> CON[Contact Tracker]
+    CM --> CON
+    CON --> CX[contact-*.md]
+
+    MEM --> TG[Telegram Bot]
+    IDX --> TG
+    TG --> API[Claude API]
+    API --> YOU([YOU])
+
+    CE --> NM[Notification Manager]
+    CM --> NM
+    NM --> TG
 ```
 
 **Key design:** iCloud Drive is the shared bus. Watcher nodes write memories, full node picks them up and indexes them. Config is shared via iCloud; per-machine role is set via `SECOND_BRAIN_ROLE` env var in the launchd plist (NOT in config.yaml, which would sync everywhere).
@@ -579,6 +637,23 @@ The system supports two roles. Set `SECOND_BRAIN_ROLE` in each machine's launchd
 | `full` | All twelve loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
 | `watcher` | Browser watcher only | `GEMINI_API_KEY` only |
 
+```mermaid
+graph LR
+    subgraph LAPTOP["💻  MacBook  watcher"]
+        WB[Browser Watcher]
+    end
+    subgraph STUDIO["🖥️  Mac Studio  full"]
+        ALL[All 12 loops]
+    end
+    subgraph CLOUD["☁️  iCloud Drive"]
+        FILES["memories/ · skills/ · index.md · config.yaml"]
+    end
+
+    LAPTOP -- "writes memories" --> CLOUD
+    STUDIO -- "reads + indexes memories" --> CLOUD
+    STUDIO -- "writes index.md" --> CLOUD
+```
+
 Run `full` on your always-on machine (Mac Studio / Mac Mini). Run `watcher` on your MacBook — it captures pages you read while traveling and syncs memories to iCloud automatically.
 
 On the watcher machine, install only the watcher dependencies:
@@ -627,6 +702,14 @@ Routes:
 - `optimizer` → `claude-sonnet-4-20250514` (skill optimizer)
 - `judge` → `claude-haiku-4-5-20251001` (skill scoring)
 
+```mermaid
+flowchart LR
+    BW2["Browser Watcher\nScanners"] -->|summarize| GEM["gemini-2.0-flash\ncheap · high volume"]
+    TG2["Telegram Bot"] -->|chat| SON["claude-sonnet-4\nquality answers"]
+    OPT["Skill Optimizer"] -->|optimizer| SON
+    JUDGE["Skill Scorer"] -->|judge| HAI["claude-haiku-4-5\nfast · cheap scoring"]
+```
+
 ---
 
 ## Skill optimization and quality
@@ -652,6 +735,21 @@ The browser watcher classifies each URL before summarizing it. Detection cascade
 | `code-repo` | `summarize-repo.md` | `github.com`, `gitlab.com`, `bitbucket.org` |
 | `video-transcript` | `summarize-transcript.md` | `youtube.com`, `youtu.be`, `rev.com`, `vimeo.com`, `/transcript` in path; speaker attribution or timestamps in body |
 | `default` | `summarize-webpage.md` | Everything else |
+
+```mermaid
+flowchart TD
+    URL[Incoming URL] --> UP{URL pattern\nmatch?}
+    UP -- Yes --> ROUTE[Route to matched skill]
+    UP -- No --> CT{Content-Type\nheader match?}
+    CT -- Yes --> ROUTE
+    CT -- No --> CS{Content signals\nin body?}
+    CS -- Yes --> ROUTE
+    CS -- No --> DEFAULT[Fall back to\nsummarize-webpage.md]
+    ROUTE --> EXISTS{Skill file\nexists?}
+    EXISTS -- Yes --> RUN[Run skill]
+    EXISTS -- No --> DEFAULT
+    DEFAULT --> RUN
+```
 
 Detection never raises — if all rules fail or an exception occurs, the URL falls back to `summarize-webpage`. If the specialized skill file doesn't exist in `skills/`, the watcher logs a warning and also falls back to the default. The `content_type` value is written to each memory file's frontmatter for downstream filtering.
 
@@ -698,6 +796,28 @@ When the browser watcher encounters a URL whose content type has no skill file, 
 5. A rejected content type (`/reject-skill`) is blocked from re-triggering for `rejection_cooldown_hours` (default 24)
 
 If `skill_creation.require_approval: true` (or runtime override `/skill-approval on`): the seed is written to `$BRAIN/skill-drafts/` instead, you receive a Telegram notification, and nothing runs until you `/approve-skill <N>`. See *Managing summarizer quality* above for the full command set.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Drafting : New content type detected
+
+    Drafting --> Probation : approval off (auto-deploy)
+    Drafting --> AwaitingApproval : approval on (HITL)
+    AwaitingApproval --> Probation : /approve-skill
+    AwaitingApproval --> Rejected : /reject-skill
+
+    Probation --> GraduationCheck : probation_executions complete
+    GraduationCheck --> Active : utility_score ≥ 0.6
+    GraduationCheck --> Probation : score < 0.6 (rewrite + retry)
+    Probation --> Failed : 3 failed graduation attempts
+
+    Active --> Optimizing : nightly check triggers rewrite
+    Optimizing --> Active : rewrite accepted
+    Optimizing --> Active : regression rollback to .md.1
+
+    Rejected --> [*] : 24h cooldown
+    Failed --> [*]
+```
 
 ### Real-time reflection
 
