@@ -12,7 +12,7 @@ HAIKU_SKILL = """\
 name: summarize-webpage
 version: 1
 preferred_model: claude-haiku-4-5-20251001
-fallback_model: gemini/gemini-2.0-flash
+fallback_model: claude-haiku-4-5-20251001
 success_rate: null
 total_runs: 0
 ---
@@ -97,7 +97,7 @@ def test_both_provider_keeps_both_fields(skills_dir):
     asp.apply_provider(skills_dir, "both")
     fm = get_frontmatter(read_skill(skills_dir, "summarize-webpage"))
     assert fm["preferred_model"] == "claude-haiku-4-5-20251001"
-    assert fm["fallback_model"] == "gemini/gemini-2.0-flash"
+    assert fm["fallback_model"] == "claude-haiku-4-5-20251001"
 
 
 def test_sonnet_skill_preserved_on_claude(skills_dir):
@@ -108,12 +108,12 @@ def test_sonnet_skill_preserved_on_claude(skills_dir):
     assert "fallback_model" not in fm
 
 
-def test_sonnet_skill_gets_gemini_fallback_on_both(skills_dir):
+def test_sonnet_skill_gets_claude_fallback_on_both(skills_dir):
     write_skill(skills_dir, "chat", SONNET_SKILL)
     asp.apply_provider(skills_dir, "both")
     fm = get_frontmatter(read_skill(skills_dir, "chat"))
     assert "sonnet" in fm["preferred_model"]
-    assert fm["fallback_model"] == "gemini/gemini-2.0-flash"
+    assert fm["fallback_model"] == "claude-haiku-4-5-20251001"
 
 
 def test_sonnet_skill_replaced_by_gemini_on_gemini_provider(skills_dir):

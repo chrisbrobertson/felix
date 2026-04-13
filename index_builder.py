@@ -6,12 +6,12 @@ from datetime import datetime
 from pathlib import Path
 
 from litellm import acompletion
+from llm_routes import resolve
 
 log = logging.getLogger("index-builder")
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
 INDEX_PATH = BRAIN_DIR / "index.md"
-MODEL = "gemini/gemini-2.0-flash"
 MAX_INPUT_CHARS = 120_000  # cap input to indexer — summarize summaries
 
 SYSTEM_PROMPT = """You are maintaining a rolling index for a personal second brain.
@@ -60,7 +60,7 @@ class IndexBuilder:
 
         try:
             response = await acompletion(
-                model=MODEL,
+                model=resolve("summarize"),
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content":

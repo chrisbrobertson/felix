@@ -75,7 +75,7 @@ def _apply_to_file(skill_file: Path, provider: str):
             new_preferred = current_preferred  # keep existing sonnet model
         else:
             new_preferred = "claude-haiku-4-5-20251001"
-        new_fallback = "gemini/gemini-2.0-flash"
+        new_fallback = "claude-haiku-4-5-20251001"
 
     # Check if changes are needed
     current_fallback = meta.get("fallback_model")

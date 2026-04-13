@@ -52,7 +52,7 @@ class SkillExecutor:
         self._reload_if_modified()
 
         meta = self._skill["meta"]
-        preferred = meta.get("preferred_model", "gemini/gemini-2.0-flash")
+        preferred = meta.get("preferred_model", "summarize")
         fallback = meta.get("fallback_model")  # may be None
         user_msg = "\n".join(f"**{k}:**\n{v}" for k, v in inputs.items())
         messages = [
@@ -152,7 +152,7 @@ class SkillExecutor:
         self._reload_if_modified()
 
         meta = self._skill["meta"]
-        preferred = meta.get("preferred_model", "gemini/gemini-2.0-flash")
+        preferred = meta.get("preferred_model", "summarize")
         fallback = meta.get("fallback_model")
         user_msg = "\n".join(f"**{k}:**\n{v}" for k, v in inputs.items())
         messages = [
