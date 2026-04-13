@@ -255,7 +255,12 @@ class TelegramChatHandler:
         cached = self._header_cache.get(path)
         if cached and cached[0] == mtime:
             return cached[1]
-        header = path.read_text()[:500]
+        try:
+            header = path.read_text()[:500]
+        except OSError:
+            # iCloud may temporarily lock files during sync (EAGAIN).
+            # Return cached header if we have one, otherwise empty string.
+            return cached[1] if cached else ""
         self._header_cache[path] = (mtime, header)
         return header
 
@@ -380,9 +385,12 @@ class TelegramChatHandler:
 
         index_path = BRAIN_DIR / "index.md"
         if index_path.exists():
-            chunk = f"# Memory Index\n{index_path.read_text()}"
-            parts.append(chunk)
-            budget -= len(chunk)
+            try:
+                chunk = f"# Memory Index\n{index_path.read_text()}"
+                parts.append(chunk)
+                budget -= len(chunk)
+            except OSError:
+                pass
 
         memory_files = list((BRAIN_DIR / "memories").glob("*.md"))
 
@@ -397,7 +405,10 @@ class TelegramChatHandler:
             if budget <= 0:
                 log.debug(f"Context budget exhausted after {len(parts) - 1} memory files")
                 break
-            text = f.read_text()
+            try:
+                text = f.read_text()
+            except OSError:
+                continue
             if len(text) > budget:
                 text = text[:budget] + "\n[truncated]"
             parts.append(text)
