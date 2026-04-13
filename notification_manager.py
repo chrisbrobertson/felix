@@ -306,7 +306,11 @@ class NotificationManager:
             lines.append(f"\nCommitments due today ({len(due_today)}):")
             for fm in due_today:
                 ct = fm.get("commitment_type", "outbound")
-                desc = (fm.get("source_title") or "")[:60]
+                desc = (
+                    fm.get("source_title")
+                    or fm.get("summary")
+                    or "(untitled commitment)"
+                )[:60]
                 owner = fm.get("owner", "")
                 recipient = fm.get("recipient", "")
                 target = recipient if ct == "outbound" else owner
@@ -319,7 +323,11 @@ class NotificationManager:
             lines.append(f"\nOverdue ({len(overdue)}):")
             for fm in overdue:
                 ct = fm.get("commitment_type", "outbound")
-                desc = (fm.get("source_title") or "")[:60]
+                desc = (
+                    fm.get("source_title")
+                    or fm.get("summary")
+                    or "(untitled commitment)"
+                )[:60]
                 owner = fm.get("owner", "")
                 due_date_str = fm.get("due_date")
                 lines.append(f"• [{ct}] {desc} — was due {due_date_str}")
@@ -350,7 +358,11 @@ class NotificationManager:
         if stale_waiting:
             lines.append(f"\nStale waiting-ons ({len(stale_waiting)}):")
             for fm in stale_waiting[:5]:  # Limit to 5
-                desc = (fm.get("source_title") or "")[:60]
+                desc = (
+                    fm.get("source_title")
+                    or fm.get("summary")
+                    or "(untitled commitment)"
+                )[:60]
                 owner = fm.get("owner", "")
                 lines.append(f"• {desc} — from {owner}")
 
@@ -414,7 +426,11 @@ class NotificationManager:
             if due_date == today:
                 # Due today alert
                 ct = fm.get("commitment_type", "outbound")
-                desc = fm.get("source_title") or ""
+                desc = (
+                    fm.get("source_title")
+                    or fm.get("summary")
+                    or "(untitled commitment)"
+                )
                 owner = fm.get("owner", "")
                 recipient = fm.get("recipient", "")
                 source_title = fm.get("source_memory", "").split(":", 1)[-1]
@@ -432,7 +448,11 @@ class NotificationManager:
             elif due_date == tomorrow:
                 # Due tomorrow alert
                 ct = fm.get("commitment_type", "outbound")
-                desc = fm.get("source_title") or ""
+                desc = (
+                    fm.get("source_title")
+                    or fm.get("summary")
+                    or "(untitled commitment)"
+                )
                 owner = fm.get("owner", "")
                 recipient = fm.get("recipient", "")
                 source_title = fm.get("source_memory", "").split(":", 1)[-1]
@@ -564,7 +584,11 @@ class NotificationManager:
             lines.append(f"\nOpen commitments with attendees:")
             for fm in open_commitments[:5]:  # Limit to 5
                 ct = fm.get("commitment_type", "outbound")
-                desc = (fm.get("source_title") or "")[:60]
+                desc = (
+                    fm.get("source_title")
+                    or fm.get("summary")
+                    or "(untitled commitment)"
+                )[:60]
                 owner = fm.get("owner", "")
                 recipient = fm.get("recipient", "")
                 due_date = fm.get("due_date")

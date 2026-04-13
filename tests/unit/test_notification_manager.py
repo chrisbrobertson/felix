@@ -610,6 +610,107 @@ def test_commitment_alerts_pruned_by_age(tmp_path):
     assert "abc123def456" not in reloaded["sent_commitment_alerts"]
 
 
+@pytest.mark.asyncio
+async def test_commitment_alert_fallback_to_summary(tmp_path):
+    """Empty source_title falls back to summary field."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_commitment_alerts": []}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  enabled: true\n")
+
+    now = datetime(2026, 4, 12, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    today_str = now.date().isoformat()
+
+    # Create commitment with empty source_title but valid summary
+    p = memories_dir / "commitment-test-abc123def456.md"
+    fm = {
+        "type": "commitment",
+        "source_title": "",
+        "summary": "Send revised budget to Alice",
+        "status": "active",
+        "commitment_type": "outbound",
+        "owner": "Chris Robertson",
+        "owner_email": "chris@acme.com",
+        "recipient": "Alice",
+        "due_date": today_str,
+        "last_scanned": "2026-04-11T10:00:00",
+        "source_memory": "zoom:test123",
+        "confidence": 0.85,
+    }
+    frontmatter = yaml.dump(fm, sort_keys=False)
+    p.write_text(f"---\n{frontmatter}---\n\n## Context\nTest.\n")
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_commitment_alerts(state)
+
+    bot_mock.send_message.assert_called_once()
+    message_text = bot_mock.send_message.call_args[1]["text"]
+    assert "Send revised budget to Alice" in message_text
+    assert "[outbound] \n" not in message_text
+
+
+@pytest.mark.asyncio
+async def test_commitment_alert_fallback_to_placeholder(tmp_path):
+    """Empty source_title and summary fall back to placeholder."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_commitment_alerts": []}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  enabled: true\n")
+
+    now = datetime(2026, 4, 12, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    today_str = now.date().isoformat()
+
+    # Create commitment with empty source_title and empty summary
+    p = memories_dir / "commitment-test-def456789abc.md"
+    fm = {
+        "type": "commitment",
+        "source_title": "",
+        "summary": "",
+        "status": "active",
+        "commitment_type": "outbound",
+        "owner": "Chris Robertson",
+        "owner_email": "chris@acme.com",
+        "recipient": "Alice",
+        "due_date": today_str,
+        "last_scanned": "2026-04-11T10:00:00",
+        "source_memory": "zoom:test123",
+        "confidence": 0.85,
+    }
+    frontmatter = yaml.dump(fm, sort_keys=False)
+    p.write_text(f"---\n{frontmatter}---\n\n## Context\nTest.\n")
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_commitment_alerts(state)
+
+    bot_mock.send_message.assert_called_once()
+    message_text = bot_mock.send_message.call_args[1]["text"]
+    assert "(untitled commitment)" in message_text
+
+
 # ── Pre-Meeting Alerts ────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
