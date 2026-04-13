@@ -47,9 +47,13 @@ class IndexBuilder:
         chunks = []
         budget = MAX_INPUT_CHARS
         for f in memory_files:
-            text = f.read_text()
             if budget <= 0:
                 break
+            try:
+                text = f.read_text()
+            except OSError as e:
+                log.warning("Skipping %s during index build: %s", f.name, e)
+                continue
             chunks.append(text[:budget])
             budget -= len(text)
 
@@ -107,5 +111,8 @@ class IndexBuilder:
                 interval = config.get("memory", {}).get("index_rebuild_interval", 3600)
             except Exception:
                 interval = 3600
-            await self._build()
+            try:
+                await self._build()
+            except Exception as e:
+                log.error("Index build loop error (will retry next cycle): %s", e)
             await asyncio.sleep(interval)
