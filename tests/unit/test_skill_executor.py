@@ -292,8 +292,8 @@ async def test_run_resolves_alias_model(skills_dir):
 
     call_kwargs = mock_acompletion.call_args
     called_model = call_kwargs[1].get("model") or call_kwargs[0][0]
-    assert called_model == "gemini/gemini-2.0-flash", (
-        f"Expected alias 'summarize' to resolve to 'gemini/gemini-2.0-flash', got {called_model!r}"
+    assert called_model == "claude-haiku-4-5-20251001", (
+        f"Expected alias 'summarize' to resolve to 'claude-haiku-4-5-20251001', got {called_model!r}"
     )
 
 
@@ -324,6 +324,6 @@ async def test_run_with_tools_resolves_alias_model(skills_dir):
 
     call_kwargs = mock_acompletion.call_args
     called_model = call_kwargs[1].get("model") or call_kwargs[0][0]
-    assert called_model == "gemini/gemini-2.0-flash", (
-        f"Expected alias 'summarize' to resolve to 'gemini/gemini-2.0-flash', got {called_model!r}"
+    assert called_model == "claude-haiku-4-5-20251001", (
+        f"Expected alias 'summarize' to resolve to 'claude-haiku-4-5-20251001', got {called_model!r}"
     )

@@ -149,8 +149,8 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 ## LLM Routing
 
 LiteLLM unified API with named routes:
-- `summarize` → `gemini/gemini-2.0-flash` (high volume, cheap)
-- `chat` / `optimizer` → `claude-sonnet-4-20250514` (quality matters)
+- `summarize` → `claude-haiku-4-5-20251001` (high volume, cheap)
+- `chat` / `optimizer` → `claude-sonnet-4-6` (quality matters)
 - `judge` → `claude-haiku-4-5-20251001` (skill optimizer scoring)
 - `local` fallback → OpenAI-compatible local endpoint
 

@@ -15,9 +15,9 @@ resolution deterministic and testable.
 """
 
 ROUTES = {
-    "summarize": "gemini/gemini-2.0-flash",        # high-volume scanners
-    "chat": "claude-sonnet-4-20250514",            # Telegram Q&A
-    "optimizer": "claude-sonnet-4-20250514",       # skill optimizer rewrites
+    "summarize": "claude-haiku-4-5-20251001",      # high-volume scanners
+    "chat": "claude-sonnet-4-6",                   # Telegram Q&A
+    "optimizer": "claude-sonnet-4-6",              # skill optimizer rewrites
     "judge": "claude-haiku-4-5-20251001",          # skill LLM-as-judge scoring
 }
 

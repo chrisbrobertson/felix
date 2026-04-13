@@ -2,16 +2,16 @@
 from llm_routes import ROUTES, resolve
 
 
-def test_summarize_resolves_to_gemini():
-    assert resolve("summarize") == "gemini/gemini-2.0-flash"
+def test_summarize_resolves_to_claude_haiku():
+    assert resolve("summarize") == "claude-haiku-4-5-20251001"
 
 
 def test_chat_resolves_to_claude_sonnet():
-    assert resolve("chat") == "claude-sonnet-4-20250514"
+    assert resolve("chat") == "claude-sonnet-4-6"
 
 
 def test_optimizer_resolves_to_claude_sonnet():
-    assert resolve("optimizer") == "claude-sonnet-4-20250514"
+    assert resolve("optimizer") == "claude-sonnet-4-6"
 
 
 def test_judge_resolves_to_claude_haiku():
