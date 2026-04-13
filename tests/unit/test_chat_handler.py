@@ -459,6 +459,69 @@ async def test_forget_no_args(handler, brain_dir):
     assert "/forget <domain>" in reply
 
 
+async def test_forget_single_index(handler, brain_dir):
+    """Test /forget N (single arg) preserves existing behavior."""
+    m = brain_dir / "memories"
+    p = write_memory(m, "test-aaa111", [], "Test Page")
+    handler._active_list = [p]
+    update, ctx = _make_update(12345, ["1"])
+    await handler.cmd_forget(update, ctx)
+    assert not p.exists()
+    assert "Forgotten:" in update.message.reply_text.call_args[0][0]
+    assert p not in handler._active_list
+
+
+async def test_forget_multiple_indices_unlinks_all(handler, brain_dir):
+    """Test /forget 1 2 3 removes all three items."""
+    m = brain_dir / "memories"
+    p1 = write_memory(m, "one-aaa111", [], "Page One")
+    p2 = write_memory(m, "two-bbb222", [], "Page Two")
+    p3 = write_memory(m, "three-ccc333", [], "Page Three")
+    handler._active_list = [p1, p2, p3]
+    update, ctx = _make_update(12345, ["1", "2", "3"])
+    await handler.cmd_forget(update, ctx)
+    assert not p1.exists()
+    assert not p2.exists()
+    assert not p3.exists()
+    assert "Forgot 3 items" in update.message.reply_text.call_args[0][0]
+    assert handler._active_list == []
+
+
+async def test_forget_multiple_indices_handles_missing_file_gracefully(handler, brain_dir):
+    """Test /forget handles cases where one file doesn't exist."""
+    m = brain_dir / "memories"
+    p1 = write_memory(m, "one-aaa111", [], "Page One")
+    p2 = write_memory(m, "two-bbb222", [], "Page Two")
+    p3 = write_memory(m, "three-ccc333", [], "Page Three")
+    handler._active_list = [p1, p2, p3]
+    # Manually delete p2 to simulate missing file
+    p2.unlink()
+    update, ctx = _make_update(12345, ["1", "2", "3"])
+    await handler.cmd_forget(update, ctx)
+    assert not p1.exists()
+    assert not p2.exists()  # Was already deleted
+    assert not p3.exists()
+    assert "Forgot 3 items" in update.message.reply_text.call_args[0][0]
+    assert handler._active_list == []
+
+
+async def test_forget_multiple_indices_no_offbyone_after_mutation(handler, brain_dir):
+    """Test snapshot prevents off-by-one when removing from start of list."""
+    m = brain_dir / "memories"
+    p1 = write_memory(m, "one-aaa111", [], "Page One")
+    p2 = write_memory(m, "two-bbb222", [], "Page Two")
+    p3 = write_memory(m, "three-ccc333", [], "Page Three")
+    handler._active_list = [p1, p2, p3]
+    # Forget items 1 and 3 — without snapshot, removing 1 first would shift indices
+    update, ctx = _make_update(12345, ["1", "3"])
+    await handler.cmd_forget(update, ctx)
+    assert not p1.exists()
+    assert p2.exists()
+    assert not p3.exists()
+    assert "Forgot 2 items" in update.message.reply_text.call_args[0][0]
+    assert handler._active_list == [p2]
+
+
 # ── /readings command ─────────────────────────────────────────────────────────
 
 async def test_cmd_readings_lists_recent(handler, brain_dir):

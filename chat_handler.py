@@ -27,7 +27,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("readings",       "List recent web captures"),
         ("search",         "Keyword search — grouped by type. /search <type> <query> to filter"),
         ("reading",        "Show reading N from last list"),
-        ("forget",         "Forget item N from your last list, or all captures from a domain"),
+        ("forget",         "Forget item(s) N [N...] from your last list, or all captures from a domain"),
         ("people",         "List contacts (alias of /contacts)"),
         ("contacts",       "List people you've interacted with"),
         ("contact",        "Show contact by name or N"),
@@ -818,30 +818,77 @@ class TelegramChatHandler:
         if not context.args:
             await update.message.reply_text(
                 "Usage:\n"
-                "  /forget <N>        — forget item N from your last list\n"
+                "  /forget <N> [N...] — forget item(s) N from your last list\n"
                 "  /forget <domain>   — forget all web captures from a domain"
             )
             return
-        arg = context.args[0]
-        if arg.isdigit():
-            path = self._resolve_index(arg)
-            if path is None:
-                await update.message.reply_text("Invalid N. Run a list command first.")
-                return
-            fm = self._parse_frontmatter(path)
-            title = fm.get("source_title") or fm.get("title") or path.name
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-            try:
-                self._active_list.remove(path)
-            except ValueError:
-                pass
-            await update.message.reply_text(f"Forgotten: {title}")
+
+        # Check if first arg is numeric (single or multi-index mode)
+        if context.args[0].isdigit():
+            # Snapshot the active list before any mutation
+            snapshot = list(self._active_list)
+
+            # Resolve all indices against the snapshot
+            indices_to_remove = []
+            for arg in context.args:
+                if not arg.isdigit():
+                    await update.message.reply_text(
+                        f"Invalid argument '{arg}' — all arguments must be numbers when using index mode."
+                    )
+                    return
+                try:
+                    idx = int(arg) - 1
+                except (ValueError, TypeError):
+                    await update.message.reply_text(f"Invalid index '{arg}'.")
+                    return
+                if 0 <= idx < len(snapshot):
+                    indices_to_remove.append(idx)
+                else:
+                    await update.message.reply_text(
+                        f"Index {arg} out of range (1-{len(snapshot)}). Run a list command first."
+                    )
+                    return
+
+            # Deduplicate indices
+            indices_to_remove = sorted(set(indices_to_remove))
+
+            # Unlink each file, track successes and failures
+            successes = []
+            failures = []
+            for idx in indices_to_remove:
+                path = snapshot[idx]
+                try:
+                    path.unlink()
+                    successes.append((idx + 1, path))  # Store 1-based index for error reporting
+                except FileNotFoundError:
+                    successes.append((idx + 1, path))  # Already gone, count as success
+                except Exception:
+                    failures.append(idx + 1)  # Store 1-based index for error reporting
+
+            # Remove successfully deleted paths from active list
+            for _, path in successes:
+                try:
+                    self._active_list.remove(path)
+                except ValueError:
+                    pass
+
+            # Reply with summary
+            if not failures:
+                if len(successes) == 1:
+                    fm = self._parse_frontmatter(successes[0][1])
+                    title = fm.get("source_title") or fm.get("title") or successes[0][1].name
+                    await update.message.reply_text(f"Forgotten: {title}")
+                else:
+                    await update.message.reply_text(f"Forgot {len(successes)} items.")
+            else:
+                failed_str = ", ".join(f"#{n}" for n in failures)
+                await update.message.reply_text(
+                    f"Forgot {len(successes)} of {len(successes) + len(failures)} (failed: {failed_str})."
+                )
             return
+
         # Non-numeric → domain purge
-        domain = arg.lower()
+        domain = context.args[0].lower()
         count = self._purge_domain(domain)
         if count:
             await update.message.reply_text(f"Forgotten {count} captures from {domain}.")
@@ -2025,9 +2072,10 @@ class TelegramChatHandler:
 
         return f"Memory not found: {name}"
 
-    def _list_comms_text(self, kind: Optional[str] = None, limit: int = 20) -> str:
+    def _list_comms_text(self, kind: Optional[str] = None, limit: int = 20, show_all: bool = False) -> str:
         """Return formatted comms list text (called by cmd_comms and tool dispatch).
-        kind: 'email' or 'slack' or None for both."""
+        kind: 'email' or 'slack' or None for both.
+        show_all: if True, show all email threads including marketing/automated."""
         limit = max(1, min(limit, 100))
         type_map = {"email": "email_thread", "slack": "slack_thread"}
         wanted_types = {type_map[kind]} if kind else {"email_thread", "slack_thread"}
@@ -2040,6 +2088,13 @@ class TelegramChatHandler:
                 fm = self._parse_frontmatter(f)
                 if fm.get("type") != mem_type:
                     continue
+
+                # Filter email threads by classification unless show_all is True
+                if mem_type == "email_thread" and not show_all:
+                    classification = fm.get("classification", "human")
+                    if classification in {"marketing", "automated"}:
+                        continue
+
                 comms.append((f, fm, mem_type))
 
         if not comms:
