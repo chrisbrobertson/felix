@@ -1074,6 +1074,81 @@ async def test_cmd_event_invalid_index(handler):
     assert "Invalid index" in update.message.reply_text.call_args[0][0]
 
 
+def write_event_memory_with_cal(memories_dir: Path, slug: str, calendar_names: list,
+                                start: str = "2026-04-12T10:00:00",
+                                title: str = "Team Meeting") -> Path:
+    """Write a calendar event memory with a calendar_names list (new format)."""
+    path = memories_dir / f"calendar-event-2026-04-12-{slug}-xyz999.md"
+    cal_list = "[" + ", ".join(calendar_names) + "]"
+    path.write_text(
+        f"---\nsource_title: '{title}'\nsummary: Event summary.\n"
+        f"tags: [meeting]\nlast_scanned: '2026-04-12T10:00:00'\n"
+        f"source_url: calendar:xyz\ntype: calendar_event\n"
+        f"calendar_names: {cal_list}\nstart_time: '{start}'\nend_time: '{start}'\n"
+        f"all_day: false\nparticipants: [Alice]\n---\n\nContent.\n"
+    )
+    return path
+
+
+@pytest.mark.asyncio
+async def test_events_filter_matches_calendar_name(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_event_memory_with_cal(m, "work-evt", ["Work"], title="Sync")
+    write_event_memory_with_cal(m, "personal-evt", ["Personal"], title="Dentist")
+    update, ctx = _make_update(12345, ["work"])
+    await handler.cmd_events(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Sync" in reply
+    assert "Dentist" not in reply
+
+
+@pytest.mark.asyncio
+async def test_events_filter_case_insensitive(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_event_memory_with_cal(m, "work-ci", ["Work"], title="Standup")
+    update, ctx = _make_update(12345, ["WORK"])
+    await handler.cmd_events(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Standup" in reply
+
+
+@pytest.mark.asyncio
+async def test_events_filter_empty_result_shows_available_calendars(handler, brain_dir):
+    m = brain_dir / "memories"
+    write_event_memory_with_cal(m, "family-evt", ["Family"], title="Dinner")
+    update, ctx = _make_update(12345, ["nonexistent"])
+    await handler.cmd_events(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "No events found matching calendar 'nonexistent'" in reply
+    assert "Available calendars" in reply
+    assert "Family" in reply
+
+
+@pytest.mark.asyncio
+async def test_events_filter_and_limit_both_applied(handler, brain_dir):
+    m = brain_dir / "memories"
+    for i in range(5):
+        write_event_memory_with_cal(m, f"work-{i}", ["Work"], title=f"Work Evt {i}",
+                                    start=f"2026-04-12T{10+i:02d}:00:00")
+    update, ctx = _make_update(12345, ["work", "2"])
+    await handler.cmd_events(update, ctx)
+    assert len(handler._last_event_set) == 2
+
+
+@pytest.mark.asyncio
+async def test_event_detail_reads_calendar_names_list(handler, brain_dir):
+    """cmd_event detail view should use calendar_names list, not calendar_name string."""
+    m = brain_dir / "memories"
+    p = write_event_memory_with_cal(m, "cal-names-test", ["Work", "Shared"],
+                                    title="Cross-cal Meeting")
+    handler._last_event_set = [p]
+    update, ctx = _make_update(12345, ["1"])
+    await handler.cmd_event(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Work" in reply
+    assert "Shared" in reply
+
+
 # ── /meetings and /meeting commands ──────────────────────────────────────────
 
 def write_meeting_memory(memories_dir: Path, slug: str,

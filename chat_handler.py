@@ -34,7 +34,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("contact",        "Show contact by name or N"),
         ("projects",       "List code/work/person projects (optional category filter)"),
         ("project",        "Show project N from last list"),
-        ("events",         "List recent and upcoming calendar events"),
+        ("events",         "List calendar events. Filter: /events [calendar] [N]"),
         ("event",          "Show event N from last list"),
         ("meetings",       "List recent meeting transcripts"),
         ("meeting",        "Show meeting N from last list"),
@@ -1698,26 +1698,48 @@ class TelegramChatHandler:
             return self._last_event_set[idx]
         return None
 
-    def _list_events_text(self, limit: int = 20) -> str:
+    def _list_events_text(self, limit: int = 20, calendar_filter=None) -> str:
         """Return formatted events list text (called by cmd_events and tool dispatch)."""
         limit = max(1, min(limit, 100))
         files = list((BRAIN_DIR / "memories").glob("calendar-event-*.md"))
-        events = []
+        all_events = []
         for f in files:
             fm = self._parse_frontmatter(f)
             if fm.get("type") != "calendar_event":
                 continue
-            events.append((f, fm))
+            all_events.append((f, fm))
 
-        if not events:
+        if not all_events:
             return "No calendar events found."
 
-        events.sort(key=lambda x: x[1].get("start_time") or "", reverse=False)
+        all_events.sort(key=lambda x: x[1].get("start_time") or "", reverse=False)
+
+        if calendar_filter:
+            cf = calendar_filter.lower()
+            events = [
+                (f, fm) for f, fm in all_events
+                if any(cf in name.lower() for name in fm.get("calendar_names", []))
+            ]
+            if not events:
+                # Collect distinct calendar names for the hint
+                all_cal_names: set[str] = set()
+                for _, fm in all_events:
+                    for name in fm.get("calendar_names", []):
+                        all_cal_names.add(name)
+                hint = ", ".join(sorted(all_cal_names)) if all_cal_names else "(none found)"
+                return (
+                    f"No events found matching calendar '{calendar_filter}'.\n"
+                    f"Available calendars: {hint}"
+                )
+        else:
+            events = all_events
+
         events = events[:limit]
         self._last_event_set = [f for f, _ in events]
         self._active_list = self._last_event_set
 
-        lines = [f"Calendar events ({len(events)} shown):"]
+        filter_note = f" in '{calendar_filter}'" if calendar_filter else ""
+        lines = [f"Calendar events{filter_note} ({len(events)} shown):"]
         for i, (_, fm) in enumerate(events, 1):
             title = (fm.get("source_title") or "(no title)")[:50]
             start = self._fmt_datetime(fm.get("start_time") or "")
@@ -1732,11 +1754,14 @@ class TelegramChatHandler:
     async def cmd_events(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
-        try:
-            limit = int(context.args[0]) if context.args else 10
-        except (ValueError, IndexError):
-            limit = 10
-        text = self._list_events_text(limit)
+        limit = 10
+        calendar_filter = None
+        for arg in (context.args or []):
+            if arg.isdigit():
+                limit = int(arg)
+            else:
+                calendar_filter = arg
+        text = self._list_events_text(limit, calendar_filter=calendar_filter)
         await update.message.reply_text(text)
 
     async def cmd_event(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1757,7 +1782,8 @@ class TelegramChatHandler:
         end = fm.get("end_time") or ""
         all_day = fm.get("all_day", False)
         location = fm.get("location") or ""
-        cal = fm.get("calendar_name") or ""
+        cal_raw = fm.get("calendar_names", fm.get("calendar_name", ""))
+        cal = ", ".join(cal_raw) if isinstance(cal_raw, list) else (cal_raw or "")
         participants = fm.get("participants") or []
         summary = fm.get("summary") or ""
 
