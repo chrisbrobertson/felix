@@ -70,7 +70,7 @@ Felix is a personal knowledge system that automatically captures everything you 
 
 ## Architecture
 
-Felix runs on two kinds of machines: a **full node** (always-on Mac like a Mac Studio or Mac Mini) that runs all the processing, and optional **watcher nodes** (laptops) that capture browser history while you're traveling. Both sync through iCloud Drive.
+Felix runs on two kinds of machines: a **full node** (always-on Mac like a Mac Studio or Mac Mini) that runs all the processing, and optional **watcher nodes** (laptops) that capture browser history, git repos, email, calendar, and Slack while you're traveling. Both sync through iCloud Drive.
 
 ### Deployment topology
 
@@ -79,7 +79,7 @@ Two kinds of machines, one shared filesystem.
 ```mermaid
 graph LR
     subgraph WATCHER["💻 Watcher Node (optional)"]
-        WB[Browser Watcher]
+        WB[5 capture loops]
     end
     subgraph CLOUD["☁️ iCloud Drive"]
         BUS["memories · skills · index · config"]
@@ -121,7 +121,7 @@ graph TB
 
 ### Watcher node
 
-A watcher machine does one thing: capture pages you read and push memory files to iCloud.
+A watcher machine runs five capture loops: browser history, git repos, email threads, calendar events, and Slack threads. It writes memory files to iCloud; the full node picks them up and indexes them.
 
 ```mermaid
 flowchart LR
@@ -131,6 +131,14 @@ flowchart LR
     BW -->|summarize| GEM[Gemini]
     GEM --> BW
     BW -->|write memory file| CLOUD[(iCloud Drive)]
+    GIT[git repos] --> PS[Project Scanner]
+    MAIL[Apple Mail] --> ES[Email Scanner]
+    CAL[Apple Calendar] --> CS[Calendar Scanner]
+    SLACK[Slack API] --> SS[Slack Scanner]
+    PS --> CLOUD
+    ES --> CLOUD
+    CS --> CLOUD
+    SS --> CLOUD
     CLOUD -.->|auto-synced| FULL[Full Node picks it up]
 ```
 
@@ -165,7 +173,7 @@ flowchart LR
     BW --> MEM[(memories/)]
     ES --> ET[email-thread-*.md]
     ZS --> MT[meeting-*.md]
-    PS --> PJ[project-*.md]
+    PS --> PJ[project-{hostname}-*.md]
     CS --> CE[calendar-event-*.md]
     SS --> ST[slack-thread-*.md]
 
@@ -196,7 +204,7 @@ flowchart LR
     NM --> TG
 ```
 
-**Key design:** iCloud Drive is the shared bus. Watcher nodes write memories, full node picks them up and indexes them. Config is shared via iCloud; per-machine role is set via `SECOND_BRAIN_ROLE` env var in the launchd plist (NOT in config.yaml, which would sync everywhere).
+**Key design:** iCloud Drive is the shared bus. Watcher nodes write memories (browser history, git repos, email threads, calendar events, Slack threads), full node picks them up and indexes them. Config is shared via iCloud; per-machine role is set via `SECOND_BRAIN_ROLE` env var in the launchd plist (NOT in config.yaml, which would sync everywhere). Project memory files are hostname-scoped (`project-{hostname}-{name}.md`) so the same repo can be tracked on multiple machines without filename collisions.
 
 **Specialized summarizers.** Felix doesn't use one generic prompt for everything. It classifies each URL into one of five content types (research paper, API docs, code repo, video transcript, or default web page) and routes to a specialized skill — `summarize-paper.md`, `summarize-docs.md`, `summarize-repo.md`, `summarize-transcript.md`, or `summarize-webpage.md`. When a new content type appears that has no matching skill, the daemon can draft one automatically. See *Skill optimization and quality* below.
 
@@ -383,7 +391,7 @@ Muted state persists across daemon restarts. `/briefing` works even when muted �
 | `/people [N]` | Alias for `/contacts` |
 | `/contact <name\|N>` | Detailed contact view: interaction history, related threads, relationship score |
 | **Projects** | |
-| `/projects [category] [N]` | List git repos (default 10, max 50). Optional category filter (currently `code`). Sorted by last commit. |
+| `/projects [category] [N]` | List git repos (default 10, max 50). Optional category filter (currently `code`). Sorted by last commit. When the same repo exists on multiple machines, displays `hosts: [hostname1, hostname2]`. |
 | `/project <N>` | Full project detail: description, languages, recent commits, README summary, related projects |
 | **Calendar & meetings** | |
 | `/events [N]` | Calendar events in ±7-day window, sorted by start time (default 10, max 50) |
@@ -654,6 +662,8 @@ After pulling or editing source files, re-run the installer to push changes to t
 
 The installer is idempotent — it skips unchanged files and only copies what has changed. The daemon is reloaded automatically at the end.
 
+**Note for multi-machine setups:** After upgrading to a version that includes hostname-scoped project files, restart the daemon on every machine. Each machine will automatically rename its `project-{name}.md` files to `project-{hostname}-{name}.md` on first start (migration runs once, safely).
+
 ---
 
 ## Verifying it works
@@ -685,12 +695,12 @@ The system supports two roles. Set `SECOND_BRAIN_ROLE` in each machine's launchd
 | Role | What runs | API keys needed |
 |------|-----------|-----------------|
 | `full` | All twelve loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
-| `watcher` | Browser watcher only | `GEMINI_API_KEY` only |
+| `watcher` | Browser watcher + project/email/calendar/slack scanners | `GEMINI_API_KEY` only |
 
 ```mermaid
 graph LR
     subgraph LAPTOP["💻  MacBook  watcher"]
-        WB[Browser Watcher]
+        WB[5 capture loops]
     end
     subgraph STUDIO["🖥️  Mac Studio  full"]
         ALL[All 12 loops]
@@ -704,13 +714,18 @@ graph LR
     STUDIO -- "writes index.md" --> CLOUD
 ```
 
-Run `full` on your always-on machine (Mac Studio / Mac Mini). Run `watcher` on your MacBook — it captures pages you read while traveling and syncs memories to iCloud automatically.
+Run `full` on your always-on machine (Mac Studio / Mac Mini). Run `watcher` on your MacBook — it captures browser history, git repos, email threads, calendar events, and Slack threads while you're mobile, syncing memories to iCloud automatically.
 
 On the watcher machine, install only the watcher dependencies:
 ```bash
-pip install litellm httpx beautifulsoup4 lxml pyyaml
+pip install litellm httpx beautifulsoup4 lxml pyyaml pyobjc-framework-EventKit
 ```
 (`python-telegram-bot` is not needed and will not be imported.)
+
+**Watcher setup notes:**
+- `./install.sh` prompts for `SLACK_USER_TOKEN` on both roles (not full-only)
+- Full Disk Access is required on both roles for the email scanner SQLite path
+- Calendar permission (EventKit) is auto-requested on first run for the calendar scanner
 
 The full node picks up memory files written by watcher nodes and indexes them automatically.
 

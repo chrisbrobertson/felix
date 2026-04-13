@@ -20,7 +20,7 @@ memory_writer.py       # Atomic writes of memory markdown to iCloud
 chat_handler.py        # Telegram bot; keyword-relevance context loading
 index_builder.py       # Hourly index.md rebuild
 skill_optimizer.py     # Daily LLM-as-judge skill improvement (v0.1 is a stub)
-project_scanner.py     # Scans ~/repos for git repos, writes project-*.md memory files
+project_scanner.py     # Scans ~/repos for git repos, writes project-{hostname}-*.md memory files
 email_scanner.py       # Reads Apple Mail, writes email-thread-*.md memory files
 zoom_scanner.py        # Polls Zoom API, parses VTT transcripts, writes meeting-*.md files
 commitment_tracker.py  # Extracts commitments from meeting/email memories, /commitments cmd
@@ -123,7 +123,7 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 4. **Skill Optimizer** (3 AM daily) — scores recent executions using LLM-as-judge against source content, rewrites underperforming skill instructions, appends to evolution log.
 
-5. **Project Scanner** (every 5 min) — globs `~/repos/` and `~/repo/` for git repos, extracts metadata (remote URL, HEAD sha, recent commits, branches, languages), generates a 1-2 sentence LLM summary from README on first scan or README change, writes `project-{name}.md` memory file. Skips write when HEAD sha unchanged. `type: project` + `category: code` in frontmatter (was `type: code_project` before v1.1.0 — migration runs automatically on `ProjectScanner.__init__`). Exposes `/projects [category] [N]` and `/project <N>` Telegram commands.
+5. **Project Scanner** (every 5 min) — globs `~/repos/` and `~/repo/` for git repos, extracts metadata (remote URL, HEAD sha, recent commits, branches, languages), generates a 1-2 sentence LLM summary from README on first scan or README change, writes `project-{hostname}-{name}.md` memory file. Skips write when HEAD sha unchanged. `type: project` + `category: code` in frontmatter (was `type: code_project` before v1.1.0 — migration runs automatically on `ProjectScanner.__init__`). Filename migration from `project-{name}.md` to hostname-scoped pattern also runs automatically on init. Exposes `/projects [category] [N]` and `/project <N>` Telegram commands; the list view groups by repo base name when the same repo exists on multiple machines.
 
 6. **Email Scanner** (every 5 min) — reads Apple Mail.app data (SQLite Envelope Index primary, AppleScript fallback), writes one `email-thread-{slug}-{conv-id}.md` per conversation thread. Skips write when `message_count` and `last_message` unchanged. `type: email_thread` in frontmatter. Requires Full Disk Access for SQLite path; on macOS Sonoma, Homebrew Python (ad-hoc signed) silently fails FDA at runtime even when granted — AppleScript fallback (120s timeout, last-500-message item-slice approach) is the operative path on most setups. State (high-water ROWID) persisted in `DEPLOY_DIR/email-scanner-state.json`.
 
@@ -144,7 +144,7 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 ## Two Deployment Roles
 
 - **`full`** — all twelve loops. Runs on always-on machine (Mac Studio/Mini). Needs `ANTHROPIC_API_KEY` + `GEMINI_API_KEY`.
-- **`watcher`** — browser watcher only. Runs on MacBook. Needs only `GEMINI_API_KEY`. Full-node imports (`python-telegram-bot`, etc.) must be deferred inside the `role == "full"` block to avoid crashing on watcher nodes that don't have those packages installed.
+- **`watcher`** — five capture loops (browser watcher + project/email/calendar/slack scanners). Runs on MacBook. Needs only `GEMINI_API_KEY`. Full-node imports (`python-telegram-bot`, etc.) must be deferred inside the `role == "full"` block to avoid crashing on watcher nodes that don't have those packages installed.
 
 ## LLM Routing
 
