@@ -421,6 +421,7 @@ DAEMON_FILES=(
     contact_tracker.py
     email_scanner.py
     index_builder.py
+    llm_routes.py
     memory_writer.py
     notification_manager.py
     project_scanner.py
