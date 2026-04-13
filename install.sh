@@ -315,28 +315,30 @@ if [ "$ROLE" = "full" ]; then
     fi
 fi
 
-# ── 4d. GitHub credentials (optional) ──────────────────────────────────────────
+# ── 4d. GitHub credentials (full role only, optional) ─────────────────────────
 GITHUB_PAT=""
 GITHUB_REPO=""
-if [ -n "$EXISTING_GITHUB_PAT" ] && [ -n "$EXISTING_GITHUB_REPO" ]; then
-    ok "GitHub credentials (from existing config)"
-    GITHUB_PAT="$EXISTING_GITHUB_PAT"
-    GITHUB_REPO="$EXISTING_GITHUB_REPO"
-elif [ -n "${GITHUB_PAT:-}" ] && [ -n "${GITHUB_REPO:-}" ]; then
-    ok "GitHub credentials (from environment)"
-else
-    echo ""
-    echo "GitHub (optional — leave blank to keep using local files)"
-    echo "────────────────────────────────────────────────────────"
-    echo "  Create a Personal Access Token at https://github.com/settings/tokens"
-    echo "  Required scope: repo (full control of private repositories)"
-    echo ""
-    read -r -p "  Personal access token with 'repo' scope (Enter to skip): " GITHUB_PAT
-    if [ -n "$GITHUB_PAT" ]; then
-        read -r -p "  Repository (owner/name, e.g. chrisrobertson/secondbrain): " GITHUB_REPO
-        ok "GitHub credentials configured"
+if [ "$ROLE" = "full" ]; then
+    if [ -n "$EXISTING_GITHUB_PAT" ] && [ -n "$EXISTING_GITHUB_REPO" ]; then
+        ok "GitHub credentials (from existing config)"
+        GITHUB_PAT="$EXISTING_GITHUB_PAT"
+        GITHUB_REPO="$EXISTING_GITHUB_REPO"
+    elif [ -n "${GITHUB_PAT:-}" ] && [ -n "${GITHUB_REPO:-}" ]; then
+        ok "GitHub credentials (from environment)"
     else
-        skip "GitHub credentials skipped — /feature and /bug will use local files"
+        echo ""
+        echo "GitHub (optional — leave blank to keep using local files)"
+        echo "────────────────────────────────────────────────────────"
+        echo "  Create a Personal Access Token at https://github.com/settings/tokens"
+        echo "  Required scope: repo (full control of private repositories)"
+        echo ""
+        read -r -p "  Personal access token with 'repo' scope (Enter to skip): " GITHUB_PAT
+        if [ -n "$GITHUB_PAT" ]; then
+            read -r -p "  Repository (owner/name, e.g. chrisrobertson/secondbrain): " GITHUB_REPO
+            ok "GitHub credentials configured"
+        else
+            skip "GitHub credentials skipped — /feature and /bug will use local files"
+        fi
     fi
 fi
 
