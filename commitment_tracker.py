@@ -506,13 +506,19 @@ class CommitmentTracker:
                 continue
 
             fm_type = ""
+            fm_classification = ""
             for line in header.split("\n"):
                 stripped = line.strip()
                 if stripped.startswith("type:"):
                     fm_type = stripped[5:].strip().strip('"').strip("'")
-                    break
+                elif stripped.startswith("classification:"):
+                    fm_classification = stripped[15:].strip().strip('"').strip("'")
 
             if fm_type not in source_types:
+                continue
+
+            # Skip email threads with marketing, automated, or transactional classification
+            if fm_type == "email_thread" and fm_classification in {"marketing", "automated", "transactional"}:
                 continue
 
             candidates.append((f, mtime))

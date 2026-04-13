@@ -235,6 +235,95 @@ async def test_handle_message_processes_authorised_user(handler, brain_dir):
     mock_update.message.reply_text.assert_called()
 
 
+async def test_handle_message_reacts_with_eyes_on_receipt(handler, brain_dir):
+    """Verify 👀 reaction is set immediately on receipt before processing."""
+    handler.executor = MagicMock()
+    handler.executor.run_with_tools = AsyncMock(return_value="Here is your answer.")
+
+    mock_update = MagicMock()
+    mock_update.effective_user.id = 12345
+    mock_update.effective_chat.id = 12345
+    mock_update.message = AsyncMock()
+    mock_update.message.text = "What did I read about LLMs?"
+
+    mock_context = MagicMock()
+
+    await handler.handle_message(mock_update, mock_context)
+
+    # First call should be 👀
+    calls = mock_update.message.set_reaction.call_args_list
+    assert len(calls) >= 2
+    assert calls[0][0][0] == "👀"
+    assert calls[-1][0][0] == "✅"
+
+
+async def test_handle_message_reacts_with_check_on_success(handler, brain_dir):
+    """Verify ✅ reaction is set after successful reply."""
+    handler.executor = MagicMock()
+    handler.executor.run_with_tools = AsyncMock(return_value="Here is your answer.")
+
+    mock_update = MagicMock()
+    mock_update.effective_user.id = 12345
+    mock_update.effective_chat.id = 12345
+    mock_update.message = AsyncMock()
+    mock_update.message.text = "What did I read about LLMs?"
+
+    mock_context = MagicMock()
+
+    await handler.handle_message(mock_update, mock_context)
+
+    # Last call should be ✅
+    calls = mock_update.message.set_reaction.call_args_list
+    assert calls[-1][0][0] == "✅"
+    mock_update.message.reply_text.assert_called()
+
+
+async def test_handle_message_reacts_with_x_on_error(handler, brain_dir):
+    """Verify ❌ reaction is set when the executor raises."""
+    handler.executor = MagicMock()
+    handler.executor.run_with_tools = AsyncMock(side_effect=RuntimeError("LLM failed"))
+
+    mock_update = MagicMock()
+    mock_update.effective_user.id = 12345
+    mock_update.effective_chat.id = 12345
+    mock_update.message = AsyncMock()
+    mock_update.message.text = "What did I read about LLMs?"
+
+    mock_context = MagicMock()
+
+    await handler.handle_message(mock_update, mock_context)
+
+    # First call should be 👀, last should be ❌
+    calls = mock_update.message.set_reaction.call_args_list
+    assert len(calls) >= 2
+    assert calls[0][0][0] == "👀"
+    assert calls[-1][0][0] == "❌"
+    mock_update.message.reply_text.assert_called()
+
+
+async def test_handle_message_reaction_failure_does_not_crash(handler, brain_dir):
+    """Verify that set_reaction failures don't prevent message processing."""
+    handler.executor = MagicMock()
+    handler.executor.run_with_tools = AsyncMock(return_value="Here is your answer.")
+
+    mock_update = MagicMock()
+    mock_update.effective_user.id = 12345
+    mock_update.effective_chat.id = 12345
+    mock_update.message = AsyncMock()
+    mock_update.message.text = "What did I read about LLMs?"
+    # Make all set_reaction calls fail
+    mock_update.message.set_reaction.side_effect = Exception("Reactions not supported")
+
+    mock_context = MagicMock()
+
+    # Should not raise — reactions are best-effort
+    await handler.handle_message(mock_update, mock_context)
+
+    # Message should still be processed normally
+    mock_update.message.reply_text.assert_called()
+    handler.executor.run_with_tools.assert_called_once()
+
+
 # ── _edit_skip_domains ────────────────────────────────────────────────────────
 
 def test_edit_skip_domains_add(handler, brain_dir):
@@ -1672,3 +1761,83 @@ def test_error_handler_registered(handler):
     registered = handler.app.add_error_handler.call_args[0][0]
     assert callable(registered)
     assert registered.__name__ == "_on_telegram_error"
+
+
+# --- /comms email classification filtering (FR-11) ---
+
+def test_comms_email_hides_marketing_by_default(brain_dir, handler):
+    """Default /comms email hides marketing and automated threads."""
+    mem_dir = brain_dir / "memories"
+
+    # Create one human email and one marketing email
+    human = mem_dir / "email-thread-human-1001.md"
+    human.write_text(
+        "---\nsource_title: Project Update\nsummary: Discussion.\n"
+        "tags: []\nlast_scanned: '2026-04-11T10:00:00'\n"
+        "source_url: mailto:conversation-1001\ntype: email_thread\n"
+        "classification: human\n"
+        "participants: [alice@acme.com]\n"
+        "last_message: '2026-04-11T10:00:00'\n"
+        "message_count: 3\n---\n\n## Messages\nTest.\n"
+    )
+
+    marketing = mem_dir / "email-thread-newsletter-1002.md"
+    marketing.write_text(
+        "---\nsource_title: Newsletter\nsummary: Marketing.\n"
+        "tags: []\nlast_scanned: '2026-04-11T10:00:00'\n"
+        "source_url: mailto:conversation-1002\ntype: email_thread\n"
+        "classification: marketing\n"
+        "participants: [newsletter@company.com]\n"
+        "last_message: '2026-04-11T10:00:00'\n"
+        "message_count: 1\n---\n\n## Messages\nNewsletter.\n"
+    )
+
+    text = handler._list_comms_text(kind="email", limit=20, show_all=False)
+
+    # Should show human email
+    assert "Project Update" in text
+    # Should hide marketing email
+    assert "Newsletter" not in text
+
+
+def test_comms_email_all_shows_marketing(brain_dir, handler):
+    """"/comms email all" shows marketing emails with [mkt] suffix."""
+    mem_dir = brain_dir / "memories"
+
+    marketing = mem_dir / "email-thread-newsletter-1002.md"
+    marketing.write_text(
+        "---\nsource_title: Newsletter\nsummary: Marketing.\n"
+        "tags: []\nlast_scanned: '2026-04-11T10:00:00'\n"
+        "source_url: mailto:conversation-1002\ntype: email_thread\n"
+        "classification: marketing\n"
+        "participants: [newsletter@company.com]\n"
+        "last_message: '2026-04-11T10:00:00'\n"
+        "message_count: 1\n---\n\n## Messages\nNewsletter.\n"
+    )
+
+    text = handler._list_comms_text(kind="email", limit=20, show_all=True)
+
+    # Should show marketing email with suffix
+    assert "Newsletter" in text
+    assert "[mkt]" in text
+
+
+def test_comms_email_missing_classification_treated_as_human(brain_dir, handler):
+    """Old email file without classification field should appear in default listing."""
+    mem_dir = brain_dir / "memories"
+
+    # Old format: no classification field
+    old_email = mem_dir / "email-thread-old-1003.md"
+    old_email.write_text(
+        "---\nsource_title: Old Email\nsummary: Legacy.\n"
+        "tags: []\nlast_scanned: '2026-04-11T10:00:00'\n"
+        "source_url: mailto:conversation-1003\ntype: email_thread\n"
+        "participants: [bob@acme.com]\n"
+        "last_message: '2026-04-11T10:00:00'\n"
+        "message_count: 2\n---\n\n## Messages\nOld.\n"
+    )
+
+    text = handler._list_comms_text(kind="email", limit=20, show_all=False)
+
+    # Should show old email (treated as human)
+    assert "Old Email" in text

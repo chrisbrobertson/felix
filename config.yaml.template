@@ -72,6 +72,7 @@ email_scanner:
   interval_seconds: 300          # scan every 5 minutes
   initial_lookback_days: 30      # first scan: how far back to go (max 90)
   archive_after_days: 90         # stop updating threads inactive this long
+  classification_enabled: true   # LLM classifies emails as human/transactional/marketing/automated
   skip_mailboxes:                # mailbox names to exclude (case-insensitive)
     - Trash
     - Junk

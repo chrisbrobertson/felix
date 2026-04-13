@@ -2,7 +2,7 @@
 specmas: 3.0
 kind: feature
 id: feat-email-scanner
-version: 1.1.0
+version: 1.2.0
 created: 2026-04-11
 status: draft
 complexity: moderate
@@ -200,6 +200,39 @@ long-running cycle that would block the stop event check.
 
 ---
 
+### FR-11: Content classification
+**Priority:** High
+
+Every new or updated thread is classified into one of five content buckets
+during the same LLM call that generates summary + tags:
+
+| label | meaning |
+|---|---|
+| `human` | Real person-to-person correspondence (colleagues, vendors, family, friends). Default for ambiguous cases. |
+| `transactional` | Receipts, order/shipping notifications, account security alerts, calendar invites from services. |
+| `marketing` | Newsletters, promotions, sales pitches, product announcements. |
+| `automated` | CI/CD alerts, monitoring digests, build reports, OTP codes, password resets. |
+| `unknown` | LLM failure or low-confidence response. Treated as `human` by downstream consumers. |
+
+The LLM prompt is extended to return a `CLASSIFICATION:` line alongside
+`SUMMARY:` and `TAGS:`. The classifier runs on the same subject +
+participants + per-message snippets already available; no full body
+access. The AppleScript fallback path has no snippets, so classification
+degrades to subject + sender — still useful for obvious marketing.
+
+Downstream consumers that read email memories (`contact_tracker`,
+`commitment_tracker`, `chat_handler`) skip any thread whose classification
+is `marketing` or `automated` by default. `transactional` is also skipped
+by contact/commitment trackers but remains visible in `/comms email`
+because users do sometimes care about receipts. `human` and `unknown` are
+always processed.
+
+Kill-switch: `email_scanner.classification_enabled: true` in config
+disables the classification line (fallback to empty string, treated as
+`unknown`/`human`).
+
+---
+
 ## Memory File Format
 
 ```markdown
@@ -207,6 +240,7 @@ long-running cycle that would block the stop event check.
 source_title: "RE: API Migration Timeline"
 summary: Sarah Chen and Chris discussed v2 endpoint cutover, settling on May 15.
 tags: [acme, api-migration, engineering]
+classification: human
 last_scanned: '2026-04-11T15:00:00'
 source_url: mailto:conversation-12345
 type: email_thread
@@ -355,6 +389,16 @@ and falls back to AppleScript automatically.
 ---
 
 ## Changelog
+
+### v1.2.0 — 2026-04-13
+
+**Added:** Email content classification (FR-11). Every thread is now classified
+into one of five buckets (`human`, `transactional`, `marketing`, `automated`,
+`unknown`) during the same LLM call that generates summary + tags. Downstream
+consumers (`contact_tracker`, `commitment_tracker`) skip `marketing` and
+`automated` by default; `chat_handler`'s `/comms email` hides those two unless
+`/comms email all` is used. Kill-switch: `email_scanner.classification_enabled`
+config flag (defaults `true`).
 
 ### v1.1.0 — 2026-04-11
 

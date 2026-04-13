@@ -467,7 +467,9 @@ class EmailScanner:
         return {}
 
     def _scanner_config(self) -> dict:
-        return self._load_config().get("email_scanner", {})
+        return self._load_config().get("email_scanner", {
+            "classification_enabled": True,
+        })
 
     def _load_state(self) -> dict:
         if STATE_FILE.exists():
@@ -555,15 +557,17 @@ class EmailScanner:
                 if not self._needs_update(thread, memory_path):
                     continue
 
-                summary, tags = self._get_existing_summary_and_tags(memory_path, thread)
+                summary, tags, classification = self._get_existing_summary_and_tags(memory_path, thread)
                 if not summary or not tags:
-                    summary, tags = await self._generate_summary_and_tags(thread)
+                    summary, tags, classification = await self._generate_summary_and_tags(thread)
                 if not summary:
                     summary = thread.get("subject", "")
                 if not tags:
                     tags = self._tags_from_participants(thread)
+                if not classification:
+                    classification = "unknown"
 
-                self._write_memory(thread, summary, tags)
+                self._write_memory(thread, summary, tags, classification)
                 processed += 1
             except Exception:
                 log.exception("Error processing thread: %s", thread.get("subject"))
@@ -604,24 +608,25 @@ class EmailScanner:
         except Exception:
             return True
 
-    def _get_existing_summary_and_tags(self, memory_path: Path, thread: dict):
+    def _get_existing_summary_and_tags(self, memory_path: Path, thread: dict) -> tuple[str, list, str]:
         if not memory_path.exists():
-            return None, None
+            return None, None, None
         try:
             fm = _parse_frontmatter(memory_path.read_text())
             stored_count = fm.get("message_count", -1)
             current_count = thread.get("message_count", 0)
             if stored_count != current_count:
-                return None, None  # New messages — regenerate
+                return None, None, None  # New messages — regenerate
             summary = fm.get("summary", "")
             tags = fm.get("tags", [])
             if isinstance(tags, str):
                 tags = [t.strip() for t in tags.split(",")]
-            return summary, tags
+            classification = fm.get("classification", "unknown")
+            return summary, tags, classification
         except Exception:
-            return None, None
+            return None, None, None
 
-    async def _generate_summary_and_tags(self, thread: dict) -> tuple:
+    async def _generate_summary_and_tags(self, thread: dict) -> tuple[str, list, str]:
         subject = thread.get("subject", "")
         participants = thread.get("participants", [])
         messages = thread.get("messages", [])
@@ -631,6 +636,9 @@ class EmailScanner:
         if len(msg_block) > 3000:
             msg_block = msg_block[-3000:]
 
+        sc = self._scanner_config()
+        classification_enabled = sc.get("classification_enabled", True)
+
         prompt = (
             "You are summarizing an email thread for a personal knowledge base.\n\n"
             f"Subject: {subject}\n"
@@ -639,8 +647,19 @@ class EmailScanner:
             f"{msg_block}\n\n"
             "Respond with EXACTLY this format (no other text):\n"
             "SUMMARY: <1-2 sentence description of thread topic and key decisions>\n"
-            "TAGS: <3-6 lowercase comma-separated tags from domains, subject keywords>"
+            "TAGS: <3-6 lowercase comma-separated tags from domains, subject keywords>\n"
         )
+
+        if classification_enabled:
+            prompt += (
+                "CLASSIFICATION: <one of: human | transactional | marketing | automated>\n"
+                "\n"
+                "Classification guide:\n"
+                "  human = real person-to-person correspondence (colleagues, vendors, family)\n"
+                "  transactional = receipts, order/shipping, account alerts, calendar invites\n"
+                "  marketing = newsletters, promotions, sales pitches, product announcements\n"
+                "  automated = CI/CD, monitoring, build reports, OTP codes, password resets"
+            )
 
         try:
             from litellm import acompletion
@@ -652,16 +671,21 @@ class EmailScanner:
             text = resp.choices[0].message.content.strip()
             summary = ""
             tags = []
+            classification = "unknown"
             for line in text.splitlines():
                 if line.startswith("SUMMARY:"):
                     summary = line[len("SUMMARY:"):].strip()
                 elif line.startswith("TAGS:"):
                     raw = line[len("TAGS:"):].strip()
                     tags = [t.strip().lower() for t in raw.split(",") if t.strip()]
-            return summary, tags
+                elif line.startswith("CLASSIFICATION:"):
+                    raw = line[len("CLASSIFICATION:"):].strip().lower()
+                    if raw in {"human", "transactional", "marketing", "automated"}:
+                        classification = raw
+            return summary, tags, classification
         except Exception:
             log.exception("LLM call failed for email thread summary: %s", subject)
-            return "", []
+            return "", [], "unknown"
 
     def _tags_from_participants(self, thread: dict) -> list:
         """Fallback tags derived from participant email domains."""
@@ -684,7 +708,7 @@ class EmailScanner:
         s = s.strip('-')
         return s[:40].rstrip('-')
 
-    def _write_memory(self, thread: dict, summary: str, tags: list):
+    def _write_memory(self, thread: dict, summary: str, tags: list, classification: str = "unknown"):
         if not isinstance(tags, list):
             tags = [tags]
         memory_path = self._memory_path(thread)
@@ -695,6 +719,7 @@ class EmailScanner:
             "source_title": thread.get("raw_subject") or thread.get("subject", ""),
             "summary": summary,
             "tags": tags,
+            "classification": classification,
             "last_scanned": now,
             "source_url": f"mailto:conversation-{conv_id}",
             "type": "email_thread",
@@ -758,15 +783,17 @@ class EmailScanner:
                     skipped += 1
                     continue
 
-                summary, tags = self._get_existing_summary_and_tags(memory_path, thread)
+                summary, tags, classification = self._get_existing_summary_and_tags(memory_path, thread)
                 if not summary or not tags:
-                    summary, tags = await self._generate_summary_and_tags(thread)
+                    summary, tags, classification = await self._generate_summary_and_tags(thread)
                 if not summary:
                     summary = thread.get("subject", "")
                 if not tags:
                     tags = self._tags_from_participants(thread)
+                if not classification:
+                    classification = "unknown"
 
-                self._write_memory(thread, summary, tags)
+                self._write_memory(thread, summary, tags, classification)
                 processed += 1
             except Exception as e:
                 log.error(f"Backfill error processing thread {thread.get('subject')}: {e}")

@@ -738,3 +738,52 @@ def test_upsert_updates_existing_contact(mock_config, mock_state_file, mock_memo
     count2 = fm2.get("interaction_count", 0)
 
     assert count2 > count1
+
+
+def test_contact_tracker_skips_marketing_emails(tmp_path):
+    """Email threads with marketing classification should not generate contacts."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "contact-state.json"
+
+    # Create one human email and one marketing email
+    human_email = memories_dir / "email-human.md"
+    human_email.write_text(
+        "---\nsource_title: Human Email\nsummary: Test.\n"
+        "tags: []\nlast_scanned: '2026-04-11T10:00:00'\n"
+        "source_url: email:human123\ntype: email_thread\n"
+        "classification: human\n"
+        "participants: [alice@acme.com]\n"
+        "last_message: '2026-04-11T10:00:00'\nmessage_count: 1\n---\n\n"
+        "## Messages\nTest.\n"
+    )
+
+    marketing_email = memories_dir / "email-marketing.md"
+    marketing_email.write_text(
+        "---\nsource_title: Marketing Newsletter\nsummary: Newsletter.\n"
+        "tags: []\nlast_scanned: '2026-04-11T10:00:00'\n"
+        "source_url: email:marketing123\ntype: email_thread\n"
+        "classification: marketing\n"
+        "participants: [newsletter@company.com]\n"
+        "last_message: '2026-04-11T10:00:00'\nmessage_count: 1\n---\n\n"
+        "## Messages\nNewsletter.\n"
+    )
+
+    with patch.object(ct, "MEMORIES_DIR", memories_dir), \
+         patch.object(ct, "STATE_FILE", state_file), \
+         patch.object(ct, "CONFIG_PATH", tmp_path / "config.yaml"):
+        (tmp_path / "config.yaml").write_text("contact_tracker:\n  interval_seconds: 300\n")
+        tracker = ContactTracker()
+
+        async def run():
+            await tracker._run_scan()
+
+        import asyncio
+        asyncio.run(run())
+
+    contact_files = list(memories_dir.glob("contact-*.md"))
+    # Should only have one contact (alice), not newsletter sender
+    assert len(contact_files) == 1
+    fm = _parse_frontmatter(contact_files[0].read_text())
+    assert "alice@acme.com" in fm.get("emails", [])
+    assert "newsletter@company.com" not in fm.get("emails", [])

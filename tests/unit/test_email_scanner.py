@@ -294,7 +294,10 @@ def test_write_memory_field_order(tmp_path):
     assert lines[1].startswith("source_title:")
     assert lines[2].startswith("summary:")
     assert lines[3].startswith("tags:")
-    assert lines[4].startswith("last_scanned:")
+    # Fields after tags may vary (classification field added); assert both are present
+    fm_keys = [l.split(":")[0] for l in lines[1:] if l and ":" in l and not l.startswith(" ")]
+    assert "last_scanned" in fm_keys
+    assert "classification" in fm_keys
 
 
 def test_write_memory_atomic(tmp_path):
@@ -570,3 +573,155 @@ async def test_backfill_resets_high_water_and_rescans(tmp_path):
     # get_threads_since should be called (not updated_since)
     mock_source.get_threads_since.assert_called_once()
     mock_source.get_threads_updated_since.assert_not_called()
+
+
+# ── Email Classification (FR-11) ─────────────────────────────────────────────
+
+def test_generated_prompt_asks_for_classification(tmp_path):
+    """Prompt includes CLASSIFICATION line and all four label options."""
+    scanner = EmailScanner()
+    thread = make_thread()
+
+    with patch.object(es, "CONFIG_PATH", tmp_path / "config.yaml"):
+        (tmp_path / "config.yaml").write_text(
+            "email_scanner:\n  classification_enabled: true\n"
+        )
+        with patch("litellm.acompletion", new_callable=AsyncMock) as mock_llm:
+            mock_llm.return_value = MagicMock(
+                choices=[MagicMock(message=MagicMock(content="SUMMARY: x\nTAGS: a\nCLASSIFICATION: human"))]
+            )
+            import asyncio
+            asyncio.run(scanner._generate_summary_and_tags(thread))
+
+        # Check the prompt passed to acompletion
+        call_args = mock_llm.call_args
+        prompt = call_args.kwargs["messages"][0]["content"]
+        assert "CLASSIFICATION:" in prompt
+        assert "human" in prompt
+        assert "transactional" in prompt
+        assert "marketing" in prompt
+        assert "automated" in prompt
+
+
+@pytest.mark.asyncio
+async def test_parses_classification_from_response(tmp_path):
+    """LLM returns CLASSIFICATION: marketing → parsed correctly."""
+    scanner = EmailScanner()
+    thread = make_thread()
+
+    with patch.object(es, "CONFIG_PATH", tmp_path / "config.yaml"):
+        (tmp_path / "config.yaml").write_text(
+            "email_scanner:\n  classification_enabled: true\n"
+        )
+        with patch("litellm.acompletion", new_callable=AsyncMock) as mock_llm:
+            mock_llm.return_value = MagicMock(
+                choices=[MagicMock(message=MagicMock(
+                    content="SUMMARY: Newsletter\nTAGS: acme, newsletter\nCLASSIFICATION: marketing"
+                ))]
+            )
+            summary, tags, classification = await scanner._generate_summary_and_tags(thread)
+
+    assert summary == "Newsletter"
+    assert "newsletter" in tags
+    assert classification == "marketing"
+
+
+@pytest.mark.asyncio
+async def test_classification_invalid_label_becomes_unknown(tmp_path):
+    """LLM returns invalid classification → defaults to unknown."""
+    scanner = EmailScanner()
+    thread = make_thread()
+
+    with patch.object(es, "CONFIG_PATH", tmp_path / "config.yaml"):
+        (tmp_path / "config.yaml").write_text(
+            "email_scanner:\n  classification_enabled: true\n"
+        )
+        with patch("litellm.acompletion", new_callable=AsyncMock) as mock_llm:
+            mock_llm.return_value = MagicMock(
+                choices=[MagicMock(message=MagicMock(
+                    content="SUMMARY: x\nTAGS: a\nCLASSIFICATION: weird"
+                ))]
+            )
+            _, _, classification = await scanner._generate_summary_and_tags(thread)
+
+    assert classification == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_classification_missing_line_becomes_unknown(tmp_path):
+    """LLM omits CLASSIFICATION line → defaults to unknown."""
+    scanner = EmailScanner()
+    thread = make_thread()
+
+    with patch.object(es, "CONFIG_PATH", tmp_path / "config.yaml"):
+        (tmp_path / "config.yaml").write_text(
+            "email_scanner:\n  classification_enabled: true\n"
+        )
+        with patch("litellm.acompletion", new_callable=AsyncMock) as mock_llm:
+            mock_llm.return_value = MagicMock(
+                choices=[MagicMock(message=MagicMock(
+                    content="SUMMARY: x\nTAGS: a, b"
+                ))]
+            )
+            _, _, classification = await scanner._generate_summary_and_tags(thread)
+
+    assert classification == "unknown"
+
+
+def test_write_memory_includes_classification_field(tmp_path):
+    """Written memory file contains classification field in frontmatter."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    scanner = EmailScanner()
+    thread = make_thread(conv_id=7001, subject="Marketing Test")
+
+    with patch.object(es, "MEMORIES_DIR", memories_dir):
+        scanner._write_memory(thread, "Test summary.", ["test"], "marketing")
+
+    mem = list(memories_dir.glob("email-thread-*.md"))[0]
+    fm = _parse_frontmatter(mem.read_text())
+    assert fm["classification"] == "marketing"
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_returns_unknown_classification(tmp_path):
+    """LLM raises exception → classification is unknown."""
+    scanner = EmailScanner()
+    thread = make_thread()
+
+    with patch.object(es, "CONFIG_PATH", tmp_path / "config.yaml"):
+        (tmp_path / "config.yaml").write_text(
+            "email_scanner:\n  classification_enabled: true\n"
+        )
+        with patch("litellm.acompletion", new_callable=AsyncMock) as mock_llm:
+            mock_llm.side_effect = Exception("LLM error")
+            summary, tags, classification = await scanner._generate_summary_and_tags(thread)
+
+    assert summary == ""
+    assert tags == []
+    assert classification == "unknown"
+
+
+def test_existing_summary_includes_classification(tmp_path):
+    """_get_existing_summary_and_tags returns classification from frontmatter."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    scanner = EmailScanner()
+    thread = make_thread(conv_id=8001, subject="Existing Test", message_count=5)
+
+    mem_path = write_email_memory(
+        memories_dir, conv_id=8001, subject="Existing Test",
+        message_count=5, last_message="2026-04-10T09:00:00",
+        summary="Existing summary"
+    )
+    # Add classification field
+    content = mem_path.read_text()
+    content = content.replace("tags: [test]", "tags: [test]\nclassification: automated")
+    mem_path.write_text(content)
+
+    with patch.object(es, "MEMORIES_DIR", memories_dir):
+        summary, tags, classification = scanner._get_existing_summary_and_tags(mem_path, thread)
+
+    assert summary == "Existing summary"
+    assert "test" in tags
+    assert classification == "automated"

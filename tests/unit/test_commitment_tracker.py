@@ -926,3 +926,40 @@ def test_accuracy_updated_on_wrong(tmp_path):
 
     data = json.loads(accuracy_file.read_text())
     assert data["by_source_type"]["meeting_transcript"]["false_positives"] == 2
+
+
+@pytest.mark.asyncio
+async def test_commitment_tracker_skips_marketing_emails(tmp_path):
+    """Email threads with marketing classification should not reach extraction LLM."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+
+    # Create marketing email with commitment-like language
+    marketing_email = memories_dir / "email-marketing.md"
+    marketing_email.write_text(
+        "---\nsource_title: Limited Time Offer!\nsummary: Newsletter.\n"
+        "tags: []\nlast_scanned: '2026-04-11T10:00:00'\n"
+        "source_url: email:marketing123\ntype: email_thread\n"
+        "classification: marketing\n"
+        "participants: [sales@company.com]\n"
+        "last_message: '2026-04-11T10:00:00'\nmessage_count: 1\n---\n\n"
+        "## Messages\n"
+        "- 2026-04-11 Sales: We commit to giving you the best deals!\n"
+    )
+
+    with patch.object(ct, "MEMORIES_DIR", memories_dir), \
+         patch.object(ct, "STATE_FILE", state_file), \
+         patch.object(ct, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch("litellm.acompletion", new_callable=AsyncMock) as mock_llm:
+
+        (tmp_path / "config.yaml").write_text("commitment_tracker:\n  min_confidence: 0.5\n")
+        tracker = CommitmentTracker()
+        await tracker._run_scan()
+
+    # LLM should NOT have been called (marketing email was skipped)
+    mock_llm.assert_not_called()
+
+    # No commitment files should be written
+    commitment_files = list(memories_dir.glob("commitment-*.md"))
+    assert len(commitment_files) == 0

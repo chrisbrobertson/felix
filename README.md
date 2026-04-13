@@ -977,6 +977,14 @@ The calendar scanner uses EventKit (PyObjC) as the primary path, with fallback t
 
 If the Email Scanner falls back to AppleScript (due to missing Full Disk Access or ad-hoc signed Python), it needs **Automation permission** for Mail.app. Grant in **System Settings → Privacy & Security → Automation**. The scanner logs a warning until the permission is granted.
 
+### Email content classification
+
+Every email thread is automatically classified into one of five content buckets: `human` (real person-to-person correspondence), `transactional` (receipts, shipping notifications, account alerts), `marketing` (newsletters, promotions), `automated` (CI/CD alerts, monitoring, OTP codes), or `unknown` (LLM failure). 
+
+Downstream consumers (`contact_tracker`, `commitment_tracker`) skip `marketing` and `automated` emails by default. The `/comms email` command hides marketing and automated threads unless you run `/comms email all`, which shows everything with classification labels (`[tx]`, `[mkt]`, `[auto]`).
+
+To disable classification, set `email_scanner.classification_enabled: false` in `config.yaml`.
+
 ---
 
 ## Optional integrations

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from telegram import Update
+from telegram.constants import ChatAction
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
 from skill_executor import SkillExecutor
@@ -2122,7 +2123,19 @@ class TelegramChatHandler:
                 sender = (fm.get("participants") or [""])[0]
                 sender_str = f" — {str(sender)[:25]}" if sender else ""
                 date = (fm.get("last_message") or "")[:10]
-                lines.append(f"{i}. {source_tag} {subject}{sender_str} ({date})")
+
+                # Add classification suffix for non-human emails when showing all
+                classification_suffix = ""
+                if show_all:
+                    classification = fm.get("classification", "human")
+                    if classification == "transactional":
+                        classification_suffix = " [tx]"
+                    elif classification == "marketing":
+                        classification_suffix = " [mkt]"
+                    elif classification == "automated":
+                        classification_suffix = " [auto]"
+
+                lines.append(f"{i}. {source_tag} {subject}{sender_str} ({date}){classification_suffix}")
             else:
                 channel = fm.get("channel") or fm.get("source_title") or "(no channel)"
                 opener = (fm.get("participants") or [""])[0]
@@ -2139,17 +2152,23 @@ class TelegramChatHandler:
         args = list(context.args) if context.args else []
         type_filter = None
         limit = 10
+        show_all = False
 
-        # Parse: /comms [email|slack] [N]
+        # Parse: /comms [email|slack] [all] [N]
         if args and args[0].lower() in ("email", "slack"):
             type_filter = args[0].lower()
             args = args[1:]
-        elif args and not args[0].isdigit():
+        elif args and not args[0].isdigit() and args[0].lower() != "all":
             await update.message.reply_text(
-                "Usage: /comms [email|slack] [N]\n"
-                "Filter must be 'email' or 'slack'. Example: /comms email 5"
+                "Usage: /comms [email|slack] [all] [N]\n"
+                "Filter must be 'email' or 'slack'. Add 'all' to show marketing/automated emails."
             )
             return
+
+        # Check for 'all' flag
+        if args and args[0].lower() == "all":
+            show_all = True
+            args = args[1:]
 
         if args:
             try:
@@ -2157,7 +2176,7 @@ class TelegramChatHandler:
             except ValueError:
                 pass
 
-        text = self._list_comms_text(type_filter, limit)
+        text = self._list_comms_text(type_filter, limit, show_all)
         await update.message.reply_text(text)
 
     async def cmd_comm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3049,6 +3068,19 @@ class TelegramChatHandler:
             log.warning(f"Ignored message from unauthorised user_id={user_id} (allowed={self.allowed_user_id})")
             return
 
+        # Best-effort ack — react with eyes to confirm receipt
+        try:
+            await update.message.set_reaction("👀")
+        except Exception as e:
+            log.debug("Reaction not supported, falling back to typing indicator: %s", e)
+            try:
+                await context.bot.send_chat_action(
+                    chat_id=update.effective_chat.id,
+                    action=ChatAction.TYPING,
+                )
+            except Exception:
+                pass  # best-effort only
+
         # Check if we're awaiting a /missed reply (FR-12)
         if (hasattr(context, "user_data") and
             isinstance(context.user_data, dict) and
@@ -3059,6 +3091,10 @@ class TelegramChatHandler:
             if elapsed > 60:
                 await update.message.reply_text("Cancelled (timeout).")
                 context.user_data["awaiting_missed_reply"] = False
+                try:
+                    await update.message.set_reaction("❌")
+                except Exception:
+                    pass
                 return
             # Handle the structured reply
             await self._handle_missed_reply(update, context)
@@ -3067,24 +3103,42 @@ class TelegramChatHandler:
         query = update.message.text
         log.info(f"Processing query: {query[:80]!r}")
 
-        memory_context = self._load_context(query)
-        log.info(f"Context loaded: {len(memory_context)} chars")
+        try:
+            memory_context = self._load_context(query)
+            log.info(f"Context loaded: {len(memory_context)} chars")
 
-        from chat_tools import TOOLS, dispatch as _tool_dispatch
+            from chat_tools import TOOLS, dispatch as _tool_dispatch
 
-        async def tool_dispatch(name: str, args: dict) -> str:
-            return await _tool_dispatch(name, args, self)
+            async def tool_dispatch(name: str, args: dict) -> str:
+                return await _tool_dispatch(name, args, self)
 
-        response = await self.executor.run_with_tools(
-            inputs={"memory_context": memory_context, "user_query": query},
-            tools=TOOLS,
-            tool_dispatch=tool_dispatch,
-        )
-
-        log.info(f"Response: {len(response) if response else 0} chars")
-        if response is None:
-            await update.message.reply_text(
-                "Sorry — the chat model failed. Check ~/secondbrain/errors.log."
+            response = await self.executor.run_with_tools(
+                inputs={"memory_context": memory_context, "user_query": query},
+                tools=TOOLS,
+                tool_dispatch=tool_dispatch,
             )
-            return
-        await self._send_reply(update, response)
+
+            log.info(f"Response: {len(response) if response else 0} chars")
+            if response is None:
+                await update.message.reply_text(
+                    "Sorry — the chat model failed. Check ~/secondbrain/errors.log."
+                )
+                try:
+                    await update.message.set_reaction("❌")
+                except Exception:
+                    pass
+                return
+            await self._send_reply(update, response)
+            try:
+                await update.message.set_reaction("✅")
+            except Exception:
+                pass
+        except Exception as e:
+            log.error(f"Error processing message: {e}", exc_info=True)
+            await update.message.reply_text(
+                f"Sorry — processing failed: {e}"
+            )
+            try:
+                await update.message.set_reaction("❌")
+            except Exception:
+                pass
