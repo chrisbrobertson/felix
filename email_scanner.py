@@ -345,9 +345,9 @@ tell application "Mail"
                 set allMsgs to every message of mb
                 set msgCount to count of allMsgs
                 if msgCount > 0 then
-                set startIdx to msgCount - {max_msgs} + 1
-                if startIdx < 1 then set startIdx to 1
-                set msgs to items startIdx thru msgCount of allMsgs
+                set endIdx to {max_msgs}
+                if endIdx > msgCount then set endIdx to msgCount
+                set msgs to items 1 thru endIdx of allMsgs
                 repeat with m in msgs
                     set d to date received of m
                     if d >= cutoff then
