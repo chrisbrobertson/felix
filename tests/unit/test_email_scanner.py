@@ -176,6 +176,7 @@ def test_fda_check_logs_warning_and_returns_none(tmp_path, caplog):
 
     assert result is None
     assert "Full Disk Access" in caplog.text
+    assert "github.com/chrisbrobertson/felix" in caplog.text
 
 
 # ── _rows_to_threads ──────────────────────────────────────────────────────────

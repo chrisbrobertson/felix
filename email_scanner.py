@@ -93,7 +93,9 @@ class MailDataSource:
         log.warning(
             "Envelope Index unavailable — falling back to AppleScript. "
             "For faster scanning, grant Full Disk Access in "
-            "System Settings → Privacy & Security → Full Disk Access."
+            "System Settings → Privacy & Security → Full Disk Access. "
+            "See https://github.com/chrisbrobertson/felix#full-disk-access-for-email-scanner-sqlite-path "
+            "for setup details."
         )
         return AppleScriptSource()
 
@@ -132,7 +134,9 @@ class EnvelopeIndexSource(MailDataSource):
         except PermissionError:
             log.warning(
                 "Cannot read Envelope Index at %s — Full Disk Access required. "
-                "Grant it in System Settings → Privacy & Security → Full Disk Access.",
+                "Grant it in System Settings → Privacy & Security → Full Disk Access. "
+                "See https://github.com/chrisbrobertson/felix#full-disk-access-for-email-scanner-sqlite-path "
+                "for setup details.",
                 path
             )
             return None
