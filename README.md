@@ -312,6 +312,8 @@ Muted state persists across daemon restarts. `/briefing` works even when muted â
 | `/skiplist` | Show all currently skipped domains |
 | `/purge <domain>` | Delete all captured memories whose URL contains domain |
 | `/purgeall` | Delete memories for every domain on the skip list |
+| **Scanner management** | |
+| `/backfill <type> [days] [hostname]` | Force historical reprocessing without manual state file deletion. Types: `readings`, `email`, `zoom`, `calendar`, `slack`, `projects`. Days default to 30 (90 max for readings/email/slack, 180 max for zoom/calendar, N/A for projects). Optional hostname arg â€” if given and doesn't match current node, returns "cross-node not yet implemented". Derivative scanners (commitment_tracker, contact_tracker) re-run automatically on next cycle due to updated mtimes. Full-role only. |
 | **Feature & bug tracking** | |
 | `/feature <description>` | Capture a new feature request (hashtags become labels) |
 | `/bug <description>` | Capture a new bug report (hashtags become labels) |
