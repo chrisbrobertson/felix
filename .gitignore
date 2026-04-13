@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# Runtime config & state (must never be committed — see CLAUDE.md)
+config.yaml
+.env
+.env.*
+*.key
+*.pem
+
+# Runtime state files (documented in CLAUDE.md "Files never to commit")
+.second-brain-seen-urls
+errors.log
+execution-log.jsonl
+*-scanner-state.json
+*-tracker-state.json
+notification-state.json
+commitment-corrections.jsonl
+commitment-accuracy.json
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Claude Code session state
+.claude/
