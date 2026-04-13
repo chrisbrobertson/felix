@@ -307,11 +307,11 @@ class AppleScriptSource(MailDataSource):
                 log.warning("AppleScript timed out after %ds", timeout)
                 return ""
             if proc.returncode != 0:
-                log.debug("osascript error: %s", stderr.strip())
+                log.warning("osascript error: %s", stderr.strip())
                 return ""
             return stdout.strip()
         except Exception as e:
-            log.debug("osascript failed: %s", e)
+            log.warning("osascript failed: %s", e)
             return ""
 
     def _is_mail_running(self) -> bool:
@@ -344,6 +344,7 @@ tell application "Mail"
             if (mbName is "INBOX" or mbName is "Inbox" or mbName is "Sent" or mbName is "Sent Messages") and {exclude_check} then
                 set allMsgs to every message of mb
                 set msgCount to count of allMsgs
+                if msgCount > 0 then
                 set startIdx to msgCount - {max_msgs} + 1
                 if startIdx < 1 then set startIdx to 1
                 set msgs to items startIdx thru msgCount of allMsgs
@@ -358,9 +359,10 @@ tell application "Mail"
                         set mMin to text -2 thru -1 of ("0" & (((t mod 3600) div 60) as string))
                         set mSec to text -2 thru -1 of ("0" & ((t mod 60) as string))
                         set mDate to mYear & "-" & mMon & "-" & mDay & "T" & mHour & ":" & mMin & ":" & mSec
-                        set output to output & (subject of m) & "|||" & (sender of m) & "|||" & mDate & "|||" & (message id of m) & "|||" & "\n"
+                        set output to output & (subject of m) & "|||" & (sender of m) & "|||" & mDate & "|||" & (message id of m) & linefeed
                     end if
                 end repeat
+                end if
             end if
         end repeat
     end repeat
@@ -435,7 +437,9 @@ end tell
         as_cutoff = max(since, datetime.now() - timedelta(days=7))
         log.debug("AppleScript scan: cutoff %s", as_cutoff.strftime("%Y-%m-%d"))
         raw = self._fetch_messages_raw(as_cutoff, excluded_mailboxes)
-        return self._parse_raw(raw, excluded_mailboxes)
+        threads, max_rowid = self._parse_raw(raw, excluded_mailboxes)
+        log.info("AppleScript scan: %d bytes raw, %d threads parsed", len(raw), len(threads))
+        return threads, max_rowid
 
     def get_threads_updated_since(self, since: datetime, high_water_rowid: int, excluded_mailboxes: set):
         # AppleScript has no row-level ID; fall back to time-based query

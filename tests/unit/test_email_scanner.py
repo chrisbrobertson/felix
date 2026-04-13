@@ -388,6 +388,30 @@ def test_subject_to_conv_id_different_subjects():
     assert id1 != id2
 
 
+def test_applescript_generated_script_has_no_literal_newline_in_string():
+    """Regression guard: a past bug used "\\n" inside a Python f-string,
+    which emitted a raw LF into an AppleScript string literal — a syntax
+    error that made osascript fail to compile. The fix is `linefeed`."""
+    src = AppleScriptSource()
+    captured = {}
+
+    def fake_run(script, timeout=120):
+        captured["script"] = script
+        return ""
+
+    src._run_osascript = fake_run
+    src._fetch_messages_raw(datetime(2026, 4, 1), set())
+    script = captured["script"]
+    assert "linefeed" in script, "should use AppleScript linefeed, not \\n"
+    # Walk the script char-by-char; no literal LF allowed inside "..." regions.
+    in_quote = False
+    for ch in script:
+        if ch == '"':
+            in_quote = not in_quote
+        elif ch == "\n" and in_quote:
+            raise AssertionError("literal LF inside AppleScript string literal")
+
+
 # ── Archive threshold ─────────────────────────────────────────────────────────
 
 def test_archive_skips_stale_threads(tmp_path):
