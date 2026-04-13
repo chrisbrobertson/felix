@@ -193,6 +193,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("report_run", self.cmd_report_run))
         # System
         self.app.add_handler(CommandHandler("backfill", self.cmd_backfill))
+        self.app.add_error_handler(self._on_telegram_error)
         # Cache: path -> (mtime, header_text). Invalidated when mtime changes.
         # Avoids reading every file on every chat message.
         self._header_cache: dict = {}
@@ -464,6 +465,21 @@ class TelegramChatHandler:
                 log.info(f"Persisted chat_id {chat_id} for proactive notifications")
 
         return True
+
+    async def _on_telegram_error(self, update, context: ContextTypes.DEFAULT_TYPE):
+        """Catch all unhandled exceptions from handlers.
+
+        Prevents python-telegram-bot from logging "No error handlers are registered"
+        spam and gives a single actionable log line instead. Also tries to notify
+        the user via effective_chat when possible.
+        """
+        log.error("Telegram handler error: %s", context.error, exc_info=context.error)
+        chat = getattr(update, "effective_chat", None) if update else None
+        if chat is not None:
+            try:
+                await context.bot.send_message(chat_id=chat.id, text="Internal error — check logs.")
+            except Exception:
+                pass
 
     async def cmd_skip(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):

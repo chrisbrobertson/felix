@@ -1597,3 +1597,15 @@ async def test_backfill_reply_formats_result_dict(handler):
     assert "3 skipped" in final_reply
     assert "1 errors" in final_reply
     assert "Done!" in final_reply
+
+
+# --- Error handler registration ---
+
+def test_error_handler_registered(handler):
+    """add_error_handler must be called so python-telegram-bot stops logging
+    'No error handlers are registered' spam on any unhandled exception."""
+    handler.app.add_error_handler.assert_called_once()
+    # Verify the registered callable is the handler method
+    registered = handler.app.add_error_handler.call_args[0][0]
+    assert callable(registered)
+    assert registered.__name__ == "_on_telegram_error"
