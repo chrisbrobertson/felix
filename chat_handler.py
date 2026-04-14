@@ -12,6 +12,7 @@ from telegram.constants import ChatAction
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
 from skill_executor import SkillExecutor
+from content_fetcher import fetch_url_content
 from github_client import GitHubClient, _STANDARD_LABELS
 
 log = logging.getLogger("chat-handler")
@@ -104,6 +105,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
     ],
     "System": [
         ("backfill", "Reprocess historical data: /backfill <type> [days] [host]. Types: readings, email, zoom, calendar, slack, projects"),
+        ("remember", "Fetch a URL and save a reading memory: /remember <url>"),
     ],
 }
 
@@ -196,6 +198,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("report_run", self.cmd_report_run))
         # System
         self.app.add_handler(CommandHandler("backfill", self.cmd_backfill))
+        self.app.add_handler(CommandHandler("remember", self.cmd_remember))
         self.app.add_error_handler(self._on_telegram_error)
         # Cache: path -> (mtime, header_text). Invalidated when mtime changes.
         # Avoids reading every file on every chat message.
@@ -1477,6 +1480,57 @@ class TelegramChatHandler:
         except Exception as e:
             log.exception("Backfill failed")
             await self._send_reply(update, f"Backfill failed: {e}")
+
+    async def cmd_remember(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Fetch a URL and save a reading memory: /remember <url>"""
+        if not self._check_auth(update):
+            return
+        if not context.args or not context.args[0].startswith("http"):
+            await update.message.reply_text(
+                "Usage: /remember <url>\nExample: /remember https://example.com/article"
+            )
+            return
+
+        url = context.args[0]
+        await update.message.reply_text(f"📥 Fetching {url[:60]}...")
+
+        try:
+            from skill_router import detect_content_type, SKILL_REGISTRY
+            from memory_writer import MemoryWriter
+
+            title, content = await fetch_url_content(url)
+            if not content:
+                await update.message.reply_text(
+                    "Could not fetch content from that URL. "
+                    "The page may require JavaScript or block bots."
+                )
+                return
+
+            content_type = detect_content_type(url=url, content=content[:3000])
+            skill_name = SKILL_REGISTRY.get(content_type, "summarize-webpage")
+            executor = SkillExecutor(skill_name)
+            memory_body = await executor.run({"url": url, "title": title or url, "content": content})
+
+            if not memory_body:
+                await update.message.reply_text("Summary failed — the LLM returned no content.")
+                return
+
+            entry = {
+                "url": url,
+                "title": title or url,
+                "visit_count": 1,
+                "browser": "telegram",
+                "content_type": content_type,
+            }
+            filename = await MemoryWriter().write(entry, memory_body)
+            preview = memory_body[:300].replace("\n", " ")
+            await self._send_reply(
+                update,
+                f"✅ Saved: {title or url}\n→ {filename}\n\n{preview}…"
+            )
+        except Exception as e:
+            log.exception("cmd_remember failed for %s", url)
+            await update.message.reply_text(f"Remember failed: {e}")
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):

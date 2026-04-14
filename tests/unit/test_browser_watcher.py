@@ -187,7 +187,7 @@ async def test_fetch_content_strips_noise_tags(watcher):
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.get = AsyncMock(return_value=mock_resp)
 
-    with patch("browser_watcher.httpx.AsyncClient", return_value=mock_client):
+    with patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
         content = await watcher._fetch_content("https://example.com")
 
     assert "Main article content" in content
@@ -212,7 +212,7 @@ async def test_fetch_content_truncates_to_8000_chars(watcher):
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.get = AsyncMock(return_value=mock_resp)
 
-    with patch("browser_watcher.httpx.AsyncClient", return_value=mock_client):
+    with patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
         content = await watcher._fetch_content("https://example.com")
 
     assert len(content) <= 8000
@@ -223,7 +223,7 @@ async def test_fetch_content_returns_none_on_connection_error(watcher):
     mock_client.__aenter__ = AsyncMock(side_effect=Exception("connection refused"))
     mock_client.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("browser_watcher.httpx.AsyncClient", return_value=mock_client):
+    with patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
         content = await watcher._fetch_content("https://example.com")
 
     assert content is None
@@ -239,7 +239,7 @@ async def test_fetch_content_returns_none_on_non_200(watcher):
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.get = AsyncMock(return_value=mock_resp)
 
-    with patch("browser_watcher.httpx.AsyncClient", return_value=mock_client):
+    with patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
         content = await watcher._fetch_content("https://example.com")
 
     assert content is None

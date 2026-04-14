@@ -8,11 +8,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-import httpx
-from bs4 import BeautifulSoup
-
 from memory_writer import MemoryWriter
 from skill_executor import SkillExecutor
+from content_fetcher import fetch_url_content
 from skill_router import detect_content_type, SKILL_REGISTRY
 
 log = logging.getLogger("browser-watcher")
@@ -141,20 +139,9 @@ class BrowserWatcher:
         return True
 
     async def _fetch_content(self, url: str):
-        try:
-            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-                r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
-                if r.status_code == 200:
-                    soup = BeautifulSoup(r.text, "lxml")
-                    # Remove noise elements
-                    for tag in soup(["script", "style", "nav", "footer",
-                                     "header", "aside", "form"]):
-                        tag.decompose()
-                    text = soup.get_text(separator=" ", strip=True)
-                    return text[:8000]
-        except Exception as e:
-            log.debug(f"Content fetch failed for {url}: {e}")
-        return None
+        """Fetch page content. Returns cleaned text string or None on failure."""
+        _, text = await fetch_url_content(url)
+        return text or None
 
     async def process_url(self, entry: dict):
         content = await self._fetch_content(entry["url"])

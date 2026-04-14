@@ -2019,3 +2019,77 @@ def test_comms_email_missing_classification_treated_as_human(brain_dir, handler)
 
     # Should show old email (treated as human)
     assert "Old Email" in text
+
+
+# ── /remember command ────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_cmd_remember_happy_path(handler, brain_dir):
+    """Successful fetch+summarize writes a memory file and replies with preview."""
+    update, ctx = _make_update(12345, ["https://example.com/article"])
+
+    with patch("chat_handler.fetch_url_content", new=AsyncMock(
+            return_value=("Article Title", "Long article content here."))), \
+         patch("chat_handler.SkillExecutor") as MockExec, \
+         patch("memory_writer.MemoryWriter") as MockWriter:
+        mock_executor_instance = MagicMock()
+        mock_executor_instance.run = AsyncMock(
+            return_value="## Summary\nGreat article.\n\n**Tags:** tech")
+        MockExec.return_value = mock_executor_instance
+        mock_writer_instance = MagicMock()
+        mock_writer_instance.write = AsyncMock(return_value="2026-04-13-article-title-abc123.md")
+        MockWriter.return_value = mock_writer_instance
+
+        await handler.cmd_remember(update, ctx)
+
+    replies = [call[0][0] for call in update.message.reply_text.call_args_list]
+    assert any("📥" in r for r in replies), "Should send a fetching ack"
+    assert any("✅" in r for r in replies), "Should confirm save"
+    assert any("2026-04-13-article-title-abc123.md" in r for r in replies)
+
+
+@pytest.mark.asyncio
+async def test_cmd_remember_bad_url(handler):
+    """Non-http argument shows usage message."""
+    update, ctx = _make_update(12345, ["not-a-url"])
+    await handler.cmd_remember(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Usage" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_remember_no_args(handler):
+    """Missing argument shows usage message."""
+    update, ctx = _make_update(12345, [])
+    await handler.cmd_remember(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Usage" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_remember_fetch_failure(handler):
+    """If fetch returns empty content, report the error gracefully."""
+    update, ctx = _make_update(12345, ["https://example.com/bad"])
+
+    with patch("chat_handler.fetch_url_content", new=AsyncMock(return_value=("", ""))):
+        await handler.cmd_remember(update, ctx)
+
+    replies = [call[0][0] for call in update.message.reply_text.call_args_list]
+    assert any("Could not fetch" in r for r in replies)
+
+
+@pytest.mark.asyncio
+async def test_cmd_remember_skill_failure(handler):
+    """If the skill returns None, report gracefully without crashing."""
+    update, ctx = _make_update(12345, ["https://example.com/article"])
+
+    with patch("chat_handler.fetch_url_content",
+               new=AsyncMock(return_value=("Title", "Some content."))), \
+         patch("chat_handler.SkillExecutor") as MockExec:
+        mock_executor_instance = MagicMock()
+        mock_executor_instance.run = AsyncMock(return_value=None)
+        MockExec.return_value = mock_executor_instance
+        await handler.cmd_remember(update, ctx)
+
+    replies = [call[0][0] for call in update.message.reply_text.call_args_list]
+    assert any("Summary failed" in r or "failed" in r.lower() for r in replies)
