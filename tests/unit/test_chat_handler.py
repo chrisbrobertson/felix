@@ -2093,3 +2093,96 @@ async def test_cmd_remember_skill_failure(handler):
 
     replies = [call[0][0] for call in update.message.reply_text.call_args_list]
     assert any("Summary failed" in r or "failed" in r.lower() for r in replies)
+
+
+# ── /note command ─────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_cmd_note_uses_detailed_skill(handler, brain_dir):
+    """cmd_note must use the summarize-webpage-detailed skill, not the default."""
+    update, ctx = _make_update(12345, ["https://example.com/paper"])
+
+    with patch("chat_handler.fetch_url_content", new=AsyncMock(
+            return_value=("Paper Title", "Long paper content here."))), \
+         patch("chat_handler.SkillExecutor") as MockExec, \
+         patch("memory_writer.MemoryWriter") as MockWriter:
+        mock_executor_instance = MagicMock()
+        mock_executor_instance.run = AsyncMock(
+            return_value="## Summary\nDetailed notes.\n\n**Tags:** research")
+        MockExec.return_value = mock_executor_instance
+        mock_writer_instance = MagicMock()
+        mock_writer_instance.write = AsyncMock(return_value="2026-04-13-paper-title-abc123.md")
+        MockWriter.return_value = mock_writer_instance
+
+        await handler.cmd_note(update, ctx)
+
+    # Executor must be instantiated with the detailed skill name
+    MockExec.assert_called_once_with("summarize-webpage-detailed")
+
+
+@pytest.mark.asyncio
+async def test_cmd_note_writes_content_type_detailed(handler, brain_dir):
+    """Entry written by cmd_note must have content_type='detailed'."""
+    update, ctx = _make_update(12345, ["https://example.com/paper"])
+
+    with patch("chat_handler.fetch_url_content", new=AsyncMock(
+            return_value=("Paper Title", "Content here."))), \
+         patch("chat_handler.SkillExecutor") as MockExec, \
+         patch("memory_writer.MemoryWriter") as MockWriter:
+        mock_executor_instance = MagicMock()
+        mock_executor_instance.run = AsyncMock(return_value="## Summary\nGreat.")
+        MockExec.return_value = mock_executor_instance
+        mock_writer_instance = MagicMock()
+        mock_writer_instance.write = AsyncMock(return_value="2026-04-13-paper-title-abc123.md")
+        MockWriter.return_value = mock_writer_instance
+
+        await handler.cmd_note(update, ctx)
+
+    # Check the entry dict passed to MemoryWriter.write had content_type='detailed'
+    entry_arg = mock_writer_instance.write.call_args[0][0]
+    assert entry_arg["content_type"] == "detailed"
+
+
+@pytest.mark.asyncio
+async def test_cmd_note_bad_url(handler):
+    """Non-http argument shows usage message."""
+    update, ctx = _make_update(12345, ["not-a-url"])
+    await handler.cmd_note(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Usage" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_note_fetch_failure(handler):
+    """If fetch returns empty content, report gracefully."""
+    update, ctx = _make_update(12345, ["https://example.com/bad"])
+
+    with patch("chat_handler.fetch_url_content", new=AsyncMock(return_value=("", ""))):
+        await handler.cmd_note(update, ctx)
+
+    replies = [call[0][0] for call in update.message.reply_text.call_args_list]
+    assert any("Could not fetch" in r for r in replies)
+
+
+@pytest.mark.asyncio
+async def test_cmd_note_happy_path_replies_with_saved(handler, brain_dir):
+    """Successful /note replies with ✅ and filename."""
+    update, ctx = _make_update(12345, ["https://example.com/paper"])
+
+    with patch("chat_handler.fetch_url_content", new=AsyncMock(
+            return_value=("Paper Title", "Content here."))), \
+         patch("chat_handler.SkillExecutor") as MockExec, \
+         patch("memory_writer.MemoryWriter") as MockWriter:
+        mock_executor_instance = MagicMock()
+        mock_executor_instance.run = AsyncMock(return_value="## Summary\nGreat.")
+        MockExec.return_value = mock_executor_instance
+        mock_writer_instance = MagicMock()
+        mock_writer_instance.write = AsyncMock(return_value="2026-04-13-paper-title-abc123.md")
+        MockWriter.return_value = mock_writer_instance
+
+        await handler.cmd_note(update, ctx)
+
+    replies = [call[0][0] for call in update.message.reply_text.call_args_list]
+    assert any("📥" in r for r in replies)
+    assert any("✅" in r for r in replies)
+    assert any("2026-04-13-paper-title-abc123.md" in r for r in replies)

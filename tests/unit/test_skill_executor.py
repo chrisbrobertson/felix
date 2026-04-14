@@ -327,3 +327,61 @@ async def test_run_with_tools_resolves_alias_model(skills_dir):
     assert called_model == "claude-haiku-4-5-20251001", (
         f"Expected alias 'summarize' to resolve to 'claude-haiku-4-5-20251001', got {called_model!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_run_uses_max_tokens_from_frontmatter(skills_dir):
+    """max_tokens in skill frontmatter overrides the default 1000."""
+    skill_path = skills_dir / "detailed_skill.md"
+    skill_path.write_text(
+        "---\nname: detailed_skill\nversion: 1\n"
+        "preferred_model: summarize\nmax_tokens: 4000\n---\n\n"
+        "## Instructions\n\nYou are a helpful assistant.\n\n## Execution History\n\n"
+        "| date | input_slug | model | score | notes |\n"
+        "|------|-----------|-------|-------|-------|\n"
+    )
+
+    choice = MagicMock()
+    choice.message.content = "Detailed summary output."
+    response = MagicMock()
+    response.choices = [choice]
+    mock_acompletion = AsyncMock(return_value=response)
+
+    with patch.object(se, "SKILLS_DIR", skills_dir), \
+         patch("skill_executor.acompletion", mock_acompletion):
+        executor = se.SkillExecutor("detailed_skill")
+        await executor.run({"content": "some content"})
+
+    call_kwargs = mock_acompletion.call_args[1]
+    assert call_kwargs["max_tokens"] == 4000, (
+        f"Expected max_tokens=4000 from frontmatter, got {call_kwargs['max_tokens']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_defaults_max_tokens_to_1000(skills_dir):
+    """When max_tokens is absent from frontmatter, defaults to 1000."""
+    skill_path = skills_dir / "basic_skill.md"
+    skill_path.write_text(
+        "---\nname: basic_skill\nversion: 1\n"
+        "preferred_model: summarize\n---\n\n"
+        "## Instructions\n\nYou are a helpful assistant.\n\n## Execution History\n\n"
+        "| date | input_slug | model | score | notes |\n"
+        "|------|-----------|-------|-------|-------|\n"
+    )
+
+    choice = MagicMock()
+    choice.message.content = "Summary output."
+    response = MagicMock()
+    response.choices = [choice]
+    mock_acompletion = AsyncMock(return_value=response)
+
+    with patch.object(se, "SKILLS_DIR", skills_dir), \
+         patch("skill_executor.acompletion", mock_acompletion):
+        executor = se.SkillExecutor("basic_skill")
+        await executor.run({"content": "some content"})
+
+    call_kwargs = mock_acompletion.call_args[1]
+    assert call_kwargs["max_tokens"] == 1000, (
+        f"Expected default max_tokens=1000, got {call_kwargs['max_tokens']}"
+    )

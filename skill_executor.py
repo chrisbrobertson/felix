@@ -64,7 +64,8 @@ class SkillExecutor:
         last_err = None
         for model in models_to_try:
             try:
-                response = await acompletion(model=resolve(model), messages=messages, max_tokens=1000)
+                max_tokens = self._skill["meta"].get("max_tokens", 1000)
+                response = await acompletion(model=resolve(model), messages=messages, max_tokens=max_tokens)
                 result = response.choices[0].message.content
                 await self._log_execution(inputs, resolve(model), score=score)
                 if model != preferred:

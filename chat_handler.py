@@ -106,6 +106,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
     "System": [
         ("backfill", "Reprocess historical data: /backfill <type> [days] [host]. Types: readings, email, zoom, calendar, slack, projects"),
         ("remember", "Fetch a URL and save a reading memory: /remember <url>"),
+        ("note", "Fetch a URL and save detailed study notes: /note <url>"),
     ],
 }
 
@@ -199,6 +200,7 @@ class TelegramChatHandler:
         # System
         self.app.add_handler(CommandHandler("backfill", self.cmd_backfill))
         self.app.add_handler(CommandHandler("remember", self.cmd_remember))
+        self.app.add_handler(CommandHandler("note", self.cmd_note))
         self.app.add_error_handler(self._on_telegram_error)
         # Cache: path -> (mtime, header_text). Invalidated when mtime changes.
         # Avoids reading every file on every chat message.
@@ -1531,6 +1533,55 @@ class TelegramChatHandler:
         except Exception as e:
             log.exception("cmd_remember failed for %s", url)
             await update.message.reply_text(f"Remember failed: {e}")
+
+    async def cmd_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Fetch a URL and save detailed study notes: /note <url>"""
+        if not self._check_auth(update):
+            return
+        if not context.args or not context.args[0].startswith("http"):
+            await update.message.reply_text(
+                "Usage: /note <url>\nExample: /note https://example.com/paper\n\n"
+                "Like /remember but produces richer notes (longer summary, more key points, quotes)."
+            )
+            return
+
+        url = context.args[0]
+        await update.message.reply_text(f"📥 Fetching detailed notes for {url[:60]}...")
+
+        try:
+            from memory_writer import MemoryWriter
+
+            title, content = await fetch_url_content(url)
+            if not content:
+                await update.message.reply_text(
+                    "Could not fetch content from that URL. "
+                    "The page may require JavaScript or block bots."
+                )
+                return
+
+            executor = SkillExecutor("summarize-webpage-detailed")
+            memory_body = await executor.run({"url": url, "title": title or url, "content": content})
+
+            if not memory_body:
+                await update.message.reply_text("Note-taking failed — the LLM returned no content.")
+                return
+
+            entry = {
+                "url": url,
+                "title": title or url,
+                "visit_count": 1,
+                "browser": "telegram",
+                "content_type": "detailed",
+            }
+            filename = await MemoryWriter().write(entry, memory_body)
+            preview = memory_body[:300].replace("\n", " ")
+            await self._send_reply(
+                update,
+                f"✅ Saved detailed notes: {title or url}\n→ {filename}\n\n{preview}…"
+            )
+        except Exception as e:
+            log.exception("cmd_note failed for %s", url)
+            await update.message.reply_text(f"Note failed: {e}")
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
