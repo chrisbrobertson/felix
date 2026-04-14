@@ -214,6 +214,8 @@ flowchart LR
 
 The bot is your main interface. All commands are sent via Telegram.
 
+**Network resilience:** If replies can't be delivered due to network issues, they're queued to `~/secondbrain/pending-replies.json`. When connectivity is restored, you'll receive a notification with `/deliver` (send queued replies) and `/discard` (drop them) commands.
+
 ### Finding information about a person
 
 ```

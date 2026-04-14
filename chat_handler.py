@@ -1,9 +1,11 @@
 import asyncio
+import json
 import logging
 import os
 import re
 import socket
 import yaml
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +21,7 @@ from github_client import GitHubClient, _STANDARD_LABELS
 log = logging.getLogger("chat-handler")
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
+DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
 MAX_CONTEXT_CHARS = 80_000
 TG_MAX_CHARS = 4096  # Telegram hard limit per message
 
@@ -103,6 +106,8 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("commands", "Alias of /help"),
         ("settings", "View or change display settings (date_format, timezone)"),
         ("reset",    "Clear conversation history (history is lost on daemon restart anyway)"),
+        ("deliver",  "Send queued replies that couldn't be delivered due to network issues"),
+        ("discard",  "Drop queued replies that couldn't be delivered due to network issues"),
     ],
     "System": [
         ("backfill", "Reprocess historical data: /backfill <type> [days] [host]. Types: readings, email, zoom, calendar, slack, projects"),
@@ -132,6 +137,8 @@ def _safe_read_text(path: Path) -> Optional[str]:
 
 
 class TelegramChatHandler:
+    PENDING_FILE = DEPLOY_DIR / "pending-replies.json"
+
     def __init__(self, scanners: dict = None):
         try:
             config_text = (BRAIN_DIR / "config.yaml").read_text()
@@ -179,6 +186,8 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("commands", self.cmd_help))
         self.app.add_handler(CommandHandler("settings", self.cmd_settings))
         self.app.add_handler(CommandHandler("reset", self.cmd_reset))
+        self.app.add_handler(CommandHandler("deliver", self.cmd_deliver))
+        self.app.add_handler(CommandHandler("discard", self.cmd_discard))
         self.app.add_handler(CommandHandler("briefing", self.cmd_briefing))
         self.app.add_handler(CommandHandler("mute", self.cmd_mute))
         self.app.add_handler(CommandHandler("unmute", self.cmd_unmute))
@@ -265,9 +274,18 @@ class TelegramChatHandler:
         await self.app.initialize()
         await self.app.start()
         await self.app.updater.start_polling(drop_pending_updates=True)
+        self._stop_event = asyncio.Event()
+        self._reconnect_task = asyncio.create_task(self._reconnect_loop(self._stop_event))
         log.info("Telegram bot polling started")
 
     async def stop(self):
+        if hasattr(self, "_stop_event"):
+            self._stop_event.set()
+        if hasattr(self, "_reconnect_task"):
+            try:
+                await asyncio.wait_for(self._reconnect_task, timeout=5)
+            except (asyncio.TimeoutError, Exception):
+                pass
         await self.app.updater.stop()
         await self.app.stop()
         await self.app.shutdown()
@@ -503,6 +521,81 @@ class TelegramChatHandler:
                 log.info(f"Persisted chat_id {chat_id} for proactive notifications")
 
         return True
+
+    def _load_pending(self) -> dict:
+        if self.PENDING_FILE.exists():
+            try:
+                return json.loads(self.PENDING_FILE.read_text())
+            except Exception:
+                pass
+        return {}
+
+    def _save_pending(self, state: dict):
+        tmp = self.PENDING_FILE.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(state, indent=2))
+            os.rename(str(tmp), str(self.PENDING_FILE))
+        except Exception as e:
+            log.warning("Failed to save pending-replies state: %s", e)
+
+    def _queue_pending_reply(self, chat_id: int, query: str, response: str):
+        state = self._load_pending()
+        key = str(chat_id)
+        entry = state.get(key) or {"pending": [], "summary_sent": False}
+        entry["pending"].append({
+            "query": query,
+            "response": response[:8192],
+            "queued_at": datetime.now().isoformat(timespec="seconds"),
+        })
+        entry["summary_sent"] = False
+        state[key] = entry
+        self._save_pending(state)
+        log.warning("Queued undelivered reply for chat %s (now %d pending)", key, len(entry["pending"]))
+
+    async def _is_telegram_reachable(self) -> bool:
+        """Lightweight connectivity check — returns True if Telegram API is reachable."""
+        try:
+            await asyncio.wait_for(self.app.bot.get_me(), timeout=5.0)
+            return True
+        except Exception:
+            return False
+
+    async def _reconnect_loop(self, stop_event: asyncio.Event):
+        """Poll for Telegram reachability every 30s; notify user when queue has pending replies."""
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=30.0)
+                return  # stop_event fired
+            except asyncio.TimeoutError:
+                pass  # normal 30s tick
+
+            state = self._load_pending()
+            if not state:
+                continue
+            if not await self._is_telegram_reachable():
+                continue
+
+            for chat_id_str, entry in list(state.items()):
+                pending = entry.get("pending", [])
+                if not pending or entry.get("summary_sent"):
+                    continue
+                count = len(pending)
+                try:
+                    await self.app.bot.send_message(
+                        chat_id=int(chat_id_str),
+                        text=(
+                            f"📬 Network is back. I have {count} response"
+                            f"{'s' if count != 1 else ''} I couldn't deliver earlier.\n\n"
+                            f"• /deliver — send them now\n"
+                            f"• /discard — drop them"
+                        ),
+                    )
+                    entry["summary_sent"] = True
+                    state[chat_id_str] = entry
+                    self._save_pending(state)
+                    log.info("Notified chat %s of %d queued reply/replies", chat_id_str, count)
+                except Exception as e:
+                    log.warning("Reconnect summary send failed for %s: %s", chat_id_str, e)
 
     async def _on_telegram_error(self, update, context: ContextTypes.DEFAULT_TYPE):
         """Catch all unhandled exceptions from handlers.
@@ -3138,12 +3231,79 @@ class TelegramChatHandler:
             return
         chat_id = update.effective_chat.id
         cleared = len(self._chat_history.pop(chat_id, []))
+        # Also clear any pending queued replies
+        state = self._load_pending()
+        pending_cleared = len(state.pop(str(chat_id), {}).get("pending", []))
+        if pending_cleared:
+            self._save_pending(state)
         msg = (
-            f"Conversation history cleared ({cleared // 2} turn(s) removed)."
-            if cleared else
+            f"Conversation history cleared ({cleared // 2} turn(s) removed"
+            + (f", {pending_cleared} pending reply/replies discarded" if pending_cleared else "")
+            + ")."
+            if cleared or pending_cleared else
             "No conversation history to clear."
         )
         await update.message.reply_text(msg)
+
+    async def cmd_deliver(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send all pending replies queued while the network was down."""
+        if not self._check_auth(update):
+            return
+        chat_id = update.effective_chat.id
+        state = self._load_pending()
+        entry = state.get(str(chat_id))
+        if not entry or not entry.get("pending"):
+            await update.message.reply_text("No pending replies to deliver.")
+            return
+
+        pending = entry["pending"]
+        await update.message.reply_text(f"Delivering {len(pending)} queued response(s)…")
+
+        delivered_count = 0
+        remaining = []
+        turns = self._chat_history.setdefault(chat_id, [])
+        for item in pending:
+            ok = await self._send_reply(update, item["response"])
+            if ok:
+                turns.append({"role": "user", "content": item["query"]})
+                turns.append({"role": "assistant", "content": item["response"][:4096]})
+                delivered_count += 1
+            else:
+                remaining.append(item)
+
+        max_msgs = self.HISTORY_WINDOW_TURNS * 2
+        if len(turns) > max_msgs:
+            self._chat_history[chat_id] = turns[-max_msgs:]
+
+        if remaining:
+            entry["pending"] = remaining
+            entry["summary_sent"] = False
+            state[str(chat_id)] = entry
+        else:
+            state.pop(str(chat_id), None)
+        self._save_pending(state)
+
+        try:
+            await update.message.reply_text(
+                f"✅ Delivered {delivered_count}."
+                + (f" {len(remaining)} still queued — network is flaky again." if remaining else "")
+            )
+        except Exception:
+            pass
+
+    async def cmd_discard(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Drop all pending replies queued while the network was down."""
+        if not self._check_auth(update):
+            return
+        chat_id = update.effective_chat.id
+        state = self._load_pending()
+        entry = state.pop(str(chat_id), None)
+        count = len(entry.get("pending", [])) if entry else 0
+        self._save_pending(state)
+        if count:
+            await update.message.reply_text(f"Discarded {count} pending reply/replies.")
+        else:
+            await update.message.reply_text("No pending replies to discard.")
 
     async def cmd_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """View or change display settings: date_format, timezone.
@@ -3228,22 +3388,27 @@ class TelegramChatHandler:
         os.rename(tmp, config_path)
         await update.message.reply_text(f"Updated {key} to: {value}")
 
-    async def _send_reply(self, update: Update, text: str):
+    async def _send_reply(self, update: Update, text: str) -> bool:
         """Chunk response into ≤4096-char messages. Retries on transient network errors."""
         if not text:
             text = "No response generated."
         chunks = [text[i:i + TG_MAX_CHARS] for i in range(0, len(text), TG_MAX_CHARS)] or [text]
         for chunk in chunks:
+            delivered = False
             for attempt, delay in enumerate((1, 2, 4)):
                 try:
                     await update.message.reply_text(chunk)
+                    delivered = True
                     break
                 except (TimedOut, NetworkError) as e:
                     if attempt == 2:
                         log.error("Reply failed after 3 attempts: %s", e)
-                        return
+                        return False
                     log.warning("Reply attempt %d failed (%s), retrying in %ds", attempt + 1, e, delay)
                     await asyncio.sleep(delay)
+            if not delivered:
+                return False
+        return True
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -3326,20 +3491,23 @@ class TelegramChatHandler:
                 except Exception:
                     pass
                 return
-            # Persist turn to conversation history (cap at 4 KB per assistant reply)
-            assistant_text = response[:4096] if response else ""
-            turns = self._chat_history.setdefault(chat_id, [])
-            turns.append({"role": "user", "content": query})
-            turns.append({"role": "assistant", "content": assistant_text})
-            # Keep only the last HISTORY_WINDOW_TURNS pairs (2 messages per turn)
-            max_msgs = self.HISTORY_WINDOW_TURNS * 2
-            if len(turns) > max_msgs:
-                self._chat_history[chat_id] = turns[-max_msgs:]
-            await self._send_reply(update, response)
-            try:
-                await update.message.set_reaction("✅")
-            except Exception:
-                pass
+            # Deliver response first, only update history on success
+            delivered = await self._send_reply(update, response)
+            if delivered:
+                assistant_text = response[:4096]
+                turns = self._chat_history.setdefault(chat_id, [])
+                turns.append({"role": "user", "content": query})
+                turns.append({"role": "assistant", "content": assistant_text})
+                max_msgs = self.HISTORY_WINDOW_TURNS * 2
+                if len(turns) > max_msgs:
+                    self._chat_history[chat_id] = turns[-max_msgs:]
+                try:
+                    await update.message.set_reaction("✅")
+                except Exception:
+                    pass
+            else:
+                # Delivery failed — queue for reconnect
+                self._queue_pending_reply(chat_id, query, response)
           except Exception as e:
             log.error(f"Error processing message: {e}", exc_info=True)
             try:

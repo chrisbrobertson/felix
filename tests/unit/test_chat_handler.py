@@ -1,4 +1,6 @@
 """Unit tests for chat_handler.py."""
+import asyncio
+import json
 import os
 import time
 from pathlib import Path
@@ -33,18 +35,24 @@ def brain_dir(tmp_path):
 
 
 @pytest.fixture
-def handler(brain_dir):
+def handler(brain_dir, tmp_path):
     mock_app = MagicMock()
     mock_builder = MagicMock()
     mock_builder.token.return_value = mock_builder
     mock_builder.build.return_value = mock_app
 
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+
     with patch.object(ch, "BRAIN_DIR", brain_dir), \
+         patch.object(ch, "DEPLOY_DIR", deploy_dir), \
          patch("chat_handler.ApplicationBuilder", return_value=mock_builder), \
          patch("chat_handler.SkillExecutor"), \
          patch.dict(os.environ, {"GITHUB_PAT": "", "GITHUB_REPO": ""}, clear=False):
         h = ch.TelegramChatHandler()
         h.allowed_user_id = 12345
+        # Explicitly set PENDING_FILE to use tmp_path
+        h.PENDING_FILE = deploy_dir / "pending-replies.json"
         yield h
 
 
@@ -2247,3 +2255,270 @@ def test_safe_read_text_returns_none_on_oserror(tmp_path):
     missing = tmp_path / "missing.md"
     result = _safe_read_text(missing)
     assert result is None
+
+
+# --- Pending-reply queue tests ---
+
+@pytest.mark.asyncio
+async def test_send_reply_returns_true_on_success(handler):
+    """_send_reply should return True when all chunks delivered successfully."""
+    mock_update, _ = _make_update(12345)
+    result = await handler._send_reply(mock_update, "Test message")
+    assert result is True
+    assert mock_update.message.reply_text.called
+
+
+@pytest.mark.asyncio
+async def test_send_reply_returns_false_on_exhausted_retries(handler):
+    """_send_reply should return False when all retries are exhausted."""
+    from telegram.error import TimedOut
+    mock_update, _ = _make_update(12345)
+    mock_update.message.reply_text.side_effect = TimedOut("network error")
+    result = await handler._send_reply(mock_update, "Test message")
+    assert result is False
+    assert mock_update.message.reply_text.call_count == 3  # 3 attempts
+
+
+@pytest.mark.asyncio
+async def test_handle_message_does_not_append_history_on_send_failure(handler):
+    """handle_message should not append to history when send fails, should queue instead."""
+    mock_update, mock_context = _make_update(12345)
+    mock_update.effective_chat.id = 12345
+    mock_update.message.text = "test query"
+
+    with patch.object(handler.executor, "run_with_tools", new=AsyncMock(return_value="response")), \
+         patch.object(handler, "_send_reply", return_value=False), \
+         patch.object(handler, "_queue_pending_reply") as mock_queue:
+        await handler.handle_message(mock_update, mock_context)
+
+        # History should be empty
+        assert 12345 not in handler._chat_history or len(handler._chat_history[12345]) == 0
+        # Queue should be called
+        assert mock_queue.called
+        mock_queue.assert_called_once_with(12345, "test query", "response")
+
+
+def test_queue_pending_reply_writes_state_file(handler):
+    """_queue_pending_reply should persist to JSON with correct schema."""
+    handler._queue_pending_reply(12345, "query", "response")
+
+    assert handler.PENDING_FILE.exists()
+    state = json.loads(handler.PENDING_FILE.read_text())
+    assert "12345" in state
+    assert state["12345"]["pending"][0]["query"] == "query"
+    assert state["12345"]["pending"][0]["response"] == "response"
+    assert "queued_at" in state["12345"]["pending"][0]
+    assert state["12345"]["summary_sent"] is False
+
+
+def test_queue_pending_reply_resets_summary_sent_on_new_item(handler):
+    """_queue_pending_reply should reset summary_sent when adding a new item."""
+    # Pre-populate with summary_sent=True
+    handler.PENDING_FILE.write_text(json.dumps({
+        "12345": {"pending": [{"query": "old", "response": "old", "queued_at": "2026-01-01T12:00:00"}], "summary_sent": True}
+    }))
+
+    handler._queue_pending_reply(12345, "new query", "new response")
+
+    state = json.loads(handler.PENDING_FILE.read_text())
+    assert len(state["12345"]["pending"]) == 2
+    assert state["12345"]["summary_sent"] is False
+
+
+@pytest.mark.asyncio
+async def test_cmd_deliver_sends_all_pending_and_empties_queue(handler):
+    """cmd_deliver should send all pending and clear the queue."""
+    # Pre-populate queue
+    handler.PENDING_FILE.write_text(json.dumps({
+        "12345": {
+            "pending": [
+                {"query": "q1", "response": "r1", "queued_at": "2026-01-01T12:00:00"},
+                {"query": "q2", "response": "r2", "queued_at": "2026-01-01T12:01:00"}
+            ],
+            "summary_sent": False
+        }
+    }))
+
+    mock_update, mock_context = _make_update(12345)
+    mock_update.effective_chat.id = 12345
+
+    with patch.object(handler, "_send_reply", return_value=True):
+        await handler.cmd_deliver(mock_update, mock_context)
+
+    # Queue should be empty
+    state = handler._load_pending()
+    assert "12345" not in state
+    # History should have 4 entries (2 turns)
+    assert len(handler._chat_history[12345]) == 4
+
+
+@pytest.mark.asyncio
+async def test_cmd_deliver_requeues_on_partial_failure(handler):
+    """cmd_deliver should requeue items that fail to send and reset summary_sent."""
+    # Pre-populate queue with 3 items
+    handler.PENDING_FILE.write_text(json.dumps({
+        "12345": {
+            "pending": [
+                {"query": "q1", "response": "r1", "queued_at": "2026-01-01T12:00:00"},
+                {"query": "q2", "response": "r2", "queued_at": "2026-01-01T12:01:00"},
+                {"query": "q3", "response": "r3", "queued_at": "2026-01-01T12:02:00"}
+            ],
+            "summary_sent": True  # was already sent
+        }
+    }))
+
+    mock_update, mock_context = _make_update(12345)
+    mock_update.effective_chat.id = 12345
+
+    # First two succeed, third fails
+    with patch.object(handler, "_send_reply", side_effect=[True, True, False]):
+        await handler.cmd_deliver(mock_update, mock_context)
+
+    state = handler._load_pending()
+    assert len(state["12345"]["pending"]) == 1
+    assert state["12345"]["pending"][0]["query"] == "q3"
+    assert state["12345"]["summary_sent"] is False
+
+
+@pytest.mark.asyncio
+async def test_cmd_discard_empties_queue(handler):
+    """cmd_discard should remove all pending items for this chat."""
+    # Pre-populate queue
+    handler.PENDING_FILE.write_text(json.dumps({
+        "12345": {
+            "pending": [
+                {"query": "q1", "response": "r1", "queued_at": "2026-01-01T12:00:00"}
+            ],
+            "summary_sent": False
+        }
+    }))
+
+    mock_update, mock_context = _make_update(12345)
+    mock_update.effective_chat.id = 12345
+
+    await handler.cmd_discard(mock_update, mock_context)
+
+    state = handler._load_pending()
+    assert "12345" not in state
+
+
+@pytest.mark.asyncio
+async def test_cmd_reset_also_clears_pending_queue(handler):
+    """cmd_reset should clear both history and pending queue."""
+    # Set up history and pending queue
+    handler._chat_history[12345] = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "r1"}
+    ]
+    handler.PENDING_FILE.write_text(json.dumps({
+        "12345": {
+            "pending": [
+                {"query": "q2", "response": "r2", "queued_at": "2026-01-01T12:00:00"}
+            ],
+            "summary_sent": False
+        }
+    }))
+
+    mock_update, mock_context = _make_update(12345)
+    mock_update.effective_chat.id = 12345
+
+    await handler.cmd_reset(mock_update, mock_context)
+
+    # Both should be cleared
+    assert 12345 not in handler._chat_history
+    state = handler._load_pending()
+    assert "12345" not in state
+
+
+@pytest.mark.asyncio
+async def test_is_telegram_reachable_returns_true_on_success(handler):
+    """_is_telegram_reachable should return True when get_me succeeds."""
+    handler.app.bot.get_me = AsyncMock(return_value={"id": 123, "username": "bot"})
+    result = await handler._is_telegram_reachable()
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_is_telegram_reachable_returns_false_on_exception(handler):
+    """_is_telegram_reachable should return False when get_me raises."""
+    handler.app.bot.get_me = AsyncMock(side_effect=Exception("network error"))
+    result = await handler._is_telegram_reachable()
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_reconnect_loop_sends_summary_when_network_back(handler):
+    """_reconnect_loop should notify user when network is back and queue has items."""
+    # Pre-populate queue
+    handler.PENDING_FILE.write_text(json.dumps({
+        "12345": {
+            "pending": [
+                {"query": "q1", "response": "r1", "queued_at": "2026-01-01T12:00:00"}
+            ],
+            "summary_sent": False
+        }
+    }))
+
+    stop_event = asyncio.Event()
+    handler.app.bot.send_message = AsyncMock()
+
+    # Mock _is_telegram_reachable to return True
+    with patch.object(handler, "_is_telegram_reachable", return_value=True):
+        # Mock wait_for to raise TimeoutError once (normal tick), then set stop_event
+        call_count = 0
+        async def mock_wait_for(event_wait, timeout):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise asyncio.TimeoutError()  # First tick
+            else:
+                stop_event.set()  # Stop after first iteration
+
+        with patch("asyncio.wait_for", side_effect=mock_wait_for):
+            await handler._reconnect_loop(stop_event)
+
+    # Verify send_message was called with the reconnect notification
+    assert handler.app.bot.send_message.called
+    call_args = handler.app.bot.send_message.call_args
+    assert call_args[1]["chat_id"] == 12345
+    assert "📬" in call_args[1]["text"]
+    assert "/deliver" in call_args[1]["text"]
+
+    # Verify summary_sent was updated
+    state = handler._load_pending()
+    assert state["12345"]["summary_sent"] is True
+
+
+@pytest.mark.asyncio
+async def test_reconnect_loop_does_not_spam_when_summary_already_sent(handler):
+    """_reconnect_loop should not send notification when summary_sent is already True."""
+    # Pre-populate queue with summary_sent=True
+    handler.PENDING_FILE.write_text(json.dumps({
+        "12345": {
+            "pending": [
+                {"query": "q1", "response": "r1", "queued_at": "2026-01-01T12:00:00"}
+            ],
+            "summary_sent": True
+        }
+    }))
+
+    stop_event = asyncio.Event()
+    handler.app.bot.send_message = AsyncMock()
+
+    # Mock _is_telegram_reachable to return True
+    with patch.object(handler, "_is_telegram_reachable", return_value=True):
+        # Mock wait_for to raise TimeoutError once, then stop
+        call_count = 0
+        async def mock_wait_for(event_wait, timeout):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise asyncio.TimeoutError()
+            else:
+                stop_event.set()
+
+        with patch("asyncio.wait_for", side_effect=mock_wait_for):
+            await handler._reconnect_loop(stop_event)
+
+    # Verify send_message was NOT called
+    assert not handler.app.bot.send_message.called

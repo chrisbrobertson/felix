@@ -117,7 +117,7 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 1. **Browser Watcher** (every 5 min) — reads Chrome/Firefox SQLite DBs, filters by dwell time and skip-domain list, fetches page content, runs `summarize-webpage` skill, writes memory file.
 
-2. **Telegram Chat Handler** (always polling) — receives queries, loads `index.md` + up to 20 relevant memory files (keyword intersection against cached 500-char headers), streams response via `chat` skill.
+2. **Telegram Chat Handler** (always polling) — receives queries, loads `index.md` + up to 20 relevant memory files (keyword intersection against cached 500-char headers), streams response via `chat` skill. Includes a reconnect-poller sub-task (30s cadence) that queues undelivered replies to `~/secondbrain/pending-replies.json` and notifies the user when connectivity is restored.
 
 3. **Index Builder** (every hour) — reads all memory files, calls LLM to synthesize `index.md`. Also emits a health-check log line with last-seen timestamp per hostname.
 
