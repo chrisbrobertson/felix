@@ -9,6 +9,7 @@ from typing import Optional
 
 from telegram import Update
 from telegram.constants import ChatAction
+from telegram.error import TimedOut, NetworkError
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
 from skill_executor import SkillExecutor
@@ -121,9 +122,23 @@ BACKFILL_CONFIG = {
 }
 
 
+def _safe_read_text(path: Path) -> Optional[str]:
+    """Read iCloud file, returning None on transient OSError (e.g. errno 11 EDEADLK)."""
+    try:
+        return path.read_text()
+    except OSError as e:
+        log.warning("Read failed for %s: %s", path, e)
+        return None
+
+
 class TelegramChatHandler:
     def __init__(self, scanners: dict = None):
-        config = yaml.safe_load((BRAIN_DIR / "config.yaml").read_text())
+        try:
+            config_text = (BRAIN_DIR / "config.yaml").read_text()
+            config = yaml.safe_load(config_text) or {}
+        except OSError as e:
+            log.warning("Could not read config.yaml at startup: %s — using defaults", e)
+            config = {}
         self.token = config["telegram"]["bot_token"]
         self.allowed_user_id = int(config["user"]["telegram_user_id"])
         self.executor = SkillExecutor("chat")
@@ -2030,7 +2045,9 @@ class TelegramChatHandler:
     def _rewrite_feature_frontmatter(self, path: Path, updates: dict):
         """Update specific frontmatter keys in a feature request file. Preserves body."""
         import os
-        text = path.read_text()
+        text = _safe_read_text(path)
+        if text is None:
+            return False
         # Split into frontmatter and body
         if not text.startswith("---"):
             return
@@ -2049,7 +2066,9 @@ class TelegramChatHandler:
         """Append a timestamped note to the ## Notes section."""
         import os
         from datetime import datetime
-        text = path.read_text()
+        text = _safe_read_text(path)
+        if text is None:
+            return False
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         note_line = f"- {timestamp}: {note}\n"
         if "## Notes" in text:
@@ -2201,12 +2220,14 @@ class TelegramChatHandler:
         for f in files:
             # Check filename match
             if name_lower in f.stem.lower():
-                return f.read_text()
+                text = _safe_read_text(f)
+                return text if text is not None else ""
             # Check frontmatter source_title match
             fm = self._parse_frontmatter(f)
             source_title = (fm.get("source_title") or "").lower()
             if name_lower in source_title:
-                return f.read_text()
+                text = _safe_read_text(f)
+                return text if text is not None else ""
 
         return f"Memory not found: {name}"
 
@@ -2631,7 +2652,10 @@ class TelegramChatHandler:
 
         # Local path
         fm = self._parse_frontmatter(target)
-        text = target.read_text()
+        text = _safe_read_text(target)
+        if text is None:
+            await update.message.reply_text("Feature file temporarily unavailable — try again in a moment.")
+            return
         # Strip frontmatter for body
         parts = text.split("---", 2)
         body = parts[2].strip() if len(parts) >= 3 else text
@@ -2808,7 +2832,9 @@ class TelegramChatHandler:
         imported = 0
         for f, fm in to_import:
             title = fm.get("title", f.stem)[:100]
-            text = f.read_text()
+            text = _safe_read_text(f)
+            if text is None:
+                continue
             parts = text.split("---", 2)
             body = parts[2].strip() if len(parts) >= 3 else text
             kind = fm.get("kind", "feature")
@@ -3203,12 +3229,21 @@ class TelegramChatHandler:
         await update.message.reply_text(f"Updated {key} to: {value}")
 
     async def _send_reply(self, update: Update, text: str):
-        """Chunk response into ≤4096-char messages to respect Telegram's hard limit."""
+        """Chunk response into ≤4096-char messages. Retries on transient network errors."""
         if not text:
-            await update.message.reply_text("No response generated.")
-            return
-        for i in range(0, len(text), TG_MAX_CHARS):
-            await update.message.reply_text(text[i:i + TG_MAX_CHARS])
+            text = "No response generated."
+        chunks = [text[i:i + TG_MAX_CHARS] for i in range(0, len(text), TG_MAX_CHARS)] or [text]
+        for chunk in chunks:
+            for attempt, delay in enumerate((1, 2, 4)):
+                try:
+                    await update.message.reply_text(chunk)
+                    break
+                except (TimedOut, NetworkError) as e:
+                    if attempt == 2:
+                        log.error("Reply failed after 3 attempts: %s", e)
+                        return
+                    log.warning("Reply attempt %d failed (%s), retrying in %ds", attempt + 1, e, delay)
+                    await asyncio.sleep(delay)
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -3278,9 +3313,14 @@ class TelegramChatHandler:
 
             log.info(f"Response: {len(response) if response else 0} chars")
             if response is None:
-                await update.message.reply_text(
-                    "Sorry — the chat model failed. Check ~/secondbrain/errors.log."
-                )
+                try:
+                    await update.message.reply_text(
+                        "Sorry — the chat model failed. Check ~/secondbrain/errors.log."
+                    )
+                except (TimedOut, NetworkError) as e:
+                    log.error("Couldn't send model-failure notice: %s", e)
+                except Exception:
+                    pass
                 try:
                     await update.message.set_reaction("❌")
                 except Exception:
@@ -3302,9 +3342,12 @@ class TelegramChatHandler:
                 pass
           except Exception as e:
             log.error(f"Error processing message: {e}", exc_info=True)
-            await update.message.reply_text(
-                f"Sorry — processing failed: {e}"
-            )
+            try:
+                await update.message.reply_text(f"Sorry — processing failed: {e}")
+            except (TimedOut, NetworkError) as reply_err:
+                log.error("Couldn't send failure notice (network): %s", reply_err)
+            except Exception:
+                pass
             try:
                 await update.message.set_reaction("❌")
             except Exception:

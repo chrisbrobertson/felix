@@ -2186,3 +2186,64 @@ async def test_cmd_note_happy_path_replies_with_saved(handler, brain_dir):
     assert any("📥" in r for r in replies)
     assert any("✅" in r for r in replies)
     assert any("2026-04-13-paper-title-abc123.md" in r for r in replies)
+
+
+# --- Network error hardening ---
+
+@pytest.mark.asyncio
+async def test_send_reply_retries_on_timeout(handler):
+    """_send_reply should retry on TimedOut up to 3 attempts."""
+    from telegram.error import TimedOut
+    mock_update = MagicMock()
+    mock_update.message = AsyncMock()
+    # Fail twice, then succeed
+    mock_update.message.reply_text.side_effect = [
+        TimedOut("timeout 1"),
+        TimedOut("timeout 2"),
+        None,  # success on third attempt
+    ]
+    await handler._send_reply(mock_update, "hello")
+    assert mock_update.message.reply_text.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_send_reply_gives_up_after_three_timeouts(handler, caplog):
+    """_send_reply should give up after 3 failed attempts and log error."""
+    from telegram.error import TimedOut
+    mock_update = MagicMock()
+    mock_update.message = AsyncMock()
+    # Always fail
+    mock_update.message.reply_text.side_effect = TimedOut("persistent timeout")
+
+    # Should not raise, just log and return
+    await handler._send_reply(mock_update, "hello")
+
+    assert mock_update.message.reply_text.call_count == 3
+    # Check that error was logged
+    assert any("Reply failed after 3 attempts" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_handle_message_cascade_broken_on_timeout(handler):
+    """handle_message error path should not cascade when the fallback reply also times out."""
+    from telegram.error import TimedOut
+    mock_update, mock_context = _make_update(12345)
+
+    # Make the executor raise
+    with patch.object(handler.executor, "run_with_tools", side_effect=Exception("LLM down")):
+        # Make reply_text also raise TimedOut
+        mock_update.message.reply_text.side_effect = TimedOut("network error")
+
+        # Should complete without raising
+        await handler.handle_message(mock_update, mock_context)
+
+        # Verify the error handler was invoked (message.reply_text was called despite timing out)
+        assert mock_update.message.reply_text.called
+
+
+def test_safe_read_text_returns_none_on_oserror(tmp_path):
+    """_safe_read_text should return None on OSError."""
+    from chat_handler import _safe_read_text
+    missing = tmp_path / "missing.md"
+    result = _safe_read_text(missing)
+    assert result is None
