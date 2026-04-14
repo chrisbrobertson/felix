@@ -2571,3 +2571,157 @@ async def test_reconnect_loop_adds_notification_to_chat_history(handler, tmp_pat
     assert "Network is back" in turns[0]["content"]
     assert "/deliver" in turns[0]["content"]
     assert "/discard" in turns[0]["content"]
+
+
+# ── pending-reply tool gating (Fix 1: bugs a692c6 + 95dad0) ─────────────────
+
+async def test_pending_tools_absent_when_queue_empty(handler, brain_dir):
+    """deliver/discard tools must NOT be passed to the LLM when queue is empty."""
+    handler.executor = MagicMock()
+    captured_tools = []
+
+    async def capture_tools(**kwargs):
+        captured_tools.extend(kwargs.get("tools", []))
+        return "answer"
+
+    handler.executor.run_with_tools = capture_tools
+
+    mock_update = MagicMock()
+    mock_update.effective_user.id = 12345
+    mock_update.effective_chat.id = 12345
+    mock_update.message = AsyncMock()
+    mock_update.message.text = "yes"
+
+    # No pending-replies.json — queue is empty
+    await handler.handle_message(mock_update, MagicMock())
+
+    tool_names = [t["function"]["name"] for t in captured_tools]
+    assert "deliver_pending_replies" not in tool_names
+    assert "discard_pending_replies" not in tool_names
+
+
+async def test_pending_tools_present_when_queue_nonempty(handler, brain_dir):
+    """deliver/discard tools ARE passed to the LLM when queue has entries for this chat."""
+    handler.executor = MagicMock()
+    captured_tools = []
+
+    async def capture_tools(**kwargs):
+        captured_tools.extend(kwargs.get("tools", []))
+        return "answer"
+
+    handler.executor.run_with_tools = capture_tools
+
+    # Pre-populate queue for this chat_id
+    chat_id = 12345
+    handler._save_pending({str(chat_id): {"pending": [{"query": "q", "response": "r", "queued_at": "2026-04-13T12:00:00"}], "summary_sent": False}})
+
+    mock_update = MagicMock()
+    mock_update.effective_user.id = chat_id
+    mock_update.effective_chat.id = chat_id
+    mock_update.message = AsyncMock()
+    mock_update.message.text = "yes"
+
+    await handler.handle_message(mock_update, MagicMock())
+
+    tool_names = [t["function"]["name"] for t in captured_tools]
+    assert "deliver_pending_replies" in tool_names
+    assert "discard_pending_replies" in tool_names
+
+
+async def test_pending_tools_scoped_per_chat_id(handler, brain_dir):
+    """Queue for chat A must not expose pending tools when querying as chat B."""
+    handler.executor = MagicMock()
+    captured_tools = []
+
+    async def capture_tools(**kwargs):
+        captured_tools.extend(kwargs.get("tools", []))
+        return "answer"
+
+    handler.executor.run_with_tools = capture_tools
+
+    # Queue belongs to a different chat_id
+    handler._save_pending({"99999": {"pending": [{"query": "q", "response": "r", "queued_at": "2026-04-13T12:00:00"}], "summary_sent": False}})
+
+    mock_update = MagicMock()
+    mock_update.effective_user.id = 12345
+    mock_update.effective_chat.id = 12345  # different from 99999
+    mock_update.message = AsyncMock()
+    mock_update.message.text = "yes"
+
+    await handler.handle_message(mock_update, MagicMock())
+
+    tool_names = [t["function"]["name"] for t in captured_tools]
+    assert "deliver_pending_replies" not in tool_names
+    assert "discard_pending_replies" not in tool_names
+
+
+# ── /comms forget subcommand (Fix 3: bug c1a5ce) ─────────────────────────────
+
+def _write_email_thread(memories_dir: Path, slug: str, subject: str, n: int = 1) -> Path:
+    """Write a minimal email-thread memory file for testing."""
+    path = memories_dir / f"email-thread-{slug}-abc{n:03d}.md"
+    path.write_text(
+        f"---\ntype: email_thread\nsource_title: {subject}\n"
+        f"participants: [sender@example.com]\nlast_message: '2026-04-0{n}'\n---\n\n{subject} body."
+    )
+    return path
+
+
+async def test_comms_forget_single_index(handler, brain_dir):
+    m = brain_dir / "memories"
+    f1 = _write_email_thread(m, "alpha", "Alpha thread", 1)
+    f2 = _write_email_thread(m, "beta", "Beta thread", 2)
+    f3 = _write_email_thread(m, "gamma", "Gamma thread", 3)
+    with patch.object(ch, "BRAIN_DIR", brain_dir):
+        update, ctx = _make_update(12345, ["email", "forget", "2"])
+        await handler.cmd_comms(update, ctx)
+    assert not f2.exists()
+    assert f1.exists()
+    assert f3.exists()
+
+
+async def test_comms_forget_multi_index(handler, brain_dir):
+    m = brain_dir / "memories"
+    files = [_write_email_thread(m, f"t{i}", f"Thread {i}", i) for i in range(1, 6)]
+    with patch.object(ch, "BRAIN_DIR", brain_dir):
+        update, ctx = _make_update(12345, ["email", "forget", "1", "3", "5"])
+        await handler.cmd_comms(update, ctx)
+    assert not files[0].exists()  # index 1
+    assert files[1].exists()       # index 2
+    assert not files[2].exists()  # index 3
+    assert files[3].exists()       # index 4
+    assert not files[4].exists()  # index 5
+
+
+async def test_comms_forget_rejects_non_numeric(handler, brain_dir):
+    m = brain_dir / "memories"
+    _write_email_thread(m, "alpha", "Alpha thread", 1)
+    with patch.object(ch, "BRAIN_DIR", brain_dir):
+        update, ctx = _make_update(12345, ["email", "forget", "abc"])
+        await handler.cmd_comms(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Usage:" in reply
+
+
+async def test_comms_forget_empty_args_usage_message(handler, brain_dir):
+    m = brain_dir / "memories"
+    _write_email_thread(m, "alpha", "Alpha thread", 1)
+    with patch.object(ch, "BRAIN_DIR", brain_dir):
+        update, ctx = _make_update(12345, ["email", "forget"])
+        await handler.cmd_comms(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Usage:" in reply
+
+
+async def test_forget_indices_helper_regression(handler, brain_dir):
+    """Ensure cmd_forget still works correctly after _forget_indices extraction."""
+    m = brain_dir / "memories"
+    f1 = write_memory(m, "one-aaa111", [], "Article One")
+    f2 = write_memory(m, "two-bbb222", [], "Article Two")
+    f3 = write_memory(m, "three-ccc333", [], "Article Three")
+    handler._active_list = [f1, f2, f3]
+    update, ctx = _make_update(12345, ["2"])
+    await handler.cmd_forget(update, ctx)
+    assert not f2.exists()
+    assert f1.exists()
+    assert f3.exists()

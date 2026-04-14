@@ -1,4 +1,5 @@
 """Unit tests for SkillExecutor.run_with_tools()."""
+import logging
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from pathlib import Path
@@ -194,28 +195,26 @@ async def test_run_with_tools_fallback_on_error(tmp_skills_dir, mock_tool_dispat
         assert mock_acompletion.call_count == 2
 
 
-async def test_run_with_tools_all_models_fail(tmp_skills_dir, mock_tool_dispatch):
-    """Both models raise — returns None, ERROR_LOG written."""
+async def test_run_with_tools_all_models_fail(tmp_skills_dir, mock_tool_dispatch, caplog):
+    """Both models raise — returns None, error logged via log.error."""
     from skill_executor import SkillExecutor
 
     mock_acompletion = AsyncMock(side_effect=RuntimeError("all failed"))
 
     with patch("skill_executor.SKILLS_DIR", tmp_skills_dir), \
-         patch("skill_executor.acompletion", mock_acompletion), \
-         patch("skill_executor.ERROR_LOG", tmp_path := Path("/tmp/test-errors.log")):
-        # Ensure log file parent exists
-        tmp_path.parent.mkdir(exist_ok=True, parents=True)
-
+         patch("skill_executor.acompletion", mock_acompletion):
         executor = SkillExecutor("test_skill", role="full")
-        result = await executor.run_with_tools(
-            inputs={"query": "test"},
-            tools=[],
-            tool_dispatch=mock_tool_dispatch,
-        )
+        with caplog.at_level(logging.ERROR, logger="skill-executor"):
+            result = await executor.run_with_tools(
+                inputs={"query": "test"},
+                tools=[],
+                tool_dispatch=mock_tool_dispatch,
+            )
 
-        assert result is None
-        # Both preferred and fallback should be tried
-        assert mock_acompletion.call_count == 2
+    assert result is None
+    assert "all failed" in caplog.text
+    # Both preferred and fallback should be tried
+    assert mock_acompletion.call_count == 2
 
 
 async def test_run_with_tools_invalid_json_arguments(tmp_skills_dir, mock_tool_dispatch):

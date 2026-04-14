@@ -15,9 +15,9 @@
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/tmp/second-brain.log</string>
+  <string>/dev/null</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/second-brain.error.log</string>
+  <string>/dev/null</string>
   <key>EnvironmentVariables</key>
   <dict>
     <!-- Role is set here, not in config.yaml — config.yaml syncs via iCloud

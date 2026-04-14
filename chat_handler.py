@@ -940,6 +940,63 @@ class TelegramChatHandler:
 
     # ── /forget command ───────────────────────────────────────────────────────
 
+    async def _forget_indices(self, update: Update, index_args) -> None:
+        """Delete items at the given 1-based index strings from _active_list."""
+        snapshot = list(self._active_list)
+
+        indices_to_remove = []
+        for arg in index_args:
+            if not str(arg).isdigit():
+                await update.message.reply_text(
+                    f"Invalid argument '{arg}' — all arguments must be numbers when using index mode."
+                )
+                return
+            try:
+                idx = int(arg) - 1
+            except (ValueError, TypeError):
+                await update.message.reply_text(f"Invalid index '{arg}'.")
+                return
+            if 0 <= idx < len(snapshot):
+                indices_to_remove.append(idx)
+            else:
+                await update.message.reply_text(
+                    f"Index {arg} out of range (1-{len(snapshot)}). Run a list command first."
+                )
+                return
+
+        indices_to_remove = sorted(set(indices_to_remove))
+
+        successes = []
+        failures = []
+        for idx in indices_to_remove:
+            path = snapshot[idx]
+            try:
+                path.unlink()
+                successes.append((idx + 1, path))
+            except FileNotFoundError:
+                successes.append((idx + 1, path))
+            except Exception:
+                failures.append(idx + 1)
+
+        for _, path in successes:
+            try:
+                self._active_list.remove(path)
+            except ValueError:
+                pass
+
+        if not failures:
+            if len(successes) == 1:
+                fm = self._parse_frontmatter(successes[0][1])
+                title = fm.get("source_title") or fm.get("title") or successes[0][1].name
+                await update.message.reply_text(f"Forgotten: {title}")
+            else:
+                await update.message.reply_text(f"Forgot {len(successes)} items.")
+        else:
+            failed_str = ", ".join(f"#{n}" for n in failures)
+            await update.message.reply_text(
+                f"Forgot {len(successes)} of {len(successes) + len(failures)} (failed: {failed_str})."
+            )
+
     async def cmd_forget(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
@@ -951,68 +1008,8 @@ class TelegramChatHandler:
             )
             return
 
-        # Check if first arg is numeric (single or multi-index mode)
         if context.args[0].isdigit():
-            # Snapshot the active list before any mutation
-            snapshot = list(self._active_list)
-
-            # Resolve all indices against the snapshot
-            indices_to_remove = []
-            for arg in context.args:
-                if not arg.isdigit():
-                    await update.message.reply_text(
-                        f"Invalid argument '{arg}' — all arguments must be numbers when using index mode."
-                    )
-                    return
-                try:
-                    idx = int(arg) - 1
-                except (ValueError, TypeError):
-                    await update.message.reply_text(f"Invalid index '{arg}'.")
-                    return
-                if 0 <= idx < len(snapshot):
-                    indices_to_remove.append(idx)
-                else:
-                    await update.message.reply_text(
-                        f"Index {arg} out of range (1-{len(snapshot)}). Run a list command first."
-                    )
-                    return
-
-            # Deduplicate indices
-            indices_to_remove = sorted(set(indices_to_remove))
-
-            # Unlink each file, track successes and failures
-            successes = []
-            failures = []
-            for idx in indices_to_remove:
-                path = snapshot[idx]
-                try:
-                    path.unlink()
-                    successes.append((idx + 1, path))  # Store 1-based index for error reporting
-                except FileNotFoundError:
-                    successes.append((idx + 1, path))  # Already gone, count as success
-                except Exception:
-                    failures.append(idx + 1)  # Store 1-based index for error reporting
-
-            # Remove successfully deleted paths from active list
-            for _, path in successes:
-                try:
-                    self._active_list.remove(path)
-                except ValueError:
-                    pass
-
-            # Reply with summary
-            if not failures:
-                if len(successes) == 1:
-                    fm = self._parse_frontmatter(successes[0][1])
-                    title = fm.get("source_title") or fm.get("title") or successes[0][1].name
-                    await update.message.reply_text(f"Forgotten: {title}")
-                else:
-                    await update.message.reply_text(f"Forgot {len(successes)} items.")
-            else:
-                failed_str = ", ".join(f"#{n}" for n in failures)
-                await update.message.reply_text(
-                    f"Forgot {len(successes)} of {len(successes) + len(failures)} (failed: {failed_str})."
-                )
+            await self._forget_indices(update, context.args)
             return
 
         # Non-numeric → domain purge
@@ -2413,15 +2410,29 @@ class TelegramChatHandler:
         limit = 10
         show_all = False
 
-        # Parse: /comms [email|slack] [all] [N]
+        # Parse: /comms [email|slack] [forget N...] [all] [N]
         if args and args[0].lower() in ("email", "slack"):
             type_filter = args[0].lower()
             args = args[1:]
-        elif args and not args[0].isdigit() and args[0].lower() != "all":
+        elif args and not args[0].isdigit() and args[0].lower() not in ("all", "forget"):
             await update.message.reply_text(
                 "Usage: /comms [email|slack] [all] [N]\n"
                 "Filter must be 'email' or 'slack'. Add 'all' to show marketing/automated emails."
             )
+            return
+
+        # forget subcommand: /comms [email|slack] forget <N> [N ...]
+        if args and args[0].lower() == "forget":
+            forget_args = args[1:]
+            if not forget_args or not all(str(a).isdigit() for a in forget_args):
+                await update.message.reply_text(
+                    "Usage: /comms [email|slack] forget <N> [N ...]\n"
+                    "Run /comms [email|slack] first to see numbered items."
+                )
+                return
+            # Rebuild the active list for this filter so indices are fresh
+            self._list_comms_text(type_filter, limit=50, show_all=True)
+            await self._forget_indices(update, forget_args)
             return
 
         # Check for 'all' flag
@@ -3477,9 +3488,19 @@ class TelegramChatHandler:
             async def tool_dispatch(name: str, args: dict) -> str:
                 return await _tool_dispatch(name, args, self)
 
+            # Only expose pending-reply tools when this chat has a non-empty queue.
+            # This prevents the LLM from calling deliver/discard on an ambiguous "yes".
+            pending_state = self._load_pending()
+            has_pending = bool(pending_state.get(str(chat_id), {}).get("pending"))
+            active_tools = [
+                t for t in TOOLS
+                if has_pending
+                or t["function"]["name"] not in ("deliver_pending_replies", "discard_pending_replies")
+            ]
+
             response = await self.executor.run_with_tools(
                 inputs={"memory_context": memory_context, "user_query": query},
-                tools=TOOLS,
+                tools=active_tools,
                 tool_dispatch=tool_dispatch,
                 history=history,
             )
@@ -3488,7 +3509,7 @@ class TelegramChatHandler:
             if response is None:
                 try:
                     await update.message.reply_text(
-                        "Sorry — the chat model failed. Check ~/secondbrain/errors.log."
+                        "Sorry — the chat model failed. Check ~/secondbrain/logs/error.log."
                     )
                 except (TimedOut, NetworkError) as e:
                     log.error("Couldn't send model-failure notice: %s", e)

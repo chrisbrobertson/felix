@@ -155,9 +155,12 @@ TOOLS: list[dict] = [
         "function": {
             "name": "deliver_pending_replies",
             "description": (
-                "Send all queued replies that couldn't be delivered due to a network outage. "
-                "Call this when the user says 'yes', 'yes please', 'deliver them', or similar "
-                "in response to a notification about pending queued responses."
+                "Deliver every reply queued while the network was down. ONLY call this tool when "
+                "(a) your most recent assistant turn in the conversation was the '📬 Network is back. "
+                "I have N response(s) I couldn't deliver earlier' notification, AND (b) the user's "
+                "latest message is an affirmative response directly addressing that notification. "
+                "If the user's 'yes' could be answering any other question in the conversation, "
+                "do NOT call this tool — ask them to clarify instead."
             ),
             "parameters": {"type": "object", "properties": {}},
         },
@@ -167,9 +170,11 @@ TOOLS: list[dict] = [
         "function": {
             "name": "discard_pending_replies",
             "description": (
-                "Drop all queued replies that couldn't be delivered due to a network outage. "
-                "Call this when the user says 'no', 'discard', 'forget it', 'drop them', or similar "
-                "in response to a notification about pending queued responses."
+                "Discard all queued replies from when the network was down. ONLY call this tool when "
+                "(a) your most recent assistant turn was the pending-queue notification, AND "
+                "(b) the user explicitly wants to discard the queued replies (e.g. 'discard them', "
+                "'drop them', 'no don't deliver'). Do not call this on an ambiguous 'no' that could "
+                "be answering a different question."
             ),
             "parameters": {"type": "object", "properties": {}},
         },

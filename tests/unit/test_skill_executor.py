@@ -1,5 +1,6 @@
 """Unit tests for skill_executor.py."""
 import json
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -151,28 +152,24 @@ async def test_watcher_does_not_modify_skill_file(executor_watcher, skills_dir, 
 
 # --- Error handling ---
 
-async def test_run_returns_none_on_api_error(executor_full, tmp_path):
-    error_log = tmp_path / "errors.log"
-    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=Exception("timeout"))), \
-         patch.object(se, "ERROR_LOG", error_log):
-        result = await executor_full.run({"url": "u", "title": "t", "content": "c"})
+async def test_run_returns_none_on_api_error(executor_full, caplog):
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=Exception("timeout"))):
+        with caplog.at_level(logging.ERROR, logger="skill-executor"):
+            result = await executor_full.run({"url": "u", "title": "t", "content": "c"})
     assert result is None
 
 
-async def test_run_writes_error_log_on_failure(executor_full, tmp_path):
-    error_log = tmp_path / "errors.log"
-    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=Exception("API down"))), \
-         patch.object(se, "ERROR_LOG", error_log):
-        await executor_full.run({"url": "u", "title": "t", "content": "c"})
-    assert error_log.exists()
-    assert "API down" in error_log.read_text()
+async def test_run_writes_error_log_on_failure(executor_full, caplog):
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=Exception("API down"))):
+        with caplog.at_level(logging.ERROR, logger="skill-executor"):
+            await executor_full.run({"url": "u", "title": "t", "content": "c"})
+    assert "API down" in caplog.text
 
 
-async def test_error_score_logged_as_zero(executor_full, skills_dir, tmp_path):
-    error_log = tmp_path / "errors.log"
-    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=Exception("fail"))), \
-         patch.object(se, "ERROR_LOG", error_log):
-        await executor_full.run({"url": "u", "title": "t", "content": "c"})
+async def test_error_score_logged_as_zero(executor_full, skills_dir, caplog):
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=Exception("fail"))):
+        with caplog.at_level(logging.ERROR, logger="skill-executor"):
+            await executor_full.run({"url": "u", "title": "t", "content": "c"})
     skill_text = (skills_dir / "summarize-webpage.md").read_text()
     assert "| 0.00 |" in skill_text
 
@@ -211,31 +208,27 @@ async def test_run_happy_path_does_not_call_fallback(executor_full):
     assert mock_ac.call_count == 1
 
 
-async def test_run_both_models_fail_writes_error_log(executor_full, tmp_path):
-    error_log = tmp_path / "errors.log"
-    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=Exception("all down"))), \
-         patch.object(se, "ERROR_LOG", error_log):
-        result = await executor_full.run({"url": "u", "title": "t", "content": "c"})
+async def test_run_both_models_fail_writes_error_log(executor_full, caplog):
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=Exception("all down"))):
+        with caplog.at_level(logging.ERROR, logger="skill-executor"):
+            result = await executor_full.run({"url": "u", "title": "t", "content": "c"})
     assert result is None
-    assert error_log.exists()
-    assert "all down" in error_log.read_text()
+    assert "all down" in caplog.text
 
 
-async def test_run_no_fallback_when_field_missing(skills_dir, tmp_path):
-    """Skill without fallback_model: only one attempt, existing error-log behavior."""
+async def test_run_no_fallback_when_field_missing(skills_dir, caplog):
+    """Skill without fallback_model: only one attempt, error goes to logger."""
     content_no_fallback = SKILL_CONTENT.replace("fallback_model: claude-haiku-4-5-20251001\n", "")
     (skills_dir / "summarize-webpage.md").write_text(content_no_fallback)
     with patch.object(se, "SKILLS_DIR", skills_dir):
         executor = se.SkillExecutor("summarize-webpage", role="full")
 
-    error_log = tmp_path / "errors.log"
-    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=Exception("fail"))) as mock_ac, \
-         patch.object(se, "ERROR_LOG", error_log):
-        result = await executor.run({"url": "u", "title": "t", "content": "c"})
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=Exception("fail"))) as mock_ac:
+        with caplog.at_level(logging.ERROR, logger="skill-executor"):
+            result = await executor.run({"url": "u", "title": "t", "content": "c"})
 
     assert result is None
     assert mock_ac.call_count == 1
-    assert error_log.exists()
 
 
 async def test_run_execution_log_records_fallback_model_when_used(skills_dir, tmp_path):

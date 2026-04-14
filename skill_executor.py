@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import re
 import yaml
 from datetime import datetime
@@ -11,9 +10,6 @@ from litellm import acompletion
 from llm_routes import resolve
 
 log = logging.getLogger("skill-executor")
-
-DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
-ERROR_LOG = DEPLOY_DIR / "errors.log"
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
 SKILLS_DIR = BRAIN_DIR / "skills"
@@ -78,10 +74,8 @@ class SkillExecutor:
                 continue
 
         # Every attempt failed
-        err_msg = f"{datetime.now().isoformat()} [{self.skill_name}] {resolve(preferred)} ERROR: {last_err}\n"
-        log.error(err_msg.strip())
-        with open(ERROR_LOG, "a") as f:
-            f.write(err_msg)
+        err_msg = f"{datetime.now().isoformat()} [{self.skill_name}] {resolve(preferred)} ERROR: {last_err}"
+        log.error(err_msg)
         await self._log_execution(inputs, resolve(preferred), score=0.0, notes=str(last_err)[:80])
         return None
 
@@ -228,9 +222,7 @@ class SkillExecutor:
                 log.warning(f"{self.skill_name} (tools) failed on {resolve(model)}: {e}")
                 continue
 
-        err_msg = f"{datetime.now().isoformat()} [{self.skill_name}] {resolve(preferred)} TOOLS ERROR: {last_err}\n"
-        log.error(err_msg.strip())
-        with open(ERROR_LOG, "a") as f:
-            f.write(err_msg)
+        err_msg = f"{datetime.now().isoformat()} [{self.skill_name}] {resolve(preferred)} TOOLS ERROR: {last_err}"
+        log.error(err_msg)
         await self._log_execution(inputs, resolve(preferred), score=0.0, notes=str(last_err)[:80])
         return None
