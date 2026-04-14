@@ -280,7 +280,7 @@ class NotificationManager:
             calendar_events.sort(key=lambda x: x[0])
             lines.append(f"\nCalendar ({len(calendar_events)} events):")
             for start_time, fm in calendar_events:
-                title = fm.get("title") or "(no title)"
+                title = fm.get("source_title") or fm.get("title") or "(no title)"
                 time_str = start_time.strftime("%I:%M %p").lstrip("0")
                 participants = fm.get("participants") or []
                 participant_str = ", ".join(participants[:3]) if participants else ""
@@ -534,7 +534,7 @@ class NotificationManager:
 
     def _assemble_pre_meeting_context(self, event_fm: dict, start_time: datetime) -> str:
         """Assemble pre-meeting context from event and related files."""
-        title = event_fm.get("title") or "(no title)"
+        title = event_fm.get("source_title") or event_fm.get("title") or "(no title)"
         time_str = start_time.strftime("%I:%M %p").lstrip("0")
         location = event_fm.get("location", "")
         location_str = f", {location}" if location else ""

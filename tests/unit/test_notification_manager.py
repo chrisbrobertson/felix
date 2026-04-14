@@ -33,7 +33,7 @@ def make_calendar_event(
     fm = {
         "type": "calendar_event",
         "event_id": event_id,
-        "title": title,
+        "source_title": title,
         "start_time": start_time,
         "all_day": all_day,
         "participants": participants or [],
@@ -1134,3 +1134,56 @@ def test_save_state_raises_on_failure(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with pytest.raises(Exception):
             nm._save_state({"chat_id": None})
+
+
+@pytest.mark.asyncio
+async def test_pre_meeting_reads_source_title_not_title(tmp_path):
+    """Pre-meeting alert must read source_title (written by calendar_scanner), not title.
+
+    Regression: notification_manager previously used fm.get("title"), but calendar_scanner
+    writes the event title under source_title. This test writes a calendar event file with
+    ONLY source_title (no title key) and asserts the notification contains the real title.
+    """
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_pre_meeting": []}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\nnotifications:\n  enabled: true\n  pre_meeting_minutes: 10\n"
+    )
+
+    now = datetime(2026, 4, 11, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    event_time = now + timedelta(minutes=10)
+
+    # Write event with ONLY source_title — no "title" key — matching what calendar_scanner writes
+    event_file = memories_dir / "calendar-event-regression123.md"
+    fm = {
+        "type": "calendar_event",
+        "event_id": "regression123",
+        "source_title": "Team Standup",  # ONLY source_title, no "title" key
+        "start_time": event_time.isoformat(),
+        "all_day": False,
+        "participants": [],
+        "location": None,
+        "last_scanned": "2026-04-11T10:00:00",
+    }
+    event_file.write_text(f"---\n{yaml.dump(fm, sort_keys=False)}---\n\n## Details\nTest.\n")
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock)
+        with patch.object(mgr, "_get_local_now", return_value=now):
+            state = nm._load_state()
+            await mgr._check_pre_meeting_alerts(state)
+
+    bot_mock.send_message.assert_called_once()
+    text = bot_mock.send_message.call_args[1]["text"]
+    assert "Team Standup" in text, f"Expected real title in notification, got: {text!r}"
+    assert "(no title)" not in text, f"Got '(no title)' fallback — source_title key not being read"
