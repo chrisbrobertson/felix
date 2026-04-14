@@ -238,14 +238,20 @@ class EnvelopeIndexSource(MailDataSource):
             t["last_message"] = recv_str  # rows ordered ASC so last row = latest
             t["max_rowid"] = max(t["max_rowid"], rowid or 0)
             if sender_addr:
-                t["participants"].add(sender_addr.lower())
+                name_clean = (sender_name or "").strip() or None
+                addr_clean = sender_addr.lower()
+                t["participants"].add((name_clean, addr_clean))
             if msg_line.strip():
                 t["messages"].append(msg_line)
 
-        # Finalize
+        # Finalize — match the AppleScript path shape (lines 431-434):
+        # dict when display name present, bare string when not
         result = []
         for t in threads.values():
-            t["participants"] = sorted(t["participants"])
+            t["participants"] = [
+                {"name": n, "email": e} if n else e
+                for (n, e) in sorted(t["participants"], key=lambda x: x[1])
+            ]
             result.append(t)
         return result, max_rowid
 

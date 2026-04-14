@@ -206,8 +206,13 @@ def test_threads_grouped_by_conversation_id():
     assert len(threads) == 1
     assert threads[0]["message_count"] == 2
     assert max_rowid == 101
-    assert "alice@a.com" in threads[0]["participants"]
-    assert "bob@b.com" in threads[0]["participants"]
+    participants = threads[0]["participants"]
+    emails = [p["email"] for p in participants]
+    names = [p["name"] for p in participants]
+    assert "alice@a.com" in emails
+    assert "bob@b.com" in emails
+    assert "Alice" in names
+    assert "Bob" in names
 
 
 def test_excluded_mailboxes_filtered():
@@ -223,6 +228,34 @@ def test_excluded_mailboxes_filtered():
     conv_ids = [t["conversation_id"] for t in threads]
     assert 1001 in conv_ids
     assert 1002 not in conv_ids
+
+
+def test_rows_to_threads_captures_display_name():
+    src = _make_src()
+    t1 = datetime(2026, 4, 10, 9, 0)
+    rows = [
+        (1001, "Test Subject", _fake_ts(t1), _fake_ts(t1), "Message body",
+         0, 0, "alice@example.com", "Alice Example", "mailbox://u@h/INBOX", 100),
+    ]
+    threads, _ = src._rows_to_threads(rows, set())
+    assert len(threads) == 1
+    participants = threads[0]["participants"]
+    assert len(participants) == 1
+    assert participants[0] == {"name": "Alice Example", "email": "alice@example.com"}
+
+
+def test_rows_to_threads_falls_back_to_bare_email_when_name_missing():
+    src = _make_src()
+    t1 = datetime(2026, 4, 10, 9, 0)
+    rows = [
+        (1001, "Test Subject", _fake_ts(t1), _fake_ts(t1), "Message body",
+         0, 0, "alice@example.com", None, "mailbox://u@h/INBOX", 100),
+    ]
+    threads, _ = src._rows_to_threads(rows, set())
+    assert len(threads) == 1
+    participants = threads[0]["participants"]
+    assert len(participants) == 1
+    assert participants[0] == "alice@example.com"
 
 
 # ── Change detection ──────────────────────────────────────────────────────────
