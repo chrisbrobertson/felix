@@ -580,16 +580,24 @@ class TelegramChatHandler:
                 if not pending or entry.get("summary_sent"):
                     continue
                 count = len(pending)
+                notification_text = (
+                    f"📬 Network is back. I have {count} response"
+                    f"{'s' if count != 1 else ''} I couldn't deliver earlier.\n\n"
+                    f"• /deliver — send them now\n"
+                    f"• /discard — drop them"
+                )
                 try:
                     await self.app.bot.send_message(
                         chat_id=int(chat_id_str),
-                        text=(
-                            f"📬 Network is back. I have {count} response"
-                            f"{'s' if count != 1 else ''} I couldn't deliver earlier.\n\n"
-                            f"• /deliver — send them now\n"
-                            f"• /discard — drop them"
-                        ),
+                        text=notification_text,
                     )
+                    # Add to chat history so LLM has context when user responds
+                    turns = self._chat_history.setdefault(int(chat_id_str), [])
+                    turns.append({"role": "assistant", "content": notification_text})
+                    max_msgs = self.HISTORY_WINDOW_TURNS * 2
+                    if len(turns) > max_msgs:
+                        self._chat_history[int(chat_id_str)] = turns[-max_msgs:]
+
                     entry["summary_sent"] = True
                     state[chat_id_str] = entry
                     self._save_pending(state)

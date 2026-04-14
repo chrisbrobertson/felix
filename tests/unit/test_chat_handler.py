@@ -2522,3 +2522,52 @@ async def test_reconnect_loop_does_not_spam_when_summary_already_sent(handler):
 
     # Verify send_message was NOT called
     assert not handler.app.bot.send_message.called
+
+
+@pytest.mark.asyncio
+async def test_reconnect_loop_adds_notification_to_chat_history(handler, tmp_path):
+    """Reconnect loop appends notification to _chat_history as assistant turn."""
+    import json
+
+    # Pre-populate pending queue
+    pending_file = tmp_path / "deploy" / "pending-replies.json"
+    pending_file.write_text(json.dumps({
+        "12345": {
+            "pending": [
+                {"query": "test", "response": "test response", "queued_at": "2026-04-13T10:00:00"}
+            ],
+            "summary_sent": False
+        }
+    }))
+
+    handler.PENDING_FILE = pending_file
+    handler._chat_history = {}
+    handler.app.bot.send_message = AsyncMock()
+    stop_event = asyncio.Event()
+
+    # Mock _is_telegram_reachable to return True
+    with patch.object(handler, "_is_telegram_reachable", return_value=True):
+        # Mock wait_for to raise TimeoutError once, then stop
+        call_count = 0
+        async def mock_wait_for(event_wait, timeout):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise asyncio.TimeoutError()
+            else:
+                stop_event.set()
+
+        with patch("asyncio.wait_for", side_effect=mock_wait_for):
+            await handler._reconnect_loop(stop_event)
+
+    # Assert send_message was called
+    assert handler.app.bot.send_message.called
+
+    # Assert notification added to chat history
+    assert 12345 in handler._chat_history
+    turns = handler._chat_history[12345]
+    assert len(turns) == 1
+    assert turns[0]["role"] == "assistant"
+    assert "Network is back" in turns[0]["content"]
+    assert "/deliver" in turns[0]["content"]
+    assert "/discard" in turns[0]["content"]

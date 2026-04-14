@@ -124,8 +124,97 @@ def test_all_tool_names_in_dispatcher():
     dispatched_names = {
         "list_projects", "list_commitments", "list_events", "list_meetings",
         "list_contacts", "list_comms", "list_readings", "search_memories", "get_memory",
-        "list_commands",
+        "list_commands", "deliver_pending_replies", "discard_pending_replies",
     }
     for tool in chat_tools.TOOLS:
         name = tool["function"]["name"]
         assert name in dispatched_names, f"Tool {name!r} has no dispatch case"
+
+
+async def test_deliver_pending_replies_sends_queued_and_clears_state(mock_handler, tmp_path):
+    """deliver_pending_replies sends all queued items and clears state on success."""
+    from unittest.mock import AsyncMock
+    import json
+
+    # Setup handler with pending file
+    pending_file = tmp_path / "pending-replies.json"
+    mock_handler.PENDING_FILE = pending_file
+    mock_handler._load_pending = lambda: json.loads(pending_file.read_text()) if pending_file.exists() else {}
+    mock_handler._save_pending = lambda state: pending_file.write_text(json.dumps(state, indent=2))
+    mock_handler._chat_history = {}
+    mock_handler.HISTORY_WINDOW_TURNS = 6
+    mock_handler.app = MagicMock()
+    mock_handler.app.bot.send_message = AsyncMock()
+
+    # Pre-populate queue
+    pending_file.write_text(json.dumps({
+        "12345": {
+            "pending": [
+                {"query": "What's up?", "response": "All good!", "queued_at": "2026-04-13T10:00:00"}
+            ],
+            "summary_sent": True
+        }
+    }, indent=2))
+
+    result = await chat_tools.dispatch("deliver_pending_replies", {}, mock_handler)
+
+    # Assert send_message called
+    assert mock_handler.app.bot.send_message.called
+    # Assert history updated
+    assert 12345 in mock_handler._chat_history
+    assert len(mock_handler._chat_history[12345]) == 2  # user + assistant
+    # Assert state cleared
+    state = mock_handler._load_pending()
+    assert state == {}
+    # Assert result message
+    assert "Delivered 1" in result
+    assert "empty" in result.lower()
+
+
+async def test_deliver_pending_replies_empty_queue_returns_no_pending(mock_handler, tmp_path):
+    """deliver_pending_replies with empty queue returns 'No pending replies'."""
+    pending_file = tmp_path / "pending-replies.json"
+    mock_handler.PENDING_FILE = pending_file
+    mock_handler._load_pending = lambda: {}
+    mock_handler._save_pending = lambda state: None
+
+    result = await chat_tools.dispatch("deliver_pending_replies", {}, mock_handler)
+    assert "No pending replies" in result
+
+
+async def test_discard_pending_replies_clears_state(mock_handler, tmp_path):
+    """discard_pending_replies clears all queued items."""
+    import json
+
+    pending_file = tmp_path / "pending-replies.json"
+    mock_handler.PENDING_FILE = pending_file
+    mock_handler._load_pending = lambda: json.loads(pending_file.read_text()) if pending_file.exists() else {}
+    mock_handler._save_pending = lambda state: pending_file.write_text(json.dumps(state, indent=2))
+
+    # Pre-populate queue
+    pending_file.write_text(json.dumps({
+        "12345": {
+            "pending": [
+                {"query": "test", "response": "test response", "queued_at": "2026-04-13T10:00:00"}
+            ]
+        }
+    }, indent=2))
+
+    result = await chat_tools.dispatch("discard_pending_replies", {}, mock_handler)
+
+    # Assert state cleared
+    state = mock_handler._load_pending()
+    assert state == {}
+    # Assert result message
+    assert "Discarded 1" in result
+
+
+async def test_discard_pending_replies_empty_queue(mock_handler, tmp_path):
+    """discard_pending_replies with empty queue returns 'No pending replies'."""
+    pending_file = tmp_path / "pending-replies.json"
+    mock_handler.PENDING_FILE = pending_file
+    mock_handler._load_pending = lambda: {}
+    mock_handler._save_pending = lambda state: None
+
+    result = await chat_tools.dispatch("discard_pending_replies", {}, mock_handler)
+    assert "No pending replies" in result

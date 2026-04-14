@@ -150,10 +150,96 @@ TOOLS: list[dict] = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "deliver_pending_replies",
+            "description": (
+                "Send all queued replies that couldn't be delivered due to a network outage. "
+                "Call this when the user says 'yes', 'yes please', 'deliver them', or similar "
+                "in response to a notification about pending queued responses."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "discard_pending_replies",
+            "description": (
+                "Drop all queued replies that couldn't be delivered due to a network outage. "
+                "Call this when the user says 'no', 'discard', 'forget it', 'drop them', or similar "
+                "in response to a notification about pending queued responses."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
 ]
 
 
-def _call(name: str, arguments: dict, handler) -> str:
+async def _deliver_pending(handler) -> str:
+    """Deliver all queued replies via bot.send_message, updating chat history on success."""
+    state = handler._load_pending()
+    if not state:
+        return "No pending replies to deliver."
+
+    total_delivered = 0
+    total_remaining = 0
+
+    for chat_id_str, entry in list(state.items()):
+        pending = entry.get("pending", [])
+        if not pending:
+            continue
+        chat_id = int(chat_id_str)
+        remaining = []
+        turns = handler._chat_history.setdefault(chat_id, [])
+
+        for item in pending:
+            text = item["response"]
+            chunks = [text[i:i + 4096] for i in range(0, len(text), 4096)] or [text]
+            try:
+                for chunk in chunks:
+                    await handler.app.bot.send_message(chat_id=chat_id, text=chunk)
+                turns.append({"role": "user", "content": item["query"]})
+                turns.append({"role": "assistant", "content": text[:4096]})
+                total_delivered += 1
+            except Exception as e:
+                log.warning("Pending delivery failed for chat %s: %s", chat_id_str, e)
+                remaining.append(item)
+                total_remaining += 1
+
+        max_msgs = handler.HISTORY_WINDOW_TURNS * 2
+        if len(turns) > max_msgs:
+            handler._chat_history[chat_id] = turns[-max_msgs:]
+
+        if remaining:
+            entry["pending"] = remaining
+            entry["summary_sent"] = False
+            state[chat_id_str] = entry
+        else:
+            state.pop(chat_id_str, None)
+
+    handler._save_pending(state)
+
+    if total_remaining:
+        return (
+            f"Delivered {total_delivered} reply/replies. "
+            f"{total_remaining} could not be sent (network still down) and remain queued."
+        )
+    return f"Delivered {total_delivered} queued reply/replies. Queue is now empty."
+
+
+async def _discard_pending(handler) -> str:
+    """Discard all queued pending replies."""
+    state = handler._load_pending()
+    if not state:
+        return "No pending replies to discard."
+    total = sum(len(e.get("pending", [])) for e in state.values())
+    handler._save_pending({})
+    return f"Discarded {total} queued reply/replies."
+
+
+async def _call(name: str, arguments: dict, handler):
     """Pure routing from tool name → handler method. Raises on unknown name or missing args."""
     if name == "list_projects":
         return handler._list_projects_text(
@@ -194,6 +280,10 @@ def _call(name: str, arguments: dict, handler) -> str:
         return handler._get_memory_text(arguments["name"])
     if name == "list_commands":
         return handler._list_commands_text()
+    if name == "deliver_pending_replies":
+        return await _deliver_pending(handler)
+    if name == "discard_pending_replies":
+        return await _discard_pending(handler)
     raise ValueError(f"unknown tool {name!r}")
 
 
@@ -202,7 +292,7 @@ async def dispatch(name: str, arguments: dict, handler) -> str:
     Logs every dispatch so failures are visible in error.log without reading LiteLLM internals."""
     log.info(f"dispatch {name} args={arguments}")
     try:
-        result = _call(name, arguments, handler)
+        result = await _call(name, arguments, handler)
         log.info(f"dispatch {name} → {len(result)} chars")
         return result
     except KeyError as e:
