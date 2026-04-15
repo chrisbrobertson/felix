@@ -1062,9 +1062,7 @@ class TelegramChatHandler:
 
         path = self._resolve_index(context.args[0])
         if path is None:
-            await update.message.reply_text(
-                "Invalid index. Run /readings or /search first."
-            )
+            await update.message.reply_text(self._format_group_help("Knowledge listings", "reading"))
             return
 
         fm = self._parse_frontmatter(path)
@@ -1270,7 +1268,7 @@ class TelegramChatHandler:
 
         path = self._resolve_commitment_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /commitments first.")
+            await update.message.reply_text(self._format_group_help("Commitments"))
             return
 
         from commitment_tracker import CommitmentTracker
@@ -1294,7 +1292,7 @@ class TelegramChatHandler:
 
         path = self._resolve_commitment_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /commitments first.")
+            await update.message.reply_text(self._format_group_help("Commitments"))
             return
 
         from commitment_tracker import CommitmentTracker
@@ -1320,7 +1318,7 @@ class TelegramChatHandler:
 
         path = self._resolve_commitment_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /commitments first.")
+            await update.message.reply_text(self._format_group_help("Commitments"))
             return
 
         from commitment_tracker import (
@@ -1514,6 +1512,56 @@ class TelegramChatHandler:
 
     # ── Goals commands ────────────────────────────────────────────────────────
 
+    def _match_verb_in_group(
+        self,
+        group_name: str,
+        base_command: str,
+        verb: str,
+    ) -> Optional[str]:
+        """Return the single best-matching command in COMMAND_REGISTRY[group_name]
+        for verb, or None if zero/multiple candidates. The base_command entry itself
+        is excluded to prevent self-dispatch loops.
+
+        Tiered matching (first tier with exactly one hit wins):
+          1. Compound-prefix: verb + base_command  (e.g. "add"+"goal" → "addgoal")
+          2. Compound-suffix: base_command + "_" + verb  (e.g. "feature"+"_"+"done" → "feature_done")
+          3. Exact: verb itself is a command in the group
+          4. Prefix: exactly one command starts with verb
+          5. Substring: exactly one command contains verb
+        """
+        commands = [cmd for cmd, _ in COMMAND_REGISTRY.get(group_name, [])]
+        candidates = [c for c in commands if c != base_command]
+        verb_lower = verb.lower()
+
+        for tier_candidates in [
+            [c for c in candidates if c == verb_lower + base_command.replace("-", "_")],
+            [c for c in candidates if c == base_command.replace("-", "_") + "_" + verb_lower],
+            [c for c in candidates if c == verb_lower],
+            [c for c in candidates if c.startswith(verb_lower)],
+            [c for c in candidates if verb_lower in c],
+        ]:
+            if len(tier_candidates) == 1:
+                return tier_candidates[0]
+        return None
+
+    def _format_group_help(
+        self,
+        group_name: str,
+        base_command: Optional[str] = None,
+    ) -> str:
+        """Build a help string from COMMAND_REGISTRY[group_name].
+        Used as the fallback when verb dispatch fails or a resolver gets a non-integer.
+        """
+        entries = COMMAND_REGISTRY.get(group_name, [])
+        lines = []
+        if base_command:
+            lines.append(f"/{base_command} expects a number (e.g. /{base_command} 1). {group_name} commands:")
+        else:
+            lines.append(f"{group_name} commands:")
+        for cmd, desc in entries:
+            lines.append(f"/{cmd} — {desc}")
+        return "\n".join(lines)
+
     def _resolve_goal_index(self, n_str: str):
         """Return (path, None) on success or (None, error_message) on failure.
 
@@ -1525,14 +1573,7 @@ class TelegramChatHandler:
         try:
             n = int(n_str)
         except (ValueError, TypeError):
-            return (None, (
-                "/goal expects a number (e.g. /goal 1). Goal commands:\n"
-                "/addgoal — create a goal\n"
-                "/goals — list active goals\n"
-                "/goal N — view details\n"
-                "/completegoal N — mark complete\n"
-                "/abandongoal N — abandon"
-            ))
+            return (None, self._format_group_help("Goals", "goal"))
         if not self._last_goal_set:
             return (None, "You don't have any active goals yet. Use /addgoal to create one.")
         if 1 <= n <= len(self._last_goal_set):
@@ -1550,17 +1591,7 @@ class TelegramChatHandler:
         try:
             n = int(n_str)
         except (ValueError, TypeError):
-            return (None, (
-                "/project expects a number (e.g. /project 1). Project commands:\n"
-                "/addproject — create a project\n"
-                "/projects — list active projects\n"
-                "/project N — view details\n"
-                "/completeproject N — mark complete\n"
-                "/abandonproject N — abandon\n"
-                "/holdproject N — put on hold\n"
-                "/addmilestone N text — add a milestone\n"
-                "/milestone N M — toggle milestone M"
-            ))
+            return (None, self._format_group_help("Projects", "project"))
         if not self._last_project_set:
             return (None, "You don't have any active projects yet. Use /addproject to create one.")
         if 1 <= n <= len(self._last_project_set):
@@ -1687,6 +1718,19 @@ class TelegramChatHandler:
         if not context.args:
             await update.message.reply_text("Usage: /goal N")
             return
+
+        # Verb-dispatch: first arg is not a number → look it up in the Goals group
+        first = context.args[0]
+        try:
+            int(first)
+        except ValueError:
+            matched = self._match_verb_in_group("Goals", "goal", first.lstrip("/"))
+            if matched:
+                handler = getattr(self, f"cmd_{matched}", None)
+                if handler is not None:
+                    context.args = context.args[1:]
+                    return await handler(update, context)
+            # Fall through to resolver (which renders dynamic help for non-integer)
 
         path, err = self._resolve_goal_index(context.args[0])
         if path is None:
@@ -1901,6 +1945,19 @@ class TelegramChatHandler:
         if not context.args:
             await update.message.reply_text("Usage: /project N")
             return
+
+        # Verb-dispatch: first arg is not a number → look it up in the Projects group
+        first = context.args[0]
+        try:
+            int(first)
+        except ValueError:
+            matched = self._match_verb_in_group("Projects", "project", first.lstrip("/"))
+            if matched:
+                handler = getattr(self, f"cmd_{matched}", None)
+                if handler is not None:
+                    context.args = context.args[1:]
+                    return await handler(update, context)
+            # Fall through to resolver (which renders dynamic help for non-integer)
 
         path, err = self._resolve_project_index(context.args[0])
         if path is None:
@@ -2395,17 +2452,29 @@ class TelegramChatHandler:
 
         # If args[0] is a number, show detail
         if context.args:
+            # Verb-dispatch: first arg is not a number → look it up in the Review group
+            first = context.args[0]
             try:
-                n = int(context.args[0])
+                int(first)
+            except ValueError:
+                matched = self._match_verb_in_group("Review", "review", first.lstrip("/"))
+                if matched:
+                    handler = getattr(self, f"cmd_{matched}", None)
+                    if handler is not None:
+                        context.args = context.args[1:]
+                        return await handler(update, context)
+                # Fall through to list view for unknown verbs
+                pass
+            else:
+                # Was a number — show detail
+                n = int(first)
                 path = self._resolve_candidate_index(str(n))
                 if path is None:
-                    await update.message.reply_text("Invalid index. Run /review first.")
+                    await update.message.reply_text(self._format_group_help("Review"))
                     return
                 detail = self._show_candidate_detail(path)
                 await update.message.reply_text(detail)
                 return
-            except ValueError:
-                pass
 
         # Show list view
         if not self._last_candidate_set:
@@ -2463,7 +2532,7 @@ class TelegramChatHandler:
         # Resolve candidate path
         path = self._resolve_candidate_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /review first.")
+            await update.message.reply_text(self._format_group_help("Review"))
             return
 
         # Read candidate frontmatter
@@ -2583,7 +2652,7 @@ class TelegramChatHandler:
         # Resolve candidate path
         path = self._resolve_candidate_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /review first.")
+            await update.message.reply_text(self._format_group_help("Review"))
             return
 
         # Read candidate frontmatter
@@ -2658,7 +2727,7 @@ class TelegramChatHandler:
         # Resolve candidate path
         path = self._resolve_candidate_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /review first.")
+            await update.message.reply_text(self._format_group_help("Review"))
             return
 
         # Parse field=value
@@ -3027,7 +3096,7 @@ class TelegramChatHandler:
                         return
                     elif idx > 50:
                         # Out of range and too large to be list limit → error
-                        await update.message.reply_text("Invalid index. Run /code first.")
+                        await update.message.reply_text(self._format_group_help("Knowledge listings", "code"))
                         return
                     # else: treat as list limit (falls through)
             except ValueError:
@@ -3048,7 +3117,7 @@ class TelegramChatHandler:
         """Show detail for code repo N."""
         path = self._resolve_code_index(index_str)
         if path is None:
-            await update.message.reply_text("Invalid index. Run /code first.")
+            await update.message.reply_text(self._format_group_help("Knowledge listings", "code"))
             return
 
         # Find all hosts that have the same base repo
@@ -3244,7 +3313,7 @@ class TelegramChatHandler:
 
         path = self._resolve_event_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /events first.")
+            await update.message.reply_text(self._format_group_help("Knowledge listings", "event"))
             return
 
         fm = self._parse_frontmatter(path)
@@ -3337,7 +3406,7 @@ class TelegramChatHandler:
 
         path = self._resolve_meeting_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /meetings first.")
+            await update.message.reply_text(self._format_group_help("Knowledge listings", "meeting"))
             return
 
         fm = self._parse_frontmatter(path)
@@ -3705,7 +3774,7 @@ class TelegramChatHandler:
 
         path = self._resolve_comm_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /comms first.")
+            await update.message.reply_text(self._format_group_help("Knowledge listings", "comm"))
             return
 
         fm = self._parse_frontmatter(path)
@@ -3972,9 +4041,26 @@ class TelegramChatHandler:
     async def cmd_feature_detail(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
+
+        # Verb-dispatch: first arg is not a number and not #<issue> → look it up in Feature Requests group
+        if context.args:
+            first = context.args[0]
+            if not first.startswith("#"):
+                try:
+                    int(first)
+                except ValueError:
+                    # Not a number, not a #<issue> — try verb dispatch
+                    matched = self._match_verb_in_group("Feature Requests", "feature", first.lstrip("/"))
+                    if matched:
+                        handler = getattr(self, f"cmd_{matched}", None)
+                        if handler is not None:
+                            context.args = context.args[1:]
+                            return await handler(update, context)
+                    # Fall through to _resolve_feature_index which will return None
+
         target = self._resolve_feature_index(context.args, update)
         if target is None:
-            await self._send_reply(update, "Invalid N. Run /features first, or use #<issue>.")
+            await self._send_reply(update, self._format_group_help("Feature Requests") + "\nOr use #<issue>.")
             return
 
         if isinstance(target, int):
@@ -4034,7 +4120,7 @@ class TelegramChatHandler:
             return
         target = self._resolve_feature_index(context.args, update)
         if target is None:
-            await self._send_reply(update, "Invalid N. Run /features first, or use #<issue>.")
+            await self._send_reply(update, self._format_group_help("Feature Requests") + "\nOr use #<issue>.")
             return
         if isinstance(target, int):
             await self._gh_set_status(target, "planned")
@@ -4052,7 +4138,7 @@ class TelegramChatHandler:
             return
         target = self._resolve_feature_index(context.args, update)
         if target is None:
-            await self._send_reply(update, "Invalid N. Run /features first, or use #<issue>.")
+            await self._send_reply(update, self._format_group_help("Feature Requests") + "\nOr use #<issue>.")
             return
         if isinstance(target, int):
             await self._gh_set_status(target, "in-progress")
@@ -4070,7 +4156,7 @@ class TelegramChatHandler:
             return
         target = self._resolve_feature_index(context.args[:1], update)
         if target is None:
-            await self._send_reply(update, "Invalid N. Run /features first, or use #<issue>.")
+            await self._send_reply(update, self._format_group_help("Feature Requests") + "\nOr use #<issue>.")
             return
         note = " ".join(context.args[1:]) if len(context.args) > 1 else None
         if isinstance(target, int):
@@ -4093,7 +4179,7 @@ class TelegramChatHandler:
             return
         target = self._resolve_feature_index(context.args[:1], update)
         if target is None:
-            await self._send_reply(update, "Invalid N. Run /features first, or use #<issue>.")
+            await self._send_reply(update, self._format_group_help("Feature Requests") + "\nOr use #<issue>.")
             return
         reason = " ".join(context.args[1:]) if len(context.args) > 1 else None
         if isinstance(target, int):
@@ -4119,7 +4205,7 @@ class TelegramChatHandler:
             return
         target = self._resolve_feature_index(context.args[:1], update)
         if target is None:
-            await self._send_reply(update, "Invalid N. Run /features first, or use #<issue>.")
+            await self._send_reply(update, self._format_group_help("Feature Requests") + "\nOr use #<issue>.")
             return
         priority = context.args[1].lower()
         if priority not in ("low", "medium", "high", "critical"):
@@ -4144,7 +4230,7 @@ class TelegramChatHandler:
             return
         target = self._resolve_feature_index(context.args[:1], update)
         if target is None:
-            await self._send_reply(update, "Invalid N. Run /features first, or use #<issue>.")
+            await self._send_reply(update, self._format_group_help("Feature Requests") + "\nOr use #<issue>.")
             return
         note = " ".join(context.args[1:])
         if isinstance(target, int):
@@ -4247,11 +4333,25 @@ class TelegramChatHandler:
         if not context.args:
             await self._send_reply(update, "Usage: /skill-draft <N>")
             return
+
+        # Verb-dispatch: first arg is not a number → look it up in the Skill Management group
+        first = context.args[0]
+        try:
+            int(first)
+        except ValueError:
+            matched = self._match_verb_in_group("Skill Management", "skill_draft", first.lstrip("/"))
+            if matched:
+                handler = getattr(self, f"cmd_{matched}", None)
+                if handler is not None:
+                    context.args = context.args[1:]
+                    return await handler(update, context)
+            # Fall through to error message for unknown verbs
+
         try:
             n = int(context.args[0])
             draft = self._last_skill_draft_set[n - 1]
         except (ValueError, IndexError):
-            await self._send_reply(update, "Invalid N. Run /skill-drafts first.")
+            await self._send_reply(update, self._format_group_help("Skill Management"))
             return
         path = Path(draft.get("draft_path", ""))
         if not path.exists():
@@ -4270,7 +4370,7 @@ class TelegramChatHandler:
             n = int(context.args[0])
             draft = self._last_skill_draft_set[n - 1]
         except (ValueError, IndexError):
-            await self._send_reply(update, "Invalid N. Run /skill-drafts first.")
+            await self._send_reply(update, self._format_group_help("Skill Management"))
             return
         skill_name = draft["skill_name"]
         if self.skill_creator and self.skill_creator.approve_draft(skill_name):
@@ -4288,7 +4388,7 @@ class TelegramChatHandler:
             n = int(context.args[0])
             draft = self._last_skill_draft_set[n - 1]
         except (ValueError, IndexError):
-            await self._send_reply(update, "Invalid N. Run /skill-drafts first.")
+            await self._send_reply(update, self._format_group_help("Skill Management"))
             return
         skill_name = draft["skill_name"]
         ct = ", ".join(draft.get("content_types", ["unknown"]))
@@ -4365,11 +4465,25 @@ class TelegramChatHandler:
         if not context.args:
             await self._send_reply(update, "Usage: /report <N>")
             return
+
+        # Verb-dispatch: first arg is not a number → look it up in the Reports group
+        first = context.args[0]
+        try:
+            int(first)
+        except ValueError:
+            matched = self._match_verb_in_group("Reports", "report", first.lstrip("/"))
+            if matched:
+                handler = getattr(self, f"cmd_{matched}", None)
+                if handler is not None:
+                    context.args = context.args[1:]
+                    return await handler(update, context)
+            # Fall through to error message for unknown verbs
+
         try:
             n = int(context.args[0])
             r = self._last_report_set[n - 1]
         except (ValueError, IndexError):
-            await self._send_reply(update, "Invalid N. Run /reports first.")
+            await self._send_reply(update, self._format_group_help("Reports"))
             return
         lines = [
             f"**{r['name']}**",
@@ -4422,7 +4536,7 @@ class TelegramChatHandler:
             n = int(context.args[0])
             r = self._last_report_set[n - 1]
         except (ValueError, IndexError):
-            await self._send_reply(update, "Invalid N. Run /reports first.")
+            await self._send_reply(update, self._format_group_help("Reports"))
             return
         if r.get("is_config_report"):
             await self._send_reply(update, f"Config reports cannot be removed. Use /report-pause {n} to disable.")
@@ -4443,7 +4557,7 @@ class TelegramChatHandler:
             n = int(context.args[0])
             r = self._last_report_set[n - 1]
         except (ValueError, IndexError):
-            await self._send_reply(update, "Invalid N. Run /reports first.")
+            await self._send_reply(update, self._format_group_help("Reports"))
             return
         is_runtime = not r.get("is_config_report", False)
         if self.report_scheduler.set_paused(r["name"], True, is_runtime):
@@ -4461,7 +4575,7 @@ class TelegramChatHandler:
             n = int(context.args[0])
             r = self._last_report_set[n - 1]
         except (ValueError, IndexError):
-            await self._send_reply(update, "Invalid N. Run /reports first.")
+            await self._send_reply(update, self._format_group_help("Reports"))
             return
         is_runtime = not r.get("is_config_report", False)
         if self.report_scheduler.set_paused(r["name"], False, is_runtime):
@@ -4482,7 +4596,7 @@ class TelegramChatHandler:
             n = int(context.args[0])
             r = self._last_report_set[n - 1]
         except (ValueError, IndexError):
-            await self._send_reply(update, "Invalid N. Run /reports first.")
+            await self._send_reply(update, self._format_group_help("Reports"))
             return
         chat_id = update.effective_chat.id
         await self._send_reply(update, f"Running report '{r['name']}'...")

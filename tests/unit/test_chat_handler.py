@@ -908,14 +908,18 @@ async def test_cmd_reading_invalid_index(handler, brain_dir):
     handler._active_list = []
     update, ctx = _make_update(12345, ["5"])
     await handler.cmd_reading(update, ctx)
-    assert "Invalid index" in update.message.reply_text.call_args[0][0]
+    reply = update.message.reply_text.call_args[0][0]
+    assert "/readings" in reply
+    assert "Knowledge listings commands:" in reply
 
 
 async def test_cmd_reading_no_results(handler, brain_dir):
     handler._active_list = []
     update, ctx = _make_update(12345, ["1"])
     await handler.cmd_reading(update, ctx)
-    assert "Invalid index" in update.message.reply_text.call_args[0][0]
+    reply = update.message.reply_text.call_args[0][0]
+    assert "/readings" in reply
+    assert "Knowledge listings commands:" in reply
 
 
 async def test_cmd_reading_rejects_unauthorised(handler, brain_dir):
@@ -1070,7 +1074,9 @@ async def test_cmd_code_invalid_index(handler, brain_dir):
     # Now list is populated with 2 items, try to access index 99
     update, ctx = _make_update(12345, ["99"])
     await handler.cmd_code(update, ctx)
-    assert "Invalid index" in update.message.reply_text.call_args[0][0]
+    reply = update.message.reply_text.call_args[0][0]
+    assert "/code" in reply
+    assert "Knowledge listings commands:" in reply
 
 
 @pytest.mark.asyncio
@@ -1191,7 +1197,9 @@ async def test_cmd_event_invalid_index(handler):
     handler._last_event_set = []
     update, ctx = _make_update(12345, ["99"])
     await handler.cmd_event(update, ctx)
-    assert "Invalid index" in update.message.reply_text.call_args[0][0]
+    reply = update.message.reply_text.call_args[0][0]
+    assert "/events" in reply
+    assert "Knowledge listings commands:" in reply
 
 
 def write_event_memory_with_cal(memories_dir: Path, slug: str, calendar_names: list,
@@ -1333,7 +1341,9 @@ async def test_cmd_meeting_invalid_index(handler):
     handler._last_meeting_set = []
     update, ctx = _make_update(12345, ["99"])
     await handler.cmd_meeting(update, ctx)
-    assert "Invalid index" in update.message.reply_text.call_args[0][0]
+    reply = update.message.reply_text.call_args[0][0]
+    assert "/meetings" in reply
+    assert "Knowledge listings commands:" in reply
 
 
 # ── /comms and /comm commands ─────────────────────────────────────────────────
@@ -1473,7 +1483,9 @@ async def test_cmd_comm_invalid_index(handler):
     handler._last_comms_set = []
     update, ctx = _make_update(12345, ["99"])
     await handler.cmd_comm(update, ctx)
-    assert "Invalid index" in update.message.reply_text.call_args[0][0]
+    reply = update.message.reply_text.call_args[0][0]
+    assert "/comms" in reply
+    assert "Knowledge listings commands:" in reply
 
 
 # ── /people alias ─────────────────────────────────────────────────────────────
@@ -3123,12 +3135,20 @@ async def test_cmd_goal_empty_shows_addgoal_hint(brain_dir, handler):
 
 @pytest.mark.asyncio
 async def test_cmd_goal_non_integer_shows_command_list(brain_dir, handler):
-    """/goal <word> (add, delete, update, etc.) should show the full command family."""
+    """/goal <word> — known verbs dispatch, unknown verbs show help."""
     mem_dir = brain_dir / "memories"
     (mem_dir / "goal-run-abc123.md").write_text(GOAL_FILE_TEXT)
 
     handler._last_goal_set = []  # force lazy-populate
-    for verb in ["add", "delete", "update", "remove"]:
+    # "add" dispatches to addgoal, which shows conversational prompt
+    update, context = _make_update(12345, args=["add"])
+    await handler.cmd_goal(update, context)
+    text = update.message.reply_text.call_args[0][0]
+    assert "Add a new goal" in text  # addgoal conversational prompt
+
+    # Unknown verbs like "delete", "update", "remove" show registry help
+    for verb in ["delete", "update", "remove"]:
+        handler._last_goal_set = []  # reset
         update, context = _make_update(12345, args=[verb])
         await handler.cmd_goal(update, context)
         text = update.message.reply_text.call_args[0][0]
@@ -3185,12 +3205,20 @@ async def test_cmd_project_empty_shows_addproject_hint(brain_dir, handler):
 
 @pytest.mark.asyncio
 async def test_cmd_project_non_integer_shows_command_list(brain_dir, handler):
-    """/project <word> (add, delete, update, etc.) should show the full command family."""
+    """/project <word> — known verbs dispatch, unknown verbs show help."""
     mem_dir = brain_dir / "memories"
     (mem_dir / "project-work-q2-def456.md").write_text(PROJECT_FILE_TEXT)
 
     handler._last_project_set = []
-    for verb in ["add", "delete", "update", "remove"]:
+    # "add" dispatches to addproject, which shows conversational prompt
+    update, context = _make_update(12345, args=["add"])
+    await handler.cmd_project(update, context)
+    text = update.message.reply_text.call_args[0][0]
+    assert "Add a new project" in text  # addproject conversational prompt
+
+    # Unknown verbs like "delete", "update", "remove" show registry help
+    for verb in ["delete", "update", "remove"]:
+        handler._last_project_set = []  # reset
         update, context = _make_update(12345, args=[verb])
         await handler.cmd_project(update, context)
         text = update.message.reply_text.call_args[0][0]
@@ -3229,3 +3257,192 @@ async def test_cmd_project_lazy_populates_without_prior_projects_list(brain_dir,
 
     text = update.message.reply_text.call_args[0][0]
     assert "Q2 Rollout" in text
+
+
+# ── Helper unit tests ──────────────────────────────────────────────────────
+
+def test_match_verb_in_group_tier1_compound_prefix(handler):
+    """add + goal → addgoal"""
+    result = handler._match_verb_in_group("Goals", "goal", "add")
+    assert result == "addgoal"
+
+def test_match_verb_in_group_tier2_compound_suffix(handler):
+    """feature + _ + done → feature_done"""
+    result = handler._match_verb_in_group("Feature Requests", "feature", "done")
+    assert result == "feature_done"
+
+def test_match_verb_in_group_tier3_exact(handler):
+    """confirm is an exact command in Review group"""
+    result = handler._match_verb_in_group("Review", "review", "confirm")
+    assert result == "confirm"
+
+def test_match_verb_in_group_tier4_prefix(handler):
+    """link → only linkgoal starts with it in Projects"""
+    result = handler._match_verb_in_group("Projects", "project", "link")
+    assert result == "linkgoal"
+
+def test_match_verb_in_group_tier5_substring(handler):
+    """approve → only approve_skill contains it in Skill Management"""
+    result = handler._match_verb_in_group("Skill Management", "skill_draft", "approve")
+    assert result == "approve_skill"
+
+def test_match_verb_in_group_ambiguous_returns_none(handler):
+    """When multiple commands match the same tier, return None"""
+    import chat_handler as ch_module
+    orig = ch_module.COMMAND_REGISTRY["Goals"][:]
+    # Create a real ambiguity at tier-4 (prefix matching)
+    ch_module.COMMAND_REGISTRY["Goals"] = orig + [("linktarget", "T1"), ("linkback", "T2")]
+    try:
+        result = handler._match_verb_in_group("Goals", "goal", "link")
+        # Both linktarget and linkback (and linkgoal) start with "link" → ambiguous
+        assert result is None
+    finally:
+        ch_module.COMMAND_REGISTRY["Goals"] = orig
+
+def test_match_verb_in_group_excludes_base(handler):
+    """goal verb on Goals group should not match the goal entry itself (but goals is ok)"""
+    result = handler._match_verb_in_group("Goals", "goal", "goal")
+    # "goal" matches "goals" at tier-4 (prefix), which is valid and distinct from base
+    assert result == "goals"
+
+def test_format_group_help_is_dynamic(handler):
+    """Adding a command to COMMAND_REGISTRY makes it appear in format output"""
+    import chat_handler as ch_module
+    orig = ch_module.COMMAND_REGISTRY["Goals"][:]
+    ch_module.COMMAND_REGISTRY["Goals"] = orig + [("fakegoal", "Fake description")]
+    try:
+        result = handler._format_group_help("Goals", "goal")
+        assert "fakegoal" in result
+        assert "Fake description" in result
+    finally:
+        ch_module.COMMAND_REGISTRY["Goals"] = orig
+
+def test_format_group_help_includes_base_hint(handler):
+    """With base_command, output starts with 'expects a number' hint"""
+    result = handler._format_group_help("Goals", "goal")
+    assert "/goal expects a number" in result
+    assert "/addgoal" in result
+
+def test_format_group_help_without_base(handler):
+    """Without base_command, no 'expects a number' hint"""
+    result = handler._format_group_help("Commitments")
+    assert "expects a number" not in result
+    assert "Commitments commands:" in result
+
+# ── Dispatch tests ─────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_cmd_goal_add_dispatches_to_addgoal(handler, brain_dir):
+    from unittest.mock import AsyncMock
+    update, context = _make_update(12345, args=["add"])
+    handler.cmd_addgoal = AsyncMock()
+    await handler.cmd_goal(update, context)
+    handler.cmd_addgoal.assert_awaited_once()
+    assert context.args == []
+
+@pytest.mark.asyncio
+async def test_cmd_goal_complete_dispatches_to_completegoal(handler, brain_dir):
+    from unittest.mock import AsyncMock
+    update, context = _make_update(12345, args=["complete", "1"])
+    handler.cmd_completegoal = AsyncMock()
+    await handler.cmd_goal(update, context)
+    handler.cmd_completegoal.assert_awaited_once()
+    assert context.args == ["1"]
+
+@pytest.mark.asyncio
+async def test_cmd_project_add_dispatches_to_addproject(handler, brain_dir):
+    from unittest.mock import AsyncMock
+    update, context = _make_update(12345, args=["add"])
+    handler.cmd_addproject = AsyncMock()
+    await handler.cmd_project(update, context)
+    handler.cmd_addproject.assert_awaited_once()
+
+@pytest.mark.asyncio
+async def test_cmd_project_link_prefix_dispatches_to_linkgoal(handler, brain_dir):
+    from unittest.mock import AsyncMock
+    update, context = _make_update(12345, args=["link", "1", "2"])
+    handler.cmd_linkgoal = AsyncMock()
+    await handler.cmd_project(update, context)
+    handler.cmd_linkgoal.assert_awaited_once()
+    assert context.args == ["1", "2"]
+
+@pytest.mark.asyncio
+async def test_cmd_project_add_prefers_addproject_over_addmilestone(handler, brain_dir):
+    """Tier-1 compound-prefix wins over tier-4 prefix (both addproject and addmilestone start with 'add')"""
+    from unittest.mock import AsyncMock
+    update, context = _make_update(12345, args=["add"])
+    handler.cmd_addproject = AsyncMock()
+    handler.cmd_addmilestone = AsyncMock()
+    await handler.cmd_project(update, context)
+    handler.cmd_addproject.assert_awaited_once()
+    handler.cmd_addmilestone.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_cmd_report_pause_dispatches_to_report_pause(handler, brain_dir):
+    """Tier-2 compound-suffix: report + _ + pause → report_pause"""
+    from unittest.mock import AsyncMock
+    update, context = _make_update(12345, args=["pause", "1"])
+    handler.cmd_report_pause = AsyncMock()
+    await handler.cmd_report(update, context)
+    handler.cmd_report_pause.assert_awaited_once()
+    assert context.args == ["1"]
+
+@pytest.mark.asyncio
+async def test_cmd_feature_detail_done_dispatches_to_feature_done(handler, brain_dir):
+    """Tier-2 compound-suffix: feature + _ + done → feature_done"""
+    from unittest.mock import AsyncMock
+    update, context = _make_update(12345, args=["done", "3"])
+    handler.cmd_feature_done = AsyncMock()
+    await handler.cmd_feature_detail(update, context)
+    handler.cmd_feature_done.assert_awaited_once()
+    assert context.args == ["3"]
+
+@pytest.mark.asyncio
+async def test_cmd_skill_draft_approve_dispatches_to_approve_skill(handler, brain_dir):
+    """Tier-5 substring: 'approve' found in 'approve_skill'"""
+    from unittest.mock import AsyncMock
+    update, context = _make_update(12345, args=["approve", "1"])
+    handler.cmd_approve_skill = AsyncMock()
+    await handler.cmd_skill_draft(update, context)
+    handler.cmd_approve_skill.assert_awaited_once()
+    assert context.args == ["1"]
+
+@pytest.mark.asyncio
+async def test_cmd_review_confirm_dispatches_to_confirm(handler, brain_dir):
+    """Tier-3 exact: 'confirm' is an exact command in Review group"""
+    from unittest.mock import AsyncMock
+    update, context = _make_update(12345, args=["confirm", "2"])
+    handler.cmd_confirm = AsyncMock()
+    await handler.cmd_review(update, context)
+    handler.cmd_confirm.assert_awaited_once()
+    assert context.args == ["2"]
+
+# ── Fallback (dynamic help) tests ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_cmd_goal_unknown_verb_shows_registry_help(handler, brain_dir):
+    """Unknown verb falls back to registry-derived group help"""
+    update, context = _make_update(12345, args=["delete", "1"])
+    await handler.cmd_goal(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "/addgoal" in reply
+    assert "/goals" in reply
+    assert "/completegoal" in reply
+    assert "/abandongoal" in reply
+
+@pytest.mark.asyncio
+async def test_cmd_reading_invalid_index_shows_registry_help(handler, brain_dir):
+    """Invalid index in /reading shows Knowledge listings group help"""
+    update, context = _make_update(12345, args=["999"])
+    await handler.cmd_reading(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "/readings" in reply
+
+@pytest.mark.asyncio
+async def test_cmd_complete_invalid_index_shows_commitments_help(handler, brain_dir):
+    """Invalid index in /complete shows Commitments group help"""
+    update, context = _make_update(12345, args=["xyz"])
+    await handler.cmd_complete(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Commitments commands:" in reply
+    assert "/complete" in reply
