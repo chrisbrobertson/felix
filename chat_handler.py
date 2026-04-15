@@ -1515,24 +1515,40 @@ class TelegramChatHandler:
     # ── Goals commands ────────────────────────────────────────────────────────
 
     def _resolve_goal_index(self, n_str: str):
-        """Return the goal Path for 1-based index n_str, or None if invalid."""
+        """Return (path, None) on success or (None, error_message) on failure.
+
+        Lazy-populates _last_goal_set from active goals when the cache is empty,
+        so /goal N works immediately after /addgoal without needing /goals first.
+        """
+        if not self._last_goal_set:
+            self._last_goal_set = self._goal_manager.list_goals(status="active")
         try:
             n = int(n_str)
-            if 1 <= n <= len(self._last_goal_set):
-                return self._last_goal_set[n - 1]
         except (ValueError, TypeError):
-            pass
-        return None
+            return (None, "Index must be a number, e.g. /goal 1")
+        if not self._last_goal_set:
+            return (None, "You don't have any active goals yet. Use /addgoal to create one.")
+        if 1 <= n <= len(self._last_goal_set):
+            return (self._last_goal_set[n - 1], None)
+        return (None, f"Index {n} out of range. You have {len(self._last_goal_set)} active goal(s).")
 
     def _resolve_project_index(self, n_str: str):
-        """Return the project Path for 1-based index n_str, or None if invalid."""
+        """Return (path, None) on success or (None, error_message) on failure.
+
+        Lazy-populates _last_project_set from active projects when the cache is empty,
+        so /project N works immediately after /addproject without needing /projects first.
+        """
+        if not self._last_project_set:
+            self._last_project_set = self._goal_manager.list_projects(status="active")
         try:
             n = int(n_str)
-            if 1 <= n <= len(self._last_project_set):
-                return self._last_project_set[n - 1]
         except (ValueError, TypeError):
-            pass
-        return None
+            return (None, "Index must be a number, e.g. /project 1")
+        if not self._last_project_set:
+            return (None, "You don't have any active projects yet. Use /addproject to create one.")
+        if 1 <= n <= len(self._last_project_set):
+            return (self._last_project_set[n - 1], None)
+        return (None, f"Index {n} out of range. You have {len(self._last_project_set)} active project(s).")
 
     async def cmd_addgoal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -1655,9 +1671,9 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /goal N")
             return
 
-        path = self._resolve_goal_index(context.args[0])
+        path, err = self._resolve_goal_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /goals first.")
+            await update.message.reply_text(err)
             return
 
         try:
@@ -1696,9 +1712,9 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /completegoal N")
             return
 
-        path = self._resolve_goal_index(context.args[0])
+        path, err = self._resolve_goal_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /goals first.")
+            await update.message.reply_text(err)
             return
 
         try:
@@ -1719,9 +1735,9 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /abandongoal N")
             return
 
-        path = self._resolve_goal_index(context.args[0])
+        path, err = self._resolve_goal_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /goals first.")
+            await update.message.reply_text(err)
             return
 
         try:
@@ -1784,12 +1800,12 @@ class TelegramChatHandler:
         linked_goal = None
         if "goal" in parsed:
             goal_idx = parsed["goal"]
-            goal_path = self._resolve_goal_index(goal_idx)
+            goal_path, goal_err = self._resolve_goal_index(goal_idx)
             if goal_path:
                 linked_goal = goal_path.name
             else:
                 await update.message.reply_text(
-                    f"Invalid goal index: {goal_idx}. Run /goals first or omit the goal field."
+                    f"Invalid goal index: {goal_idx}. {goal_err}"
                 )
                 context.user_data["awaiting_addproject_reply"] = False
                 return
@@ -1869,9 +1885,9 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /project N")
             return
 
-        path = self._resolve_project_index(context.args[0])
+        path, err = self._resolve_project_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /projects first.")
+            await update.message.reply_text(err)
             return
 
         try:
@@ -1916,9 +1932,9 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /completeproject N")
             return
 
-        path = self._resolve_project_index(context.args[0])
+        path, err = self._resolve_project_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /projects first.")
+            await update.message.reply_text(err)
             return
 
         try:
@@ -1939,9 +1955,9 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /abandonproject N")
             return
 
-        path = self._resolve_project_index(context.args[0])
+        path, err = self._resolve_project_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /projects first.")
+            await update.message.reply_text(err)
             return
 
         try:
@@ -1962,9 +1978,9 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /holdproject N")
             return
 
-        path = self._resolve_project_index(context.args[0])
+        path, err = self._resolve_project_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /projects first.")
+            await update.message.reply_text(err)
             return
 
         try:
@@ -1985,9 +2001,9 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /addmilestone N text")
             return
 
-        path = self._resolve_project_index(context.args[0])
+        path, err = self._resolve_project_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /projects first.")
+            await update.message.reply_text(err)
             return
 
         # Join the rest of args as milestone text
@@ -2009,9 +2025,9 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /milestone N M")
             return
 
-        path = self._resolve_project_index(context.args[0])
+        path, err = self._resolve_project_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /projects first.")
+            await update.message.reply_text(err)
             return
 
         try:
@@ -2044,14 +2060,14 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /linkgoal <project_N> <goal_M>")
             return
 
-        project_path = self._resolve_project_index(context.args[0])
+        project_path, proj_err = self._resolve_project_index(context.args[0])
         if project_path is None:
-            await update.message.reply_text("Invalid project index. Run /projects first.")
+            await update.message.reply_text(proj_err)
             return
 
-        goal_path = self._resolve_goal_index(context.args[1])
+        goal_path, goal_err = self._resolve_goal_index(context.args[1])
         if goal_path is None:
-            await update.message.reply_text("Invalid goal index. Run /goals first.")
+            await update.message.reply_text(goal_err)
             return
 
         try:
@@ -2075,9 +2091,9 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /unlinkgoal N")
             return
 
-        path = self._resolve_project_index(context.args[0])
+        path, err = self._resolve_project_index(context.args[0])
         if path is None:
-            await update.message.reply_text("Invalid index. Run /projects first.")
+            await update.message.reply_text(err)
             return
 
         try:

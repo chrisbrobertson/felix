@@ -3068,3 +3068,162 @@ async def test_cmd_edit_updates_field(brain_dir, handler):
     text = update.message.reply_text.call_args[0][0]
     assert "Updated due_date" in text
     assert "2026-08-01" in text
+
+
+# ── _resolve_goal_index / _resolve_project_index error messages ─────────────
+
+
+GOAL_FILE_TEXT = (
+    "---\n"
+    "type: goal\n"
+    "category: personal\n"
+    "source_title: Run a 5K\n"
+    "summary: ''\n"
+    "tags: []\n"
+    "created: '2026-04-15T09:00:00'\n"
+    "due_date: '2026-06-30'\n"
+    "status: active\n"
+    "priority: medium\n"
+    "linked_projects: []\n"
+    "notes: ''\n"
+    "---\n\n## Notes\n"
+)
+
+PROJECT_FILE_TEXT = (
+    "---\n"
+    "type: project\n"
+    "category: work\n"
+    "source_title: Q2 Rollout\n"
+    "summary: ''\n"
+    "tags: []\n"
+    "created: '2026-04-15T09:00:00'\n"
+    "due_date: null\n"
+    "status: active\n"
+    "priority: medium\n"
+    "linked_goal: null\n"
+    "milestones: []\n"
+    "inferred_from: []\n"
+    "notes: ''\n"
+    "---\n\n## Notes\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_cmd_goal_empty_shows_addgoal_hint(brain_dir, handler):
+    """/goal N when no goals exist should hint at /addgoal, not 'Run /goals first'."""
+    # No goal files in memories — handler._last_goal_set stays []
+    update, context = _make_update(12345, args=["1"])
+
+    await handler.cmd_goal(update, context)
+
+    text = update.message.reply_text.call_args[0][0]
+    assert "/addgoal" in text
+    assert "Run /goals first" not in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_goal_non_integer_shows_number_hint(brain_dir, handler):
+    """/goal abc should say 'must be a number'."""
+    mem_dir = brain_dir / "memories"
+    (mem_dir / "goal-run-abc123.md").write_text(GOAL_FILE_TEXT)
+
+    handler._last_goal_set = []  # force lazy-populate
+    update, context = _make_update(12345, args=["abc"])
+
+    await handler.cmd_goal(update, context)
+
+    text = update.message.reply_text.call_args[0][0]
+    assert "number" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_cmd_goal_out_of_range_shows_count(brain_dir, handler):
+    """/goal 99 when only 1 goal exists should report the count."""
+    mem_dir = brain_dir / "memories"
+    (mem_dir / "goal-run-abc123.md").write_text(GOAL_FILE_TEXT)
+
+    handler._last_goal_set = []  # force lazy-populate
+    update, context = _make_update(12345, args=["99"])
+
+    await handler.cmd_goal(update, context)
+
+    text = update.message.reply_text.call_args[0][0]
+    assert "out of range" in text.lower()
+    assert "1 active goal" in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_goal_lazy_populates_without_prior_goals_list(brain_dir, handler):
+    """/goal 1 works without running /goals first (lazy populate)."""
+    mem_dir = brain_dir / "memories"
+    (mem_dir / "goal-run-abc123.md").write_text(GOAL_FILE_TEXT)
+
+    # _last_goal_set is empty (never ran /goals)
+    assert handler._last_goal_set == []
+
+    update, context = _make_update(12345, args=["1"])
+
+    await handler.cmd_goal(update, context)
+
+    # Should show goal detail, not an error
+    text = update.message.reply_text.call_args[0][0]
+    assert "Run a 5K" in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_project_empty_shows_addproject_hint(brain_dir, handler):
+    """/project N when no projects exist should hint at /addproject."""
+    update, context = _make_update(12345, args=["1"])
+
+    await handler.cmd_project(update, context)
+
+    text = update.message.reply_text.call_args[0][0]
+    assert "/addproject" in text
+    assert "Run /projects first" not in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_project_non_integer_shows_number_hint(brain_dir, handler):
+    """/project abc should say 'must be a number'."""
+    mem_dir = brain_dir / "memories"
+    (mem_dir / "project-work-q2-def456.md").write_text(PROJECT_FILE_TEXT)
+
+    handler._last_project_set = []
+    update, context = _make_update(12345, args=["xyz"])
+
+    await handler.cmd_project(update, context)
+
+    text = update.message.reply_text.call_args[0][0]
+    assert "number" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_cmd_project_out_of_range_shows_count(brain_dir, handler):
+    """/project 99 when only 1 project exists should report the count."""
+    mem_dir = brain_dir / "memories"
+    (mem_dir / "project-work-q2-def456.md").write_text(PROJECT_FILE_TEXT)
+
+    handler._last_project_set = []
+    update, context = _make_update(12345, args=["99"])
+
+    await handler.cmd_project(update, context)
+
+    text = update.message.reply_text.call_args[0][0]
+    assert "out of range" in text.lower()
+    assert "1 active project" in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_project_lazy_populates_without_prior_projects_list(brain_dir, handler):
+    """/project 1 works without running /projects first (lazy populate)."""
+    mem_dir = brain_dir / "memories"
+    (mem_dir / "project-work-q2-def456.md").write_text(PROJECT_FILE_TEXT)
+
+    assert handler._last_project_set == []
+
+    update, context = _make_update(12345, args=["1"])
+
+    await handler.cmd_project(update, context)
+
+    text = update.message.reply_text.call_args[0][0]
+    assert "Q2 Rollout" in text
