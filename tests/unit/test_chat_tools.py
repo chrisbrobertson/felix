@@ -124,8 +124,128 @@ def test_all_tool_names_in_dispatcher():
     dispatched_names = {
         "list_projects", "list_commitments", "list_events", "list_meetings",
         "list_contacts", "list_comms", "list_readings", "search_memories", "get_memory",
-        "list_commands",
+        "list_commands", "add_goal", "add_project",
     }
     for tool in chat_tools.TOOLS:
         name = tool["function"]["name"]
         assert name in dispatched_names, f"Tool {name!r} has no dispatch case"
+
+
+# --- FR-8: LLM tools for goals and projects ---
+
+def test_add_goal_tool_in_tools_list():
+    """add_goal is present in TOOLS with required fields."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "add_goal" in names
+
+    # Find the add_goal tool and verify its structure
+    add_goal_tool = next(t for t in chat_tools.TOOLS if t["function"]["name"] == "add_goal")
+    assert add_goal_tool["function"]["description"]
+    params = add_goal_tool["function"]["parameters"]
+    assert "title" in params["properties"]
+    assert "category" in params["properties"]
+    assert params["required"] == ["title", "category"]
+
+
+def test_add_project_tool_in_tools_list():
+    """add_project is present in TOOLS with required fields."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "add_project" in names
+
+    # Find the add_project tool and verify its structure
+    add_project_tool = next(t for t in chat_tools.TOOLS if t["function"]["name"] == "add_project")
+    assert add_project_tool["function"]["description"]
+    params = add_project_tool["function"]["parameters"]
+    assert "title" in params["properties"]
+    assert "category" in params["properties"]
+    assert params["required"] == ["title", "category"]
+
+
+@pytest.mark.asyncio
+async def test_add_goal_tool_dispatch_creates_file(tmp_path):
+    """Dispatching add_goal creates a goal file."""
+    from unittest.mock import MagicMock, patch
+
+    handler = MagicMock()
+    handler._config = {"goals": {"categories": ["personal", "work", "family", "learning", "other"]}}
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    with patch.dict("os.environ", {"SECOND_BRAIN_DIR": str(tmp_path)}, clear=False):
+        result = await chat_tools.dispatch(
+            "add_goal",
+            {"title": "Run a 5K", "category": "personal", "due_date": "2026-06-30", "priority": "medium"},
+            handler
+        )
+
+    assert "Goal created" in result
+    assert "Run a 5K" in result
+    assert "[personal]" in result
+    assert "2026-06-30" in result
+
+    # Check that a goal file was created
+    goal_files = list(memories_dir.glob("goal-*.md"))
+    assert len(goal_files) == 1
+
+    # Verify file content
+    content = goal_files[0].read_text()
+    assert "type: goal" in content
+    assert "category: personal" in content
+    assert "source_title: Run a 5K" in content
+
+
+@pytest.mark.asyncio
+async def test_add_project_tool_dispatch_creates_file(tmp_path):
+    """Dispatching add_project creates a project file."""
+    from unittest.mock import MagicMock, patch
+
+    handler = MagicMock()
+    handler._config = {"goals": {"categories": ["personal", "work", "family", "learning", "other"]}}
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    with patch.dict("os.environ", {"SECOND_BRAIN_DIR": str(tmp_path)}, clear=False):
+        result = await chat_tools.dispatch(
+            "add_project",
+            {"title": "Q2 rollout", "category": "work", "due_date": "2026-07-01"},
+            handler
+        )
+
+    assert "Project created" in result
+    assert "Q2 rollout" in result
+    assert "[work]" in result
+    assert "2026-07-01" in result
+
+    # Check that a project file was created
+    project_files = list(memories_dir.glob("project-*.md"))
+    assert len(project_files) == 1
+
+    # Verify file content
+    content = project_files[0].read_text()
+    assert "type: project" in content
+    assert "category: work" in content
+    assert "source_title: Q2 rollout" in content
+
+
+@pytest.mark.asyncio
+async def test_add_goal_invalid_category_returns_error(tmp_path):
+    """add_goal with invalid category returns error string, not exception."""
+    from unittest.mock import MagicMock, patch
+
+    handler = MagicMock()
+    handler._config = {"goals": {"categories": ["personal", "work", "family", "learning", "other"]}}
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    with patch.dict("os.environ", {"SECOND_BRAIN_DIR": str(tmp_path)}, clear=False):
+        result = await chat_tools.dispatch(
+            "add_goal",
+            {"title": "Test Goal", "category": "invalid_category"},
+            handler
+        )
+
+    assert "Error" in result
+    assert "Invalid category" in result or "invalid_category" in result

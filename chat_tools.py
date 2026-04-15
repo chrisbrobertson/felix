@@ -1,8 +1,9 @@
 """Tool-use schemas and dispatcher for the chat handler LLM.
 
 Read-only retrieval commands exposed as function-calling tools so the
-LLM can fetch data itself. State-mutating commands (/complete, /dismiss,
-/mute, /backfill, etc.) are intentionally excluded.
+LLM can fetch data itself. State-mutating commands are usually excluded,
+but add_goal and add_project are deliberate exceptions — natural-language
+creation is the whole point of those operations.
 """
 import logging
 
@@ -150,6 +151,63 @@ TOOLS: list[dict] = [
             "parameters": {"type": "object", "properties": {}},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_goal",
+            "description": "Create a new goal for the user. Use when the user expresses a desired outcome, aspiration, or target they want to achieve.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Short, clear description of the goal"
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Category from the configured list (personal, work, family, learning, other)",
+                        "enum": ["personal", "work", "family", "learning", "other"]
+                    },
+                    "due_date": {
+                        "type": "string",
+                        "description": "Target date in YYYY-MM-DD format, or omit if no deadline"
+                    },
+                    "priority": {
+                        "type": "string",
+                        "description": "Priority level",
+                        "enum": ["low", "medium", "high", "critical"]
+                    }
+                },
+                "required": ["title", "category"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_project",
+            "description": "Create a new project for the user. Use when the user describes work they're undertaking — building something, coordinating an effort, pursuing a task over time.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Short name for the project"
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Category from the configured list (personal, work, family, learning, other)",
+                        "enum": ["personal", "work", "family", "learning", "other"]
+                    },
+                    "due_date": {
+                        "type": "string",
+                        "description": "Target completion date in YYYY-MM-DD format, or omit if no deadline"
+                    }
+                },
+                "required": ["title", "category"]
+            }
+        }
+    },
 ]
 
 
@@ -194,6 +252,39 @@ def _call(name: str, arguments: dict, handler) -> str:
         return handler._get_memory_text(arguments["name"])
     if name == "list_commands":
         return handler._list_commands_text()
+    if name == "add_goal":
+        from goals_tracker import GoalManager
+        from pathlib import Path
+        import os
+        memories_dir = Path(os.environ.get("SECOND_BRAIN_DIR", Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain")) / "memories"
+        gm = GoalManager(memories_dir, handler._config if hasattr(handler, "_config") else {})
+        try:
+            path = gm.create_goal(
+                title=arguments.get("title", ""),
+                category=arguments.get("category", "personal"),
+                due_date=arguments.get("due_date"),
+                priority=arguments.get("priority", "medium"),
+            )
+            due_str = f" — due {arguments['due_date']}" if arguments.get("due_date") else ""
+            return f"Goal created: {arguments['title']} [{arguments['category']}]{due_str}"
+        except ValueError as e:
+            return f"Error: {e}"
+    if name == "add_project":
+        from goals_tracker import GoalManager
+        from pathlib import Path
+        import os
+        memories_dir = Path(os.environ.get("SECOND_BRAIN_DIR", Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain")) / "memories"
+        gm = GoalManager(memories_dir, handler._config if hasattr(handler, "_config") else {})
+        try:
+            path = gm.create_project(
+                title=arguments.get("title", ""),
+                category=arguments.get("category", "personal"),
+                due_date=arguments.get("due_date"),
+            )
+            due_str = f" — due {arguments['due_date']}" if arguments.get("due_date") else ""
+            return f"Project created: {arguments['title']} [{arguments['category']}]{due_str}"
+        except ValueError as e:
+            return f"Error: {e}"
     raise ValueError(f"unknown tool {name!r}")
 
 
