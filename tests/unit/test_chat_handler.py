@@ -1841,3 +1841,203 @@ def test_comms_email_missing_classification_treated_as_human(brain_dir, handler)
 
     # Should show old email (treated as human)
     assert "Old Email" in text
+
+
+# --- Review commands ---
+
+@pytest.mark.asyncio
+async def test_cmd_review_lists_candidates(brain_dir, handler):
+    """Review command should glob and list pending candidates."""
+    mem_dir = brain_dir / "memories"
+
+    # Write a project candidate
+    project_candidate = mem_dir / "project-candidate-q2-rollout-abc123.md"
+    project_candidate.write_text(
+        "---\ntype: project_candidate\ncandidate_type: project\n"
+        "category_guess: work\nsource_title: Q2 rollout plan (candidate)\n"
+        "summary: Coordinating Q2 launch\nconfidence: 0.85\n"
+        "evidence: [meeting-2026-04-10-abc.md]\n"
+        "extracted_fields:\n  title: Q2 rollout plan\n  due_date: 2026-07-01\n"
+        "status: pending_confirmation\ncreated: '2026-04-15T09:00:00'\n---\n\n"
+        "## Evidence\n- meeting-2026-04-10-abc.md\n"
+    )
+
+    # Write a code repo candidate
+    code_candidate = mem_dir / "project-candidate-my-new-project-def456.md"
+    code_candidate.write_text(
+        "---\ntype: project_candidate\ncandidate_type: code_repo\n"
+        "source_title: my-new-project (candidate)\n"
+        "extracted_fields:\n  name: my-new-project\n  local_path: /Users/chris/repos/my-new-project\n"
+        "  default_branch: main\n  languages: [python, shell]\n"
+        "status: pending_confirmation\ncreated: '2026-04-15T10:00:00'\n---\n\n"
+    )
+
+    update, context = _make_update(12345)
+
+    await handler.cmd_review(update, context)
+
+    # Check reply was sent
+    update.message.reply_text.assert_called_once()
+    text = update.message.reply_text.call_args[0][0]
+
+    # Should list both candidates with index numbers
+    assert "Pending candidates (2 total)" in text
+    assert "1. Q2 rollout plan" in text
+    assert "2. my-new-project" in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_confirm_project_creates_project(brain_dir, handler):
+    """Confirming a project candidate should call GoalManager.create_project."""
+    mem_dir = brain_dir / "memories"
+
+    # Write a project candidate
+    candidate = mem_dir / "project-candidate-test-abc123.md"
+    candidate.write_text(
+        "---\ntype: project_candidate\ncandidate_type: project\n"
+        "category_guess: work\nsource_title: Test Project (candidate)\n"
+        "summary: Test summary\nconfidence: 0.85\n"
+        "evidence: [meeting-test.md]\n"
+        "extracted_fields:\n  title: Test Project\n  due_date: 2026-08-01\n"
+        "status: pending_confirmation\ncreated: '2026-04-15T09:00:00'\n---\n\n"
+    )
+
+    # Populate _last_candidate_set
+    handler._last_candidate_set = [candidate]
+
+    update, context = _make_update(12345, args=["1", "work"])
+
+    with patch("goals_tracker.GoalManager") as MockGM:
+        mock_manager = MockGM.return_value
+        mock_manager.confirm_candidate.return_value = mem_dir / "project-work-test-xyz.md"
+
+        await handler.cmd_confirm(update, context)
+
+        # Should call confirm_candidate
+        MockGM.assert_called_once()
+        mock_manager.confirm_candidate.assert_called_once_with(
+            candidate,
+            category_override="work"
+        )
+
+        # Should reply with success
+        update.message.reply_text.assert_called_once()
+        text = update.message.reply_text.call_args[0][0]
+        assert "confirmed" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_cmd_confirm_code_repo_creates_code_file(brain_dir, handler):
+    """Confirming a code_repo candidate should write code-*.md file."""
+    mem_dir = brain_dir / "memories"
+
+    # Write a code repo candidate
+    candidate = mem_dir / "project-candidate-test-repo-abc123.md"
+    candidate.write_text(
+        "---\ntype: project_candidate\ncandidate_type: code_repo\n"
+        "source_title: test-repo (candidate)\n"
+        "extracted_fields:\n  name: test-repo\n  local_path: /Users/chris/repos/test-repo\n"
+        "  default_branch: main\n  languages: [python]\n  head_sha: abc123\n"
+        "  remote_url: git@github.com:chris/test-repo.git\n  summary: Test summary\n"
+        "status: pending_confirmation\ncreated: '2026-04-15T10:00:00'\n---\n\n"
+    )
+
+    # Populate _last_candidate_set
+    handler._last_candidate_set = [candidate]
+
+    update, context = _make_update(12345, args=["1"])
+
+    with patch("chat_handler.socket.gethostname", return_value="testhost.local"):
+        await handler.cmd_confirm(update, context)
+
+        # Should create code file
+        expected_code_file = mem_dir / "code-testhost-test-repo.md"
+        assert expected_code_file.exists()
+
+        # Check frontmatter
+        content = expected_code_file.read_text()
+        assert "type: code" in content
+        assert "source_title: test-repo" in content
+
+        # Candidate should be deleted
+        assert not candidate.exists()
+
+        # Should reply with success
+        update.message.reply_text.assert_called_once()
+        text = update.message.reply_text.call_args[0][0]
+        assert "confirmed" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_cmd_reject_updates_json(brain_dir, handler):
+    """Rejecting a candidate should update rejected-candidates.json and delete file."""
+    mem_dir = brain_dir / "memories"
+    deploy_dir = brain_dir.parent / "deploy"
+    deploy_dir.mkdir()
+
+    # Write a project candidate
+    candidate = mem_dir / "project-candidate-test-abc123.md"
+    candidate.write_text(
+        "---\ntype: project_candidate\ncandidate_type: project\n"
+        "source_title: Test Project (candidate)\nsummary: Test\n"
+        "evidence: [meeting-test.md]\nstatus: pending_confirmation\n---\n\n"
+    )
+
+    # Populate _last_candidate_set
+    handler._last_candidate_set = [candidate]
+
+    update, context = _make_update(12345, args=["1"])
+
+    with patch.object(ch, "DEPLOY_DIR", deploy_dir):
+        await handler.cmd_reject(update, context)
+
+        # Check rejected JSON was created
+        rejected_json = deploy_dir / "rejected-candidates.json"
+        assert rejected_json.exists()
+
+        rejected_data = yaml.safe_load(rejected_json.read_text())
+        assert "rejected" in rejected_data
+        assert len(rejected_data["rejected"]) == 1
+        assert rejected_data["rejected"][0]["source_title"] == "Test Project (candidate)"
+        assert "meeting-test.md" in rejected_data["rejected"][0]["evidence"]
+
+        # Candidate should be deleted
+        assert not candidate.exists()
+
+        # Should reply with success
+        update.message.reply_text.assert_called_once()
+        text = update.message.reply_text.call_args[0][0]
+        assert "Rejected" in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_edit_updates_field(brain_dir, handler):
+    """Editing a candidate should update extracted_fields."""
+    mem_dir = brain_dir / "memories"
+
+    # Write a project candidate
+    candidate = mem_dir / "project-candidate-test-abc123.md"
+    candidate.write_text(
+        "---\ntype: project_candidate\ncandidate_type: project\n"
+        "source_title: Test Project (candidate)\nsummary: Test\n"
+        "extracted_fields:\n  title: Test Project\n  due_date: null\n"
+        "status: pending_confirmation\n---\n\n## Notes\nSome notes.\n"
+    )
+
+    # Populate _last_candidate_set
+    handler._last_candidate_set = [candidate]
+
+    update, context = _make_update(12345, args=["1", "due_date=2026-08-01"])
+
+    await handler.cmd_edit(update, context)
+
+    # Check file was updated
+    content = candidate.read_text()
+    fm = yaml.safe_load(content.split("---")[1])
+    assert fm["extracted_fields"]["due_date"] == "2026-08-01"
+
+    # Should reply with success
+    update.message.reply_text.assert_called_once()
+    text = update.message.reply_text.call_args[0][0]
+    assert "Updated due_date" in text
+    assert "2026-08-01" in text

@@ -4,6 +4,7 @@ import os
 import re
 import socket
 import yaml
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -17,6 +18,7 @@ from github_client import GitHubClient, _STANDARD_LABELS
 log = logging.getLogger("chat-handler")
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
+DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
 MAX_CONTEXT_CHARS = 80_000
 TG_MAX_CHARS = 4096  # Telegram hard limit per message
 
@@ -52,6 +54,12 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("wrong",       "Mark extracted commitment N as a false positive"),
         ("missed",      "Manually add a commitment the bot missed"),
         ("accuracy",    "Show extraction precision per source type"),
+    ],
+    "Review": [
+        ("review",   "List pending project/repo candidates (/review N for detail)"),
+        ("confirm",  "Confirm candidate N (/confirm N [category])"),
+        ("reject",   "Reject candidate N"),
+        ("edit",     "Edit a candidate field (/edit N field=value)"),
     ],
     "Notifications": [
         ("briefing", "Trigger today's briefing now"),
@@ -192,6 +200,11 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("report_pause", self.cmd_report_pause))
         self.app.add_handler(CommandHandler("report_resume", self.cmd_report_resume))
         self.app.add_handler(CommandHandler("report_run", self.cmd_report_run))
+        # Review
+        self.app.add_handler(CommandHandler("review", self.cmd_review))
+        self.app.add_handler(CommandHandler("confirm", self.cmd_confirm))
+        self.app.add_handler(CommandHandler("reject", self.cmd_reject))
+        self.app.add_handler(CommandHandler("edit", self.cmd_edit))
         # System
         self.app.add_handler(CommandHandler("backfill", self.cmd_backfill))
         self.app.add_error_handler(self._on_telegram_error)
@@ -218,6 +231,8 @@ class TelegramChatHandler:
         self._last_feature_set: list = []
         # Last /skill-drafts result set
         self._last_skill_draft_set: list = []
+        # Last /review result set — used by /review <N>, /confirm <N>, /reject <N>, /edit <N>.
+        self._last_candidate_set: list = []
         # GitHub backing for feature/bug commands
         gh_cfg = config.get("github", {}) or {}
         repo = os.environ.get("GITHUB_REPO") or gh_cfg.get("repo", "")
@@ -1394,6 +1409,448 @@ class TelegramChatHandler:
             pass
 
         await update.message.reply_text("\n".join(lines))
+
+    # ── Review commands ───────────────────────────────────────────────────────
+
+    def _resolve_candidate_index(self, n_str: str) -> Optional[Path]:
+        """Convert 1-based index string to a Path from _last_candidate_set, or None."""
+        try:
+            idx = int(n_str) - 1
+            if 0 <= idx < len(self._last_candidate_set):
+                return self._last_candidate_set[idx]
+        except (ValueError, TypeError):
+            pass
+        return None
+
+    def _show_candidate_detail(self, path: Path) -> str:
+        """Format a detail block for one candidate."""
+        try:
+            content = path.read_text(encoding="utf-8")
+            parts = content.split("---", 2)
+            if len(parts) < 3:
+                return "Invalid candidate file format."
+            fm = yaml.safe_load(parts[1]) or {}
+        except Exception as e:
+            return f"Error reading candidate: {e}"
+
+        candidate_type = fm.get("candidate_type", "")
+        extracted = fm.get("extracted_fields", {})
+        source_title = fm.get("source_title", "Untitled")
+
+        if candidate_type == "project":
+            category_guess = fm.get("category_guess", "other")
+            confidence = fm.get("confidence", 0.0)
+            summary = fm.get("summary", "")
+            evidence = fm.get("evidence", [])
+            due_date_guess = extracted.get("due_date", "")
+
+            lines = [
+                f"{source_title} [{category_guess}] — confidence {int(confidence * 100)}%",
+                f"Summary: {summary}",
+                f"Evidence: {', '.join(evidence)}",
+            ]
+            if due_date_guess:
+                lines.append(f"Due date guess: {due_date_guess}")
+            lines.append("")
+            lines.append("Use /confirm N [category] to confirm as a project.")
+            lines.append("Use /reject N to reject.")
+            lines.append("Use /edit N field=value to update a field before confirming.")
+            return "\n".join(lines)
+
+        elif candidate_type == "code_repo":
+            local_path = extracted.get("local_path", "")
+            branch = extracted.get("default_branch", "main")
+            languages = extracted.get("languages", [])
+            lang_str = ", ".join(languages) if languages else ""
+
+            lines = [
+                f"{source_title} (code repository)",
+                f"Path: {local_path}",
+                f"Branch: {branch}",
+            ]
+            if lang_str:
+                lines.append(f"Languages: {lang_str}")
+            lines.append("")
+            lines.append("Use /confirm N to add to code index.")
+            lines.append("Use /reject N to ignore this repo.")
+            return "\n".join(lines)
+
+        else:
+            return f"Unknown candidate type: {candidate_type}"
+
+    async def cmd_review(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List pending project/repo candidates, or show detail of candidate N."""
+        if not self._check_auth(update):
+            return
+
+        memories_dir = BRAIN_DIR / "memories"
+        if not memories_dir.exists():
+            await update.message.reply_text("No memories directory found.")
+            return
+
+        # Collect pending candidates
+        project_candidates = []
+        code_candidates = []
+
+        for f in sorted(memories_dir.glob("project-candidate-*.md")):
+            try:
+                header = f.read_text(encoding="utf-8")[:500]
+                fm_type = ""
+                status = ""
+                candidate_type = ""
+                for line in header.split("\n"):
+                    stripped = line.strip()
+                    if stripped.startswith("type:"):
+                        fm_type = stripped[5:].strip().strip('"').strip("'")
+                    elif stripped.startswith("status:"):
+                        status = stripped[7:].strip().strip('"').strip("'")
+                    elif stripped.startswith("candidate_type:"):
+                        candidate_type = stripped[15:].strip().strip('"').strip("'")
+
+                if fm_type == "project_candidate" and status == "pending_confirmation":
+                    if candidate_type == "project":
+                        project_candidates.append(f)
+                    elif candidate_type == "code_repo":
+                        code_candidates.append(f)
+            except Exception:
+                continue
+
+        # Sort by created descending (newest first)
+        def created_key(p: Path) -> str:
+            try:
+                content = p.read_text(encoding="utf-8")
+                parts = content.split("---", 2)
+                if len(parts) >= 3:
+                    fm = yaml.safe_load(parts[1]) or {}
+                    return fm.get("created", "")
+            except Exception:
+                return ""
+            return ""
+
+        project_candidates.sort(key=created_key, reverse=True)
+        code_candidates.sort(key=created_key, reverse=True)
+
+        # Populate session result set
+        self._last_candidate_set = project_candidates + code_candidates
+        self._active_list = self._last_candidate_set
+
+        # If args[0] is a number, show detail
+        if context.args:
+            try:
+                n = int(context.args[0])
+                path = self._resolve_candidate_index(str(n))
+                if path is None:
+                    await update.message.reply_text("Invalid index. Run /review first.")
+                    return
+                detail = self._show_candidate_detail(path)
+                await update.message.reply_text(detail)
+                return
+            except ValueError:
+                pass
+
+        # Show list view
+        if not self._last_candidate_set:
+            await update.message.reply_text("No pending candidates.")
+            return
+
+        total = len(self._last_candidate_set)
+        lines = [f"Pending candidates ({total} total):"]
+
+        if project_candidates:
+            lines.append(f"\nProjects ({len(project_candidates)}):")
+            for i, f in enumerate(project_candidates, 1):
+                try:
+                    content = f.read_text(encoding="utf-8")
+                    parts = content.split("---", 2)
+                    if len(parts) >= 3:
+                        fm = yaml.safe_load(parts[1]) or {}
+                        title = fm.get("source_title", "Untitled").replace(" (candidate)", "")
+                        category = fm.get("category_guess", "other")
+                        confidence = fm.get("confidence", 0.0)
+                        evidence = fm.get("evidence", [])
+                        evidence_str = f"from {evidence[0]}" if evidence else ""
+                        lines.append(
+                            f"{i}. {title} — {category} — confidence {int(confidence * 100)}% ({evidence_str})"
+                        )
+                except Exception:
+                    lines.append(f"{i}. (error reading candidate)")
+
+        if code_candidates:
+            start_idx = len(project_candidates) + 1
+            lines.append(f"\nCode repos ({len(code_candidates)}):")
+            for i, f in enumerate(code_candidates, start_idx):
+                try:
+                    content = f.read_text(encoding="utf-8")
+                    parts = content.split("---", 2)
+                    if len(parts) >= 3:
+                        fm = yaml.safe_load(parts[1]) or {}
+                        title = fm.get("source_title", "Untitled").replace(" (candidate)", "")
+                        lines.append(f"{i}. {title} — awaiting confirmation")
+                except Exception:
+                    lines.append(f"{i}. (error reading candidate)")
+
+        lines.append("\nUse /review N to see details, /confirm N [category] to confirm, /reject N to reject.")
+        await update.message.reply_text("\n".join(lines))
+
+    async def cmd_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Confirm candidate N, optionally overriding category."""
+        if not self._check_auth(update):
+            return
+
+        if not context.args:
+            await update.message.reply_text("Usage: /confirm N [category]")
+            return
+
+        # Resolve candidate path
+        path = self._resolve_candidate_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /review first.")
+            return
+
+        # Read candidate frontmatter
+        try:
+            content = path.read_text(encoding="utf-8")
+            parts = content.split("---", 2)
+            if len(parts) < 3:
+                await update.message.reply_text("Invalid candidate file format.")
+                return
+            fm = yaml.safe_load(parts[1]) or {}
+        except Exception as e:
+            await update.message.reply_text(f"Error reading candidate: {e}")
+            return
+
+        candidate_type = fm.get("candidate_type", "")
+        extracted = fm.get("extracted_fields", {})
+        source_title = fm.get("source_title", "Untitled")
+
+        if candidate_type == "project":
+            # Get category: from args[1] (override), else category_guess
+            category = context.args[1] if len(context.args) > 1 else fm.get("category_guess")
+            if not category or category == "code":
+                await update.message.reply_text(
+                    "Invalid category. Must specify a non-code category or candidate must have a valid category_guess."
+                )
+                return
+
+            # Load config to validate category
+            try:
+                config = yaml.safe_load((BRAIN_DIR / "config.yaml").read_text())
+                valid_categories = config.get("goals", {}).get(
+                    "categories",
+                    ["personal", "work", "family", "learning", "other"]
+                )
+                if category not in valid_categories:
+                    await update.message.reply_text(
+                        f"Invalid category '{category}'. Must be one of: {valid_categories}"
+                    )
+                    return
+            except Exception:
+                pass  # Continue if config read fails
+
+            # Confirm via GoalManager
+            try:
+                from goals_tracker import GoalManager
+                manager = GoalManager(BRAIN_DIR / "memories", config)
+                created_path = manager.confirm_candidate(path, category_override=category)
+                title = extracted.get("title", source_title.replace(" (candidate)", ""))
+                await update.message.reply_text(f"Project confirmed: \"{title}\" [{category}]")
+            except ValueError as e:
+                await update.message.reply_text(f"Error: {e}")
+            except Exception as e:
+                log.exception("Error confirming project candidate")
+                await update.message.reply_text(f"Error confirming candidate: {e}")
+
+        elif candidate_type == "code_repo":
+            # Write code file directly
+            try:
+                import socket as _socket
+                from datetime import datetime
+
+                hostname = _socket.gethostname().split(".")[0]
+                name = extracted.get("name", "")
+                if not name:
+                    await update.message.reply_text("Code candidate missing name field.")
+                    return
+
+                now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                memory_path = BRAIN_DIR / "memories" / f"code-{hostname}-{name}.md"
+
+                # Build frontmatter from extracted_fields
+                code_fm = {
+                    "source_title": name,
+                    "summary": extracted.get("summary", ""),
+                    "tags": extracted.get("tags", []),
+                    "last_scanned": now,
+                    "source_url": extracted.get("remote_url", ""),
+                    "type": "code",
+                    "hostname": hostname,
+                    "local_path": extracted.get("local_path", ""),
+                    "default_branch": extracted.get("default_branch", "main"),
+                    "languages": extracted.get("languages", []),
+                    "head_sha": extracted.get("head_sha", ""),
+                }
+                frontmatter = yaml.dump(code_fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
+
+                # Simple body
+                body = "## Recent Activity\n- (awaiting first scan)\n\n## Related Projects\n- (none detected)\n\n## Active Branches\n- main\n"
+                content_out = f"---\n{frontmatter}---\n\n{body}"
+
+                # Atomic write
+                tmp_path = memory_path.with_suffix(".tmp")
+                tmp_path.write_text(content_out, encoding="utf-8")
+                os.rename(str(tmp_path), str(memory_path))
+
+                # Delete candidate
+                path.unlink()
+
+                await update.message.reply_text(f"Repo confirmed: \"{name}\" added to code index")
+
+            except Exception as e:
+                log.exception("Error confirming code_repo candidate")
+                await update.message.reply_text(f"Error confirming repo: {e}")
+
+        else:
+            await update.message.reply_text(f"Unknown candidate type: {candidate_type}")
+
+    async def cmd_reject(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Reject candidate N."""
+        if not self._check_auth(update):
+            return
+
+        if not context.args:
+            await update.message.reply_text("Usage: /reject N")
+            return
+
+        # Resolve candidate path
+        path = self._resolve_candidate_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /review first.")
+            return
+
+        # Read candidate frontmatter
+        try:
+            content = path.read_text(encoding="utf-8")
+            parts = content.split("---", 2)
+            if len(parts) < 3:
+                await update.message.reply_text("Invalid candidate file format.")
+                return
+            fm = yaml.safe_load(parts[1]) or {}
+        except Exception as e:
+            await update.message.reply_text(f"Error reading candidate: {e}")
+            return
+
+        candidate_type = fm.get("candidate_type", "")
+        extracted = fm.get("extracted_fields", {})
+        source_title = fm.get("source_title", "Untitled")
+
+        # Load rejected list
+        rejected_json_path = DEPLOY_DIR / "rejected-candidates.json"
+        if rejected_json_path.exists():
+            try:
+                rejected_data = yaml.safe_load(rejected_json_path.read_text()) or {}
+            except Exception:
+                rejected_data = {}
+        else:
+            rejected_data = {}
+
+        # Append entry
+        if candidate_type == "project":
+            if "rejected" not in rejected_data:
+                rejected_data["rejected"] = []
+            rejected_data["rejected"].append({
+                "source_title": source_title,
+                "evidence": fm.get("evidence", []),
+                "rejected_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+            })
+        elif candidate_type == "code_repo":
+            if "rejected_repos" not in rejected_data:
+                rejected_data["rejected_repos"] = []
+            rejected_data["rejected_repos"].append({
+                "source_title": source_title,
+                "local_path": extracted.get("local_path", ""),
+                "rejected_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+            })
+
+        # Atomic write of rejected JSON
+        try:
+            tmp_path = rejected_json_path.with_suffix(".tmp")
+            tmp_path.write_text(yaml.dump(rejected_data, sort_keys=False, allow_unicode=True))
+            os.rename(str(tmp_path), str(rejected_json_path))
+        except Exception as e:
+            await update.message.reply_text(f"Error saving rejected list: {e}")
+            return
+
+        # Delete candidate
+        try:
+            path.unlink()
+            await update.message.reply_text(f"Rejected: \"{source_title}\"")
+        except Exception as e:
+            await update.message.reply_text(f"Error deleting candidate: {e}")
+
+    async def cmd_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Edit a candidate field: /edit N field=value"""
+        if not self._check_auth(update):
+            return
+
+        if len(context.args) < 2:
+            await update.message.reply_text("Usage: /edit N field=value")
+            return
+
+        # Resolve candidate path
+        path = self._resolve_candidate_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /review first.")
+            return
+
+        # Parse field=value
+        assignment = context.args[1]
+        if "=" not in assignment:
+            await update.message.reply_text("Usage: /edit N field=value")
+            return
+
+        key, value = assignment.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+
+        # Read candidate frontmatter
+        try:
+            content = path.read_text(encoding="utf-8")
+            parts = content.split("---", 2)
+            if len(parts) < 3:
+                await update.message.reply_text("Invalid candidate file format.")
+                return
+            fm = yaml.safe_load(parts[1]) or {}
+            body = parts[2]
+        except Exception as e:
+            await update.message.reply_text(f"Error reading candidate: {e}")
+            return
+
+        source_title = fm.get("source_title", "Untitled")
+
+        # Update field (either top-level or in extracted_fields)
+        if "extracted_fields" not in fm:
+            fm["extracted_fields"] = {}
+
+        # Common fields that should go in extracted_fields
+        if key in ["title", "due_date", "tags", "summary"]:
+            fm["extracted_fields"][key] = value
+        elif key == "category_guess":
+            fm["category_guess"] = value
+        else:
+            # Default: put in extracted_fields
+            fm["extracted_fields"][key] = value
+
+        # Write updated frontmatter atomically
+        try:
+            new_fm = yaml.dump(fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
+            new_content = f"---\n{new_fm}---{body}"
+            tmp_path = path.with_suffix(".tmp")
+            tmp_path.write_text(new_content, encoding="utf-8")
+            os.rename(str(tmp_path), str(path))
+            await update.message.reply_text(f"Updated {key} → {value} on candidate \"{source_title}\"")
+        except Exception as e:
+            log.exception("Error editing candidate")
+            await update.message.reply_text(f"Error editing candidate: {e}")
 
     # ── /help command ─────────────────────────────────────────────────────────
 
