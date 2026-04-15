@@ -425,7 +425,9 @@ DAEMON_FILES=(
     llm_routes.py
     memory_writer.py
     notification_manager.py
-    project_scanner.py
+    code_scanner.py
+    goals_tracker.py
+    project_inference_scanner.py
     report_scheduler.py
     skill_creator.py
     skill_executor.py
