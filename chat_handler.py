@@ -1525,7 +1525,7 @@ class TelegramChatHandler:
         try:
             n = int(n_str)
         except (ValueError, TypeError):
-            return (None, "Index must be a number, e.g. /goal 1")
+            return (None, "To create a goal use /addgoal.\nTo view one, run /goals then /goal N.")
         if not self._last_goal_set:
             return (None, "You don't have any active goals yet. Use /addgoal to create one.")
         if 1 <= n <= len(self._last_goal_set):
@@ -1543,7 +1543,7 @@ class TelegramChatHandler:
         try:
             n = int(n_str)
         except (ValueError, TypeError):
-            return (None, "Index must be a number, e.g. /project 1")
+            return (None, "To create a project use /addproject.\nTo view one, run /projects then /project N.")
         if not self._last_project_set:
             return (None, "You don't have any active projects yet. Use /addproject to create one.")
         if 1 <= n <= len(self._last_project_set):

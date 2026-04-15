@@ -3122,18 +3122,18 @@ async def test_cmd_goal_empty_shows_addgoal_hint(brain_dir, handler):
 
 
 @pytest.mark.asyncio
-async def test_cmd_goal_non_integer_shows_number_hint(brain_dir, handler):
-    """/goal abc should say 'must be a number'."""
+async def test_cmd_goal_non_integer_shows_addgoal_hint(brain_dir, handler):
+    """/goal add (or any non-integer) should point at /addgoal."""
     mem_dir = brain_dir / "memories"
     (mem_dir / "goal-run-abc123.md").write_text(GOAL_FILE_TEXT)
 
     handler._last_goal_set = []  # force lazy-populate
-    update, context = _make_update(12345, args=["abc"])
+    update, context = _make_update(12345, args=["add"])
 
     await handler.cmd_goal(update, context)
 
     text = update.message.reply_text.call_args[0][0]
-    assert "number" in text.lower()
+    assert "/addgoal" in text
 
 
 @pytest.mark.asyncio
@@ -3183,18 +3183,18 @@ async def test_cmd_project_empty_shows_addproject_hint(brain_dir, handler):
 
 
 @pytest.mark.asyncio
-async def test_cmd_project_non_integer_shows_number_hint(brain_dir, handler):
-    """/project abc should say 'must be a number'."""
+async def test_cmd_project_non_integer_shows_addproject_hint(brain_dir, handler):
+    """/project add (or any non-integer) should point at /addproject."""
     mem_dir = brain_dir / "memories"
     (mem_dir / "project-work-q2-def456.md").write_text(PROJECT_FILE_TEXT)
 
     handler._last_project_set = []
-    update, context = _make_update(12345, args=["xyz"])
+    update, context = _make_update(12345, args=["add"])
 
     await handler.cmd_project(update, context)
 
     text = update.message.reply_text.call_args[0][0]
-    assert "number" in text.lower()
+    assert "/addproject" in text
 
 
 @pytest.mark.asyncio
