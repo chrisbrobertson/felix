@@ -56,6 +56,7 @@ async def main():
         from notification_manager import NotificationManager
         from skill_creator import SkillCreator
         from report_scheduler import ReportScheduler
+        from project_inference_scanner import ProjectInferenceScanner
 
         # Instantiate tier-2 scanners and services
         optimizer = SkillOptimizer(config)
@@ -63,6 +64,7 @@ async def main():
         zoom_scanner = ZoomScanner(role=role)
         commitment_tracker = CommitmentTracker(role=role)
         contact_tracker = ContactTracker(role=role)
+        project_inference_scanner = ProjectInferenceScanner(role=role)
 
         # Build scanners dict for backfill command (tier-1 scanners already instantiated)
         scanners_dict = {
@@ -109,6 +111,7 @@ async def main():
             contact_tracker.run_loop,
             notification_mgr.run_loop,
             report_scheduler.run_loop,
+            project_inference_scanner.run_loop,
         ]
 
     stop_event = asyncio.Event()

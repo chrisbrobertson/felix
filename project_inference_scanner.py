@@ -1,0 +1,405 @@
+"""
+project_inference_scanner.py — 13th async loop (full role only).
+
+Scans email_thread, meeting_transcript, and slack_thread memory files for
+newly-created or updated content, calls LLM to infer what projects the user
+is working on, and writes project-candidate-*.md files for human confirmation.
+"""
+import asyncio
+import hashlib
+import json
+import logging
+import os
+import re
+from datetime import datetime
+from pathlib import Path
+
+import yaml
+
+from llm_routes import resolve
+
+log = logging.getLogger("project-inference")
+
+BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
+MEMORIES_DIR = BRAIN_DIR / "memories"
+CONFIG_PATH = BRAIN_DIR / "config.yaml"
+DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
+
+MAX_FILES_PER_CYCLE = 20
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _parse_frontmatter(text: str) -> dict:
+    """Parse YAML frontmatter from markdown file content."""
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return {}
+    try:
+        return yaml.safe_load(parts[1]) or {}
+    except Exception:
+        return {}
+
+
+def _slugify(text: str, max_len: int = 40) -> str:
+    """Generate a URL-friendly slug from text."""
+    s = text.lower()
+    s = re.sub(r'[^a-z0-9]+', '-', s)
+    s = s.strip('-')
+    return s[:max_len].rstrip('-')
+
+
+def _stable_id(title: str, source_path: str) -> str:
+    """Generate a stable 6-character ID from title + source path."""
+    key = f"{title.lower().strip()}:{source_path}"
+    return hashlib.sha1(key.encode()).hexdigest()[:6]
+
+
+def _title_similarity(title1: str, title2: str) -> float:
+    """Compute title similarity as Jaccard index of normalized token sets."""
+    tokens1 = set(re.findall(r'[a-z0-9]+', title1.lower()))
+    tokens2 = set(re.findall(r'[a-z0-9]+', title2.lower()))
+    if not tokens1 or not tokens2:
+        return 0.0
+    intersection = tokens1 & tokens2
+    union = tokens1 | tokens2
+    return len(intersection) / len(union) if union else 0.0
+
+
+# ── ProjectInferenceScanner ───────────────────────────────────────────────────
+
+class ProjectInferenceScanner:
+    """Thirteenth async loop: infers projects from comms memories."""
+
+    def __init__(self, role: str = "full"):
+        self.role = role
+        self.SCAN_INTERVAL = 900  # 15 minutes
+        self.SOURCE_TYPES = ["email_thread", "meeting_transcript", "slack_thread"]
+        self.STATE_FILE = DEPLOY_DIR / "project-inference-state.json"
+        self.REJECTED_FILE = DEPLOY_DIR / "rejected-candidates.json"
+
+    # ── Config ────────────────────────────────────────────────────────────────
+
+    def _load_config(self) -> dict:
+        """Load config from BRAIN_DIR/config.yaml."""
+        if CONFIG_PATH.exists():
+            return yaml.safe_load(CONFIG_PATH.read_text()) or {}
+        return {}
+
+    def _inference_config(self) -> dict:
+        """Return project_inference section from config."""
+        return self._load_config().get("project_inference", {})
+
+    def _goal_categories(self) -> list:
+        """Return configured goal categories for LLM prompt."""
+        return self._load_config().get("goals", {}).get(
+            "categories",
+            ["personal", "work", "family", "learning", "other"]
+        )
+
+    # ── State ─────────────────────────────────────────────────────────────────
+
+    def _load_state(self) -> dict:
+        """Load state from STATE_FILE."""
+        if self.STATE_FILE.exists():
+            try:
+                return json.loads(self.STATE_FILE.read_text())
+            except Exception:
+                pass
+        return {"last_scan": None, "processed": {}}
+
+    def _save_state(self, state: dict) -> None:
+        """Save state to STATE_FILE atomically."""
+        tmp = self.STATE_FILE.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(state, indent=2))
+            os.rename(str(tmp), str(self.STATE_FILE))
+        except Exception as e:
+            log.warning("Failed to save project inference state: %s", e)
+
+    # ── Rejected candidates tracking ──────────────────────────────────────────
+
+    def _load_rejected(self) -> dict:
+        """Load rejected-candidates.json."""
+        if self.REJECTED_FILE.exists():
+            try:
+                return json.loads(self.REJECTED_FILE.read_text())
+            except Exception:
+                pass
+        return {"rejected": []}
+
+    def _is_rejected(self, source_path: str) -> bool:
+        """Check if source_path appears in any rejected candidate evidence list."""
+        rejected_data = self._load_rejected()
+        for entry in rejected_data.get("rejected", []):
+            if source_path in entry.get("evidence", []):
+                return True
+        return False
+
+    # ── Deduplication ─────────────────────────────────────────────────────────
+
+    def _is_duplicate(self, title: str) -> bool:
+        """Check if title is too similar to an existing project or candidate."""
+        # Glob existing projects and candidates
+        existing_paths = list(MEMORIES_DIR.glob("project-*.md"))
+        existing_paths.extend(MEMORIES_DIR.glob("project-candidate-*.md"))
+
+        for path in existing_paths:
+            try:
+                header = path.read_text(encoding="utf-8")[:500]
+                fm = _parse_frontmatter(header)
+                existing_title = fm.get("source_title", "")
+                if _title_similarity(title, existing_title) >= 0.8:
+                    return True
+            except Exception:
+                continue
+
+        return False
+
+    # ── LLM extraction ────────────────────────────────────────────────────────
+
+    async def _extract_projects(self, path: Path, fm: dict) -> list:
+        """Call LLM to extract project candidates from memory file."""
+        source_type = fm.get("type", "")
+        source_title = fm.get("source_title", path.name)
+        summary = fm.get("summary", "")
+
+        # Extract date field
+        date_str = (
+            fm.get("meeting_date") or
+            fm.get("last_message") or
+            fm.get("first_message") or
+            "unknown"
+        )
+        if date_str != "unknown":
+            date_str = str(date_str)[:19]  # truncate to YYYY-MM-DDTHH:MM:SS
+
+        # Load full content and extract main section (capped at 2000 chars)
+        try:
+            content = path.read_text(encoding="utf-8")
+        except Exception:
+            content = ""
+
+        body_section = ""
+        for marker in ("## Transcript", "## Messages", "## Thread"):
+            if marker in content:
+                section = content.split(marker, 1)[1]
+                # Stop at next heading
+                section = section.split("##", 1)[0] if "##" in section else section
+                body_section = section.strip()[:2000]
+                break
+
+        # Build LLM prompt
+        categories = self._goal_categories()
+        prompt = (
+            f"Given the following {source_type} content, identify any projects this person "
+            f"appears to be working on. A project is any distinct effort that spans multiple "
+            f"tasks or interactions — could be work, personal, family, learning, or any other domain.\n\n"
+            f"Source: {source_title}\n"
+            f"Date: {date_str}\n"
+            f"Content:\n{summary}\n\n{body_section}\n\n"
+            f"Configured project categories: {', '.join(categories)}\n\n"
+            f"Return JSON only — no markdown fences:\n"
+            "{\n"
+            '  "projects": [\n'
+            "    {\n"
+            '      "title": "Q2 rollout plan",\n'
+            '      "category_guess": "work",\n'
+            '      "summary": "Coordinating Q2 product launch across eng, design, marketing",\n'
+            '      "confidence": 0.85,\n'
+            '      "due_date_guess": "2026-07-01",\n'
+            '      "evidence_quote": "Can you have the Q2 launch checklist ready by EOQ?"\n'
+            "    }\n"
+            "  ]\n"
+            "}\n\n"
+            "Only include items with confidence >= 0.7. Return [] if no projects detected."
+        )
+
+        try:
+            from litellm import acompletion
+            resp = await acompletion(
+                model=resolve("summarize"),
+                messages=[{"role": "user", "content": prompt}],
+                timeout=30,
+            )
+            text = resp.choices[0].message.content.strip()
+            # Strip markdown fences if present
+            text = re.sub(r'^```(?:json)?\n?', '', text)
+            text = re.sub(r'\n?```$', '', text)
+            data = json.loads(text)
+            raw_items = data.get("projects", [])
+        except json.JSONDecodeError as e:
+            log.warning(
+                "JSON parse error extracting projects from %s: %s",
+                path.name, e
+            )
+            return []
+        except Exception:
+            log.exception("LLM call failed for project extraction: %s", path.name)
+            return []
+
+        # Filter by confidence threshold
+        min_confidence = self._inference_config().get("confidence_threshold", 0.7)
+        return [item for item in raw_items if float(item.get("confidence", 0)) >= min_confidence]
+
+    # ── Candidate file write ──────────────────────────────────────────────────
+
+    def _write_candidate(self, item: dict, source_path: Path) -> None:
+        """Write a project-candidate-*.md file for a discovered project."""
+        title = item.get("title", "").strip()
+        if not title:
+            return
+
+        # Dedup checks
+        if self._is_rejected(source_path.name):
+            log.debug("Skipping project from rejected source: %s", source_path.name)
+            return
+
+        if self._is_duplicate(title):
+            log.debug("Skipping duplicate project: %s", title)
+            return
+
+        # Generate filename
+        stable_id = _stable_id(title, source_path.name)
+        slug = _slugify(title)
+        filename = f"project-candidate-{slug}-{stable_id}.md"
+        candidate_path = MEMORIES_DIR / filename
+
+        # Skip if already exists
+        if candidate_path.exists():
+            return
+
+        now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+        # Build frontmatter
+        fm = {
+            "type": "project_candidate",
+            "candidate_type": "project",
+            "category_guess": item.get("category_guess", "other"),
+            "source_title": f"{title} (candidate)",
+            "summary": item.get("summary", ""),
+            "confidence": item.get("confidence", 0.0),
+            "evidence": [source_path.name],
+            "extracted_fields": {
+                "title": title,
+                "due_date": item.get("due_date_guess") or None,
+            },
+            "status": "pending_confirmation",
+            "created": now,
+        }
+
+        # Build content
+        frontmatter_yaml = yaml.dump(fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
+        body = f"## Evidence\n- {source_path.name}\n\n## Quote\n{item.get('evidence_quote', '')}\n"
+        content = f"---\n{frontmatter_yaml}---\n\n{body}"
+
+        # Atomic write
+        tmp_path = candidate_path.with_suffix(".tmp")
+        try:
+            tmp_path.write_text(content, encoding="utf-8")
+            os.rename(str(tmp_path), str(candidate_path))
+            log.info("Wrote candidate: %s (confidence=%.2f)", candidate_path.name, fm["confidence"])
+        except Exception:
+            log.exception("Failed to write candidate file %s", candidate_path.name)
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    # ── Scan loop ─────────────────────────────────────────────────────────────
+
+    async def _scan(self) -> None:
+        """Scan comms memories for project candidates."""
+        state = self._load_state()
+        processed = state.get("processed", {})
+
+        # Collect candidates: source-type files changed since last processed
+        candidates = []
+        for f in MEMORIES_DIR.glob("*.md"):
+            # Skip candidate files themselves
+            if f.name.startswith("project-candidate-"):
+                continue
+
+            try:
+                mtime = f.stat().st_mtime
+            except Exception:
+                continue
+
+            stored_mtime = processed.get(f.name)
+            if stored_mtime is not None and abs(mtime - stored_mtime) < 1.0:
+                continue  # Unchanged since last scan
+
+            # Check type field from frontmatter header
+            try:
+                header = f.read_text(encoding="utf-8")[:500]
+            except Exception:
+                continue
+
+            fm_type = ""
+            for line in header.split("\n"):
+                stripped = line.strip()
+                if stripped.startswith("type:"):
+                    fm_type = stripped[5:].strip().strip('"').strip("'")
+                    break
+
+            if fm_type not in self.SOURCE_TYPES:
+                continue
+
+            candidates.append((f, mtime))
+
+        if not candidates:
+            log.debug("No new/updated source files to process for project inference")
+            return
+
+        log.info(
+            "Inferring projects from %d source file(s)",
+            min(len(candidates), MAX_FILES_PER_CYCLE),
+        )
+
+        processed_count = 0
+        for f, mtime in candidates[:MAX_FILES_PER_CYCLE]:
+            try:
+                content = f.read_text(encoding="utf-8")
+                fm = _parse_frontmatter(content)
+
+                items = await self._extract_projects(f, fm)
+                for item in items:
+                    self._write_candidate(item, f)
+
+                # Persist state after each file to survive mid-cycle crashes
+                processed[f.name] = mtime
+                state["processed"] = processed
+                state["last_scan"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                self._save_state(state)
+                processed_count += 1
+
+            except Exception:
+                log.exception("Error processing %s for project inference", f.name)
+
+        if processed_count:
+            log.info("Project inference scan complete — %d source file(s) processed", processed_count)
+
+    async def run_loop(self, stop_event: asyncio.Event):
+        """Main async loop: scan every SCAN_INTERVAL seconds."""
+        if self.role != "full":
+            log.debug("Project inference scanner disabled — role is %s (full required)", self.role)
+            return
+
+        ic = self._inference_config()
+        enabled = ic.get("enabled", True)
+        if not enabled:
+            log.info("Project inference scanner disabled via config")
+            return
+
+        interval = ic.get("scan_interval_min", 15) * 60  # convert minutes to seconds
+        log.info("Project inference scanner started — scanning every %ds", interval)
+
+        while not stop_event.is_set():
+            try:
+                await self._scan()
+            except Exception:
+                log.exception("Uncaught error in project inference cycle")
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
