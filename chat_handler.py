@@ -13,6 +13,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Messa
 
 from skill_executor import SkillExecutor
 from github_client import GitHubClient, _STANDARD_LABELS
+from goals_tracker import GoalManager
 
 log = logging.getLogger("chat-handler")
 
@@ -52,6 +53,25 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("wrong",       "Mark extracted commitment N as a false positive"),
         ("missed",      "Manually add a commitment the bot missed"),
         ("accuracy",    "Show extraction precision per source type"),
+    ],
+    "Goals": [
+        ("addgoal",       "Add a new goal"),
+        ("goals",         "List goals (filter: /goals [category|status])"),
+        ("goal",          "Show goal N from last list"),
+        ("completegoal",  "Mark goal N as completed"),
+        ("abandongoal",   "Mark goal N as abandoned"),
+    ],
+    "Projects": [
+        ("addproject",      "Add a new project"),
+        ("projects",        "List projects (filter: /projects [category|status])"),
+        ("project",         "Show project N from last list"),
+        ("completeproject", "Mark project N as completed"),
+        ("abandonproject",  "Mark project N as abandoned"),
+        ("holdproject",     "Put project N on hold"),
+        ("addmilestone",    "Add milestone to project N: /addmilestone N text"),
+        ("milestone",       "Toggle milestone M on project N: /milestone N M"),
+        ("linkgoal",        "Link project N to goal M: /linkgoal N M"),
+        ("unlinkgoal",      "Unlink project N from its goal"),
     ],
     "Notifications": [
         ("briefing", "Trigger today's briefing now"),
@@ -177,6 +197,23 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("feature_wont_do", self.cmd_feature_wont_do))
         self.app.add_handler(CommandHandler("feature_note", self.cmd_feature_note))
         self.app.add_handler(CommandHandler("feature_import", self.cmd_feature_import))
+        # Goals
+        self.app.add_handler(CommandHandler("addgoal", self.cmd_addgoal))
+        self.app.add_handler(CommandHandler("goals", self.cmd_goals))
+        self.app.add_handler(CommandHandler("goal", self.cmd_goal))
+        self.app.add_handler(CommandHandler("completegoal", self.cmd_completegoal))
+        self.app.add_handler(CommandHandler("abandongoal", self.cmd_abandongoal))
+        # Projects
+        self.app.add_handler(CommandHandler("addproject", self.cmd_addproject))
+        self.app.add_handler(CommandHandler("projects", self.cmd_projects))
+        self.app.add_handler(CommandHandler("project", self.cmd_project))
+        self.app.add_handler(CommandHandler("completeproject", self.cmd_completeproject))
+        self.app.add_handler(CommandHandler("abandonproject", self.cmd_abandonproject))
+        self.app.add_handler(CommandHandler("holdproject", self.cmd_holdproject))
+        self.app.add_handler(CommandHandler("addmilestone", self.cmd_addmilestone))
+        self.app.add_handler(CommandHandler("milestone", self.cmd_milestone))
+        self.app.add_handler(CommandHandler("linkgoal", self.cmd_linkgoal))
+        self.app.add_handler(CommandHandler("unlinkgoal", self.cmd_unlinkgoal))
         # Skill management
         self.app.add_handler(CommandHandler("skill_drafts", self.cmd_skill_drafts))
         self.app.add_handler(CommandHandler("skill_draft", self.cmd_skill_draft))
@@ -206,7 +243,9 @@ class TelegramChatHandler:
         self._last_commitment_set: list = []
         # Last /contacts result set — used by /contact <N>.
         self._last_contact_set: list = []
-        # Last /projects result set — used by /project <N>.
+        # Last /goals result set — used by /goal <N>, /completegoal <N>, /abandongoal <N>.
+        self._last_goal_set: list = []
+        # Last /projects result set — used by /project <N> and project actions.
         self._last_project_set: list = []
         # Last /events result set — used by /event <N>.
         self._last_event_set: list = []
@@ -229,6 +268,8 @@ class TelegramChatHandler:
             log.info("GitHub backing disabled — feature/bug using local files")
         # Last /reports result set
         self._last_report_set: list = []
+        # Goal manager for goals and projects CRUD
+        self._goal_manager = GoalManager(BRAIN_DIR / "memories", config)
         # Notification manager reference (set by daemon.py)
         self.notification_manager = None
         # Skill creator and report scheduler (set by daemon.py)
@@ -1247,6 +1288,583 @@ class TelegramChatHandler:
         lines.append("")
         lines.append("Use /wrong N to flag false positives. Use /missed to add skipped commitments.")
         await update.message.reply_text("\n".join(lines))
+
+    # ── Goals commands ────────────────────────────────────────────────────────
+
+    def _resolve_goal_index(self, n_str: str):
+        """Return the goal Path for 1-based index n_str, or None if invalid."""
+        try:
+            n = int(n_str)
+            if 1 <= n <= len(self._last_goal_set):
+                return self._last_goal_set[n - 1]
+        except (ValueError, TypeError):
+            pass
+        return None
+
+    def _resolve_project_index(self, n_str: str):
+        """Return the project Path for 1-based index n_str, or None if invalid."""
+        try:
+            n = int(n_str)
+            if 1 <= n <= len(self._last_project_set):
+                return self._last_project_set[n - 1]
+        except (ValueError, TypeError):
+            pass
+        return None
+
+    async def cmd_addgoal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+
+        # Store user ID in context for the reply handler
+        context.user_data["awaiting_addgoal_reply"] = True
+        context.user_data["addgoal_start_time"] = asyncio.get_event_loop().time()
+
+        await update.message.reply_text(
+            "Add a new goal. Reply with:\n"
+            "title: what you want to achieve\n"
+            "category: personal | work | family | learning | other\n"
+            "due: YYYY-MM-DD or \"none\"\n"
+            "priority: low | medium | high | critical (optional, default: medium)"
+        )
+
+    async def _handle_addgoal_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle reply to /addgoal command."""
+        text = update.message.text.strip()
+
+        # Parse structured reply
+        parsed = {}
+        for line in text.split("\n"):
+            if ":" in line:
+                key, val = line.split(":", 1)
+                parsed[key.strip().lower()] = val.strip()
+
+        # Validate required fields
+        required = {"title", "category"}
+        missing = required - set(parsed.keys())
+        if missing:
+            await update.message.reply_text(
+                f"Missing required fields: {', '.join(missing)}. Please try /addgoal again."
+            )
+            context.user_data["awaiting_addgoal_reply"] = False
+            return
+
+        title = parsed["title"]
+        category = parsed["category"]
+        due_date = parsed.get("due")
+        if due_date and due_date.lower() == "none":
+            due_date = None
+        priority = parsed.get("priority", "medium")
+
+        try:
+            path = self._goal_manager.create_goal(title, category, due_date, priority)
+            due_str = f" — due {due_date}" if due_date else ""
+            await update.message.reply_text(f"Goal created: {title} [{category}]{due_str}")
+        except ValueError as e:
+            await update.message.reply_text(f"Error creating goal: {e}")
+        except Exception as e:
+            log.exception("Error in _handle_addgoal_reply")
+            await update.message.reply_text(f"Error creating goal: {e}")
+        finally:
+            context.user_data["awaiting_addgoal_reply"] = False
+
+    async def cmd_goals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+
+        # Parse optional filter argument
+        category = None
+        status = "active"  # default
+        if context.args:
+            arg = context.args[0]
+            # Check if it's a status
+            if arg in ["active", "completed", "abandoned"]:
+                status = arg
+            # Otherwise treat as category
+            else:
+                category = arg
+                status = None
+
+        try:
+            goals = self._goal_manager.list_goals(category=category, status=status)
+            self._last_goal_set = goals
+            self._active_list = self._last_goal_set
+
+            if not goals:
+                await update.message.reply_text("No goals found.")
+                return
+
+            # Format the list
+            from datetime import datetime
+            lines = []
+            header = f"{status.capitalize() if status else 'All'} goals ({len(goals)} total):"
+            lines.append(header)
+
+            for i, path in enumerate(goals, 1):
+                fm = self._parse_frontmatter(path)
+                cat = fm.get("category", "")
+                title = fm.get("source_title", "")
+                due = fm.get("due_date")
+                due_str = f"due {due}" if due else "no due date"
+
+                # Add deadline proximity indicator if within 7 days
+                proximity = ""
+                if due:
+                    try:
+                        due_dt = datetime.strptime(due, "%Y-%m-%d")
+                        now = datetime.now()
+                        days_until = (due_dt - now).days
+                        if 0 <= days_until <= 7:
+                            proximity = f" ⚠️ {days_until} days"
+                    except ValueError:
+                        pass
+
+                lines.append(f"{i}. [{cat}] {title} — {due_str}{proximity}")
+
+            await update.message.reply_text("\n".join(lines))
+        except Exception as e:
+            log.exception("Error in cmd_goals")
+            await update.message.reply_text(f"Error listing goals: {e}")
+
+    async def cmd_goal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /goal N")
+            return
+
+        path = self._resolve_goal_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /goals first.")
+            return
+
+        try:
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title", "")
+            category = fm.get("category", "")
+            status = fm.get("status", "")
+            due_date = fm.get("due_date") or "none"
+            priority = fm.get("priority", "medium")
+            linked_projects = fm.get("linked_projects", [])
+            notes = fm.get("notes", "")
+
+            # Format linked projects
+            if linked_projects:
+                linked_str = ", ".join(linked_projects)
+            else:
+                linked_str = "none"
+
+            lines = [
+                f"{title} [{category}] — {status}",
+                f"Due: {due_date} · Priority: {priority}",
+                f"Linked projects: {linked_str}",
+                "",
+                f"Notes: {notes or '—'}",
+            ]
+
+            await update.message.reply_text("\n".join(lines))
+        except Exception as e:
+            log.exception("Error in cmd_goal")
+            await update.message.reply_text(f"Error showing goal: {e}")
+
+    async def cmd_completegoal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /completegoal N")
+            return
+
+        path = self._resolve_goal_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /goals first.")
+            return
+
+        try:
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title", "")
+            self._goal_manager.update_goal_status(path, "completed")
+            await update.message.reply_text(f"✓ Goal completed: \"{title}\"")
+        except ValueError as e:
+            await update.message.reply_text(f"Error: {e}")
+        except Exception as e:
+            log.exception("Error in cmd_completegoal")
+            await update.message.reply_text(f"Error completing goal: {e}")
+
+    async def cmd_abandongoal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /abandongoal N")
+            return
+
+        path = self._resolve_goal_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /goals first.")
+            return
+
+        try:
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title", "")
+            self._goal_manager.update_goal_status(path, "abandoned")
+            await update.message.reply_text(f"✗ Goal abandoned: \"{title}\"")
+        except ValueError as e:
+            await update.message.reply_text(f"Error: {e}")
+        except Exception as e:
+            log.exception("Error in cmd_abandongoal")
+            await update.message.reply_text(f"Error abandoning goal: {e}")
+
+    # ── Projects commands ─────────────────────────────────────────────────────
+
+    async def cmd_addproject(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+
+        # Store user ID in context for the reply handler
+        context.user_data["awaiting_addproject_reply"] = True
+        context.user_data["addproject_start_time"] = asyncio.get_event_loop().time()
+
+        await update.message.reply_text(
+            "Add a new project. Reply with:\n"
+            "title: what you're working on\n"
+            "category: personal | work | family | learning | other\n"
+            "due: YYYY-MM-DD or \"none\"\n"
+            "goal: N (optional, link to a goal from last /goals list)"
+        )
+
+    async def _handle_addproject_reply(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle reply to /addproject command."""
+        text = update.message.text.strip()
+
+        # Parse structured reply
+        parsed = {}
+        for line in text.split("\n"):
+            if ":" in line:
+                key, val = line.split(":", 1)
+                parsed[key.strip().lower()] = val.strip()
+
+        # Validate required fields
+        required = {"title", "category"}
+        missing = required - set(parsed.keys())
+        if missing:
+            await update.message.reply_text(
+                f"Missing required fields: {', '.join(missing)}. Please try /addproject again."
+            )
+            context.user_data["awaiting_addproject_reply"] = False
+            return
+
+        title = parsed["title"]
+        category = parsed["category"]
+        due_date = parsed.get("due")
+        if due_date and due_date.lower() == "none":
+            due_date = None
+
+        # Resolve linked goal if provided
+        linked_goal = None
+        if "goal" in parsed:
+            goal_idx = parsed["goal"]
+            goal_path = self._resolve_goal_index(goal_idx)
+            if goal_path:
+                linked_goal = goal_path.name
+            else:
+                await update.message.reply_text(
+                    f"Invalid goal index: {goal_idx}. Run /goals first or omit the goal field."
+                )
+                context.user_data["awaiting_addproject_reply"] = False
+                return
+
+        try:
+            path = self._goal_manager.create_project(title, category, due_date, linked_goal)
+            due_str = f" — due {due_date}" if due_date else ""
+            goal_str = f" (linked to {linked_goal})" if linked_goal else ""
+            await update.message.reply_text(f"Project created: {title} [{category}]{due_str}{goal_str}")
+        except ValueError as e:
+            await update.message.reply_text(f"Error creating project: {e}")
+        except Exception as e:
+            log.exception("Error in _handle_addproject_reply")
+            await update.message.reply_text(f"Error creating project: {e}")
+        finally:
+            context.user_data["awaiting_addproject_reply"] = False
+
+    async def cmd_projects(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+
+        # Parse optional filter argument
+        category = None
+        status = "active"  # default
+        if context.args:
+            arg = context.args[0]
+            # Check if it's a status
+            if arg in ["active", "completed", "abandoned", "on-hold"]:
+                status = arg
+            # Otherwise treat as category
+            else:
+                category = arg
+                status = None
+
+        try:
+            projects = self._goal_manager.list_projects(category=category, status=status)
+            self._last_project_set = projects
+            self._active_list = self._last_project_set
+
+            if not projects:
+                await update.message.reply_text("No projects found.")
+                return
+
+            # Format the list
+            from datetime import datetime
+            lines = []
+            header = f"{status.capitalize() if status else 'All'} projects ({len(projects)} total):"
+            lines.append(header)
+
+            for i, path in enumerate(projects, 1):
+                fm = self._parse_frontmatter(path)
+                cat = fm.get("category", "")
+                title = fm.get("source_title", "")
+                proj_status = fm.get("status", "")
+                due = fm.get("due_date")
+                due_str = f"due {due}" if due else "no due date"
+
+                # Milestone summary
+                milestones = fm.get("milestones", [])
+                if milestones:
+                    done_count = sum(1 for m in milestones if m.get("done"))
+                    milestone_str = f" (milestones: {done_count}/{len(milestones)} done)"
+                else:
+                    milestone_str = ""
+
+                lines.append(f"{i}. [{cat}] {title} — {proj_status} — {due_str}{milestone_str}")
+
+            await update.message.reply_text("\n".join(lines))
+        except Exception as e:
+            log.exception("Error in cmd_projects")
+            await update.message.reply_text(f"Error listing projects: {e}")
+
+    async def cmd_project(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /project N")
+            return
+
+        path = self._resolve_project_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /projects first.")
+            return
+
+        try:
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title", "")
+            category = fm.get("category", "")
+            status = fm.get("status", "")
+            due_date = fm.get("due_date") or "none"
+            priority = fm.get("priority", "medium")
+            linked_goal = fm.get("linked_goal") or "none"
+            milestones = fm.get("milestones", [])
+            notes = fm.get("notes", "")
+
+            lines = [
+                f"{title} [{category}] — {status}",
+                f"Due: {due_date} · Priority: {priority}",
+                f"Linked goal: {linked_goal}",
+                "",
+            ]
+
+            # Format milestones
+            if milestones:
+                lines.append("Milestones:")
+                for i, m in enumerate(milestones, 1):
+                    check = "✓" if m.get("done") else "○"
+                    text = m.get("text", "")
+                    lines.append(f"  {check} {text}")
+                lines.append("")
+                lines.append("Use /milestone N M to toggle a milestone.")
+            else:
+                lines.append("No milestones. Use /addmilestone N text to add one.")
+
+            await update.message.reply_text("\n".join(lines))
+        except Exception as e:
+            log.exception("Error in cmd_project")
+            await update.message.reply_text(f"Error showing project: {e}")
+
+    async def cmd_completeproject(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /completeproject N")
+            return
+
+        path = self._resolve_project_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /projects first.")
+            return
+
+        try:
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title", "")
+            self._goal_manager.update_project_status(path, "completed")
+            await update.message.reply_text(f"✓ Project completed: \"{title}\"")
+        except ValueError as e:
+            await update.message.reply_text(f"Error: {e}")
+        except Exception as e:
+            log.exception("Error in cmd_completeproject")
+            await update.message.reply_text(f"Error completing project: {e}")
+
+    async def cmd_abandonproject(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /abandonproject N")
+            return
+
+        path = self._resolve_project_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /projects first.")
+            return
+
+        try:
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title", "")
+            self._goal_manager.update_project_status(path, "abandoned")
+            await update.message.reply_text(f"✗ Project abandoned: \"{title}\"")
+        except ValueError as e:
+            await update.message.reply_text(f"Error: {e}")
+        except Exception as e:
+            log.exception("Error in cmd_abandonproject")
+            await update.message.reply_text(f"Error abandoning project: {e}")
+
+    async def cmd_holdproject(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /holdproject N")
+            return
+
+        path = self._resolve_project_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /projects first.")
+            return
+
+        try:
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title", "")
+            self._goal_manager.update_project_status(path, "on-hold")
+            await update.message.reply_text(f"⏸ Project on hold: \"{title}\"")
+        except ValueError as e:
+            await update.message.reply_text(f"Error: {e}")
+        except Exception as e:
+            log.exception("Error in cmd_holdproject")
+            await update.message.reply_text(f"Error putting project on hold: {e}")
+
+    async def cmd_addmilestone(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if len(context.args) < 2:
+            await update.message.reply_text("Usage: /addmilestone N text")
+            return
+
+        path = self._resolve_project_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /projects first.")
+            return
+
+        # Join the rest of args as milestone text
+        text = " ".join(context.args[1:])
+
+        try:
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title", "")
+            self._goal_manager.add_milestone(path, text)
+            await update.message.reply_text(f"Milestone added to \"{title}\": {text}")
+        except Exception as e:
+            log.exception("Error in cmd_addmilestone")
+            await update.message.reply_text(f"Error adding milestone: {e}")
+
+    async def cmd_milestone(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if len(context.args) < 2:
+            await update.message.reply_text("Usage: /milestone N M")
+            return
+
+        path = self._resolve_project_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /projects first.")
+            return
+
+        try:
+            milestone_idx = int(context.args[1])
+        except ValueError:
+            await update.message.reply_text("Invalid milestone index.")
+            return
+
+        try:
+            self._goal_manager.toggle_milestone(path, milestone_idx)
+            # Read updated frontmatter to get new state
+            fm = self._parse_frontmatter(path)
+            milestones = fm.get("milestones", [])
+            if 1 <= milestone_idx <= len(milestones):
+                done = milestones[milestone_idx - 1].get("done")
+                status = "✓ Milestone marked done" if done else "○ Milestone marked undone"
+                await update.message.reply_text(status)
+            else:
+                await update.message.reply_text("Milestone toggled.")
+        except ValueError as e:
+            await update.message.reply_text(f"Error: {e}")
+        except Exception as e:
+            log.exception("Error in cmd_milestone")
+            await update.message.reply_text(f"Error toggling milestone: {e}")
+
+    async def cmd_linkgoal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if len(context.args) < 2:
+            await update.message.reply_text("Usage: /linkgoal <project_N> <goal_M>")
+            return
+
+        project_path = self._resolve_project_index(context.args[0])
+        if project_path is None:
+            await update.message.reply_text("Invalid project index. Run /projects first.")
+            return
+
+        goal_path = self._resolve_goal_index(context.args[1])
+        if goal_path is None:
+            await update.message.reply_text("Invalid goal index. Run /goals first.")
+            return
+
+        try:
+            project_fm = self._parse_frontmatter(project_path)
+            goal_fm = self._parse_frontmatter(goal_path)
+            project_title = project_fm.get("source_title", "")
+            goal_title = goal_fm.get("source_title", "")
+
+            self._goal_manager.link_goal_to_project(project_path, goal_path)
+            await update.message.reply_text(f"Linked \"{project_title}\" to goal \"{goal_title}\"")
+        except ValueError as e:
+            await update.message.reply_text(f"Error: {e}")
+        except Exception as e:
+            log.exception("Error in cmd_linkgoal")
+            await update.message.reply_text(f"Error linking goal: {e}")
+
+    async def cmd_unlinkgoal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /unlinkgoal N")
+            return
+
+        path = self._resolve_project_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /projects first.")
+            return
+
+        try:
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title", "")
+            self._goal_manager.unlink_goal_from_project(path)
+            await update.message.reply_text(f"Unlinked \"{title}\" from its goal.")
+        except Exception as e:
+            log.exception("Error in cmd_unlinkgoal")
+            await update.message.reply_text(f"Error unlinking goal: {e}")
 
     # ── /contacts command ─────────────────────────────────────────────────────
 
@@ -3098,6 +3716,44 @@ class TelegramChatHandler:
                 return
             # Handle the structured reply
             await self._handle_missed_reply(update, context)
+            return
+
+        # Check if we're awaiting a /addgoal reply
+        if (hasattr(context, "user_data") and
+            isinstance(context.user_data, dict) and
+            context.user_data.get("awaiting_addgoal_reply") is True):
+            # Check timeout (60 seconds)
+            start_time = context.user_data.get("addgoal_start_time", 0)
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed > 60:
+                await update.message.reply_text("Cancelled (timeout).")
+                context.user_data["awaiting_addgoal_reply"] = False
+                try:
+                    await update.message.set_reaction("❌")
+                except Exception:
+                    pass
+                return
+            # Handle the structured reply
+            await self._handle_addgoal_reply(update, context)
+            return
+
+        # Check if we're awaiting a /addproject reply
+        if (hasattr(context, "user_data") and
+            isinstance(context.user_data, dict) and
+            context.user_data.get("awaiting_addproject_reply") is True):
+            # Check timeout (60 seconds)
+            start_time = context.user_data.get("addproject_start_time", 0)
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed > 60:
+                await update.message.reply_text("Cancelled (timeout).")
+                context.user_data["awaiting_addproject_reply"] = False
+                try:
+                    await update.message.set_reaction("❌")
+                except Exception:
+                    pass
+                return
+            # Handle the structured reply
+            await self._handle_addproject_reply(update, context)
             return
 
         query = update.message.text
