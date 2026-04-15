@@ -930,9 +930,12 @@ async def test_cmd_reading_rejects_unauthorised(handler, brain_dir):
 async def test_cmd_help_renders_all_groups(handler):
     update, ctx = _make_update(12345)
     await handler.cmd_help(update, ctx)
-    reply = update.message.reply_text.call_args[0][0]
+    # Help may be split across multiple messages due to 4096-char Telegram limit
+    all_replies = " ".join(
+        call[0][0] for call in update.message.reply_text.call_args_list
+    )
     for group in ch.COMMAND_REGISTRY:
-        assert group in reply
+        assert group in all_replies
 
 
 @pytest.mark.asyncio
