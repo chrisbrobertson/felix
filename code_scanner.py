@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import re
@@ -22,6 +24,7 @@ def _hostname() -> str:
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
 MEMORIES_DIR = BRAIN_DIR / "memories"
 CONFIG_PATH = BRAIN_DIR / "config.yaml"
+DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", Path.home() / "secondbrain"))
 
 EXTENSION_MAP = {
     ".py": "python",
@@ -60,6 +63,23 @@ class CodeScanner:
         self._migrate_legacy_code_project_files()
         self._migrate_project_filenames()
         self._migrate_project_to_code_files()
+        # Load confirmation flag and rejected repos
+        cfg = self._load_config()
+        scanner_cfg = cfg.get("code_scanner", {})
+        self.require_confirmation = scanner_cfg.get("require_confirmation", False)
+        self.rejected_repos = self._load_rejected_repos()
+
+    def _load_rejected_repos(self) -> set:
+        """Load rejected repo local_paths from rejected-candidates.json."""
+        rejected_file = DEPLOY_DIR / "rejected-candidates.json"
+        if not rejected_file.exists():
+            return set()
+        try:
+            data = json.loads(rejected_file.read_text())
+            return set(e.get("local_path", "") for e in data.get("rejected_repos", []) if e.get("local_path"))
+        except Exception:
+            log.exception("Failed to load rejected-candidates.json")
+            return set()
 
     def _migrate_legacy_code_project_files(self):
         """Rewrite any project-*.md with type: code_project → type: project + category: code."""
@@ -558,9 +578,31 @@ class CodeScanner:
         if not project or not project.get("name"):
             return
         name = project["name"]
+        local_path = project["local_path"]
         my_hostname = _hostname()
         memory_path = MEMORIES_DIR / f"code-{my_hostname}-{name}.md"
-        repo_path = Path(project["local_path"])
+        repo_path = Path(local_path)
+
+        # Skip if this repo's local_path is in the rejected list
+        if local_path in self.rejected_repos:
+            log.debug("Skipping %s — local_path in rejected list", name)
+            return
+
+        # With require_confirmation enabled, check if this is a new repo
+        if self.require_confirmation and not memory_path.exists():
+            # Check if a candidate already exists for this repo
+            candidate_id = hashlib.sha1(f"code:{my_hostname}:{name}".encode()).hexdigest()[:6]
+            slug = re.sub(r'[^a-z0-9]+', '-', name.lower())[:40]
+            candidate_path = MEMORIES_DIR / f"project-candidate-{slug}-{candidate_id}.md"
+
+            if candidate_path.exists():
+                log.debug("Candidate already exists for %s — skipping", name)
+                return
+
+            # New repo discovery — write candidate instead of confirmed file
+            log.info("Writing candidate for new repo %s", name)
+            await self._write_candidate_for_new_repo(project)
+            return
 
         if not self._needs_update(repo_path, memory_path):
             log.debug("Skipping %s — no changes", name)
@@ -598,6 +640,67 @@ class CodeScanner:
             "related": related,
         }
         self._write_memory(data)
+
+    async def _write_candidate_for_new_repo(self, project: dict):
+        """Write a project-candidate-*.md file for a newly discovered repo."""
+        name = project["name"]
+        local_path = project["local_path"]
+        my_hostname = _hostname()
+
+        # Generate summary if we have README or commits
+        summary = ""
+        if project.get("readme_text") or project.get("recent_commits"):
+            summary, _ = await self._generate_summary_and_tags(
+                project.get("readme_text", ""),
+                project.get("recent_commits", [])
+            )
+        # Fallback: use first commit message as summary
+        if not summary and project.get("recent_commits"):
+            summary = project["recent_commits"][0].split(" ", 2)[-1] if project["recent_commits"] else ""
+        if not summary:
+            summary = f"Git repository at {local_path}"
+
+        # Stable ID based on hostname and repo name
+        candidate_id = hashlib.sha1(f"code:{my_hostname}:{name}".encode()).hexdigest()[:6]
+        slug = re.sub(r'[^a-z0-9]+', '-', name.lower())[:40]
+        candidate_path = MEMORIES_DIR / f"project-candidate-{slug}-{candidate_id}.md"
+
+        # Build frontmatter
+        now = datetime.now().isoformat()
+        fm = {
+            "type": "project_candidate",
+            "candidate_type": "code_repo",
+            "category_guess": None,
+            "source_title": f"{name} (code repository)",
+            "summary": summary,
+            "confidence": 1.0,
+            "evidence": [f"code-discovery:{my_hostname}:{name}"],
+            "extracted_fields": {
+                "title": name,
+                "local_path": local_path,
+                "default_branch": project.get("default_branch", "main"),
+                "languages": project.get("languages", []),
+                "head_sha": project.get("head_sha", ""),
+                "hostname": my_hostname,
+            },
+            "status": "pending_confirmation",
+            "created": now,
+        }
+        frontmatter = yaml.dump(fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
+        content = f"---\n{frontmatter}---\n"
+
+        # Atomic write: tmp + rename
+        tmp_path = candidate_path.with_suffix(".tmp")
+        try:
+            tmp_path.write_text(content, encoding="utf-8")
+            os.rename(str(tmp_path), str(candidate_path))
+            log.info("Wrote candidate %s", candidate_path.name)
+        except Exception:
+            log.exception("Failed to write candidate %s", candidate_path)
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
 
     def _write_memory(self, data: dict):
         name = data["name"]

@@ -692,3 +692,238 @@ def test_migration_partial_recovery(tmp_path):
         CodeScanner(role="full")
     assert not old_file.exists()  # old deleted
     assert new_file.read_text() == "already exists\n"  # new not overwritten
+
+
+# ── FR-10: Confirmation gate for new repos ───────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_require_confirmation_false_writes_directly(tmp_path):
+    """With require_confirmation=false (default), new repo → code-*.md written directly."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+
+    repo_dir = tmp_path / "repos"
+    repo_dir.mkdir()
+    repo = make_git_repo(repo_dir, "newrepo")
+    (repo / "main.py").write_text("# python code")
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        "code_scanner:\n"
+        "  interval_seconds: 300\n"
+        f"  repo_dirs: ['{str(repo_dir)}']\n"
+        "  skip_repos: []\n"
+        "  require_confirmation: false\n"
+    )
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "CONFIG_PATH", config_file), \
+         patch.object(cs, "DEPLOY_DIR", deploy_dir), \
+         patch("code_scanner._hostname", return_value="testhost"), \
+         patch.object(CodeScanner, "_git") as mock_git:
+
+        mock_git.side_effect = lambda path, *args: {
+            ("remote", "get-url", "origin"): "git@github.com:org/newrepo.git",
+            ("rev-parse", "HEAD"): "abc123",
+            ("symbolic-ref", "--short", "refs/remotes/origin/HEAD"): "origin/main",
+            ("log", "-10", "--format=%h %ad %s", "--date=short"): "abc123 2026-04-15 initial",
+            ("branch", "--format=%(refname:short)"): "main",
+        }.get(args, "")
+
+        scanner = CodeScanner(role="full")
+        await scanner._run_scan()
+
+    # Should write code-testhost-newrepo.md directly
+    expected_file = memories_dir / "code-testhost-newrepo.md"
+    assert expected_file.exists()
+
+    # No candidate file should exist
+    candidate_files = list(memories_dir.glob("project-candidate-*.md"))
+    assert len(candidate_files) == 0
+
+
+@pytest.mark.asyncio
+async def test_require_confirmation_true_writes_candidate(tmp_path):
+    """With require_confirmation=true, new repo → project-candidate-*.md written."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+
+    repo_dir = tmp_path / "repos"
+    repo_dir.mkdir()
+    repo = make_git_repo(repo_dir, "newrepo")
+    (repo / "main.py").write_text("# python code")
+    (repo / "README.md").write_text("A new Python project")
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        "code_scanner:\n"
+        "  interval_seconds: 300\n"
+        f"  repo_dirs: ['{str(repo_dir)}']\n"
+        "  skip_repos: []\n"
+        "  require_confirmation: true\n"
+    )
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "CONFIG_PATH", config_file), \
+         patch.object(cs, "DEPLOY_DIR", deploy_dir), \
+         patch("code_scanner._hostname", return_value="testhost"), \
+         patch.object(CodeScanner, "_git") as mock_git, \
+         patch("litellm.acompletion") as mock_llm:
+
+        mock_git.side_effect = lambda path, *args: {
+            ("remote", "get-url", "origin"): "git@github.com:org/newrepo.git",
+            ("rev-parse", "HEAD"): "abc123",
+            ("symbolic-ref", "--short", "refs/remotes/origin/HEAD"): "origin/main",
+            ("log", "-10", "--format=%h %ad %s", "--date=short"): "abc123 2026-04-15 initial",
+            ("branch", "--format=%(refname:short)"): "main",
+        }.get(args, "")
+
+        # Mock LLM response for summary generation
+        mock_resp = MagicMock()
+        mock_resp.choices = [MagicMock(message=MagicMock(content="SUMMARY: A new Python project\nTAGS: python, project"))]
+        mock_llm.return_value = mock_resp
+
+        scanner = CodeScanner(role="full")
+        await scanner._run_scan()
+
+    # Should NOT write code-testhost-newrepo.md
+    confirmed_file = memories_dir / "code-testhost-newrepo.md"
+    assert not confirmed_file.exists()
+
+    # Should write project-candidate-*.md
+    candidate_files = list(memories_dir.glob("project-candidate-*.md"))
+    assert len(candidate_files) == 1
+
+    # Verify candidate frontmatter
+    candidate = candidate_files[0]
+    fm = _parse_frontmatter(candidate.read_text())
+    assert fm["type"] == "project_candidate"
+    assert fm["candidate_type"] == "code_repo"
+    assert fm["status"] == "pending_confirmation"
+    assert "newrepo" in fm["source_title"]
+    assert fm["extracted_fields"]["hostname"] == "testhost"
+    assert fm["extracted_fields"]["local_path"] == str(repo)
+
+
+@pytest.mark.asyncio
+async def test_known_repo_rescan_updates_inplace_with_flag_on(tmp_path):
+    """With flag on, already-confirmed repo (code-*.md exists) → auto-update, no new candidate."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+
+    repo_dir = tmp_path / "repos"
+    repo_dir.mkdir()
+    repo = make_git_repo(repo_dir, "existingrepo")
+    (repo / "main.go").write_text("// go code")
+
+    # Create existing confirmed memory file with old SHA
+    existing_file = memories_dir / "code-testhost-existingrepo.md"
+    existing_file.write_text(
+        "---\n"
+        "source_title: existingrepo\n"
+        "summary: Existing Go project\n"
+        "tags: [go]\n"
+        "last_scanned: '2026-04-14T10:00:00'\n"
+        "source_url: git@github.com:org/existingrepo.git\n"
+        "type: code\n"
+        "hostname: testhost\n"
+        f"local_path: {str(repo)}\n"
+        "default_branch: main\n"
+        "languages: [go]\n"
+        "head_sha: old_sha_123\n"
+        "---\n\n"
+        "## Recent Activity\n- old commit\n"
+    )
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        "code_scanner:\n"
+        "  interval_seconds: 300\n"
+        f"  repo_dirs: ['{str(repo_dir)}']\n"
+        "  skip_repos: []\n"
+        "  require_confirmation: true\n"
+    )
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "CONFIG_PATH", config_file), \
+         patch.object(cs, "DEPLOY_DIR", deploy_dir), \
+         patch("code_scanner._hostname", return_value="testhost"), \
+         patch.object(CodeScanner, "_git") as mock_git:
+
+        mock_git.side_effect = lambda path, *args: {
+            ("remote", "get-url", "origin"): "git@github.com:org/existingrepo.git",
+            ("rev-parse", "HEAD"): "new_sha_456",
+            ("symbolic-ref", "--short", "refs/remotes/origin/HEAD"): "origin/main",
+            ("log", "-10", "--format=%h %ad %s", "--date=short"): "new456 2026-04-15 updated",
+            ("branch", "--format=%(refname:short)"): "main",
+        }.get(args, "")
+
+        scanner = CodeScanner(role="full")
+        await scanner._run_scan()
+
+    # Should update existing confirmed file in-place
+    assert existing_file.exists()
+    fm = _parse_frontmatter(existing_file.read_text())
+    assert fm["head_sha"] == "new_sha_456"
+
+    # No candidate file should be created
+    candidate_files = list(memories_dir.glob("project-candidate-*.md"))
+    assert len(candidate_files) == 0
+
+
+@pytest.mark.asyncio
+async def test_rejected_local_path_skipped(tmp_path):
+    """Repos whose local_path is in rejected-candidates.json are skipped."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+
+    repo_dir = tmp_path / "repos"
+    repo_dir.mkdir()
+    repo = make_git_repo(repo_dir, "rejectedrepo")
+    (repo / "main.rs").write_text("// rust code")
+
+    # Create rejected-candidates.json with this repo's local_path
+    rejected_file = deploy_dir / "rejected-candidates.json"
+    rejected_file.write_text(
+        '{"rejected_repos": [{"local_path": "' + str(repo) + '", "reason": "test rejection"}]}'
+    )
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        "code_scanner:\n"
+        "  interval_seconds: 300\n"
+        f"  repo_dirs: ['{str(repo_dir)}']\n"
+        "  skip_repos: []\n"
+        "  require_confirmation: true\n"
+    )
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "CONFIG_PATH", config_file), \
+         patch.object(cs, "DEPLOY_DIR", deploy_dir), \
+         patch("code_scanner._hostname", return_value="testhost"), \
+         patch.object(CodeScanner, "_git") as mock_git:
+
+        mock_git.side_effect = lambda path, *args: {
+            ("remote", "get-url", "origin"): "git@github.com:org/rejectedrepo.git",
+            ("rev-parse", "HEAD"): "abc123",
+            ("symbolic-ref", "--short", "refs/remotes/origin/HEAD"): "origin/main",
+            ("log", "-10", "--format=%h %ad %s", "--date=short"): "abc123 2026-04-15 initial",
+            ("branch", "--format=%(refname:short)"): "main",
+        }.get(args, "")
+
+        scanner = CodeScanner(role="full")
+        await scanner._run_scan()
+
+    # Nothing should be written for this repo
+    confirmed_files = list(memories_dir.glob("code-testhost-*.md"))
+    candidate_files = list(memories_dir.glob("project-candidate-*.md"))
+    assert len(confirmed_files) == 0
+    assert len(candidate_files) == 0

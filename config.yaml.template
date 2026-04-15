@@ -67,6 +67,7 @@ code_scanner:
     - ~/repos
     - ~/repo
   skip_repos: []                 # repo directory names to ignore (e.g. [archived-project])
+  require_confirmation: false    # Set true to confirm new repos before indexing
 
 email_scanner:
   interval_seconds: 300          # scan every 5 minutes
