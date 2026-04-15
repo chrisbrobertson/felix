@@ -13,7 +13,7 @@ import yaml
 from llm_routes import resolve
 from skill_executor import SkillExecutor
 
-log = logging.getLogger("project-scanner")
+log = logging.getLogger("code-scanner")
 
 
 def _hostname() -> str:
@@ -53,12 +53,13 @@ SKIP_DIRS = {
 }
 
 
-class ProjectScanner:
+class CodeScanner:
     def __init__(self, role: str = "full"):
         self.role = role
         self._executor = None  # lazy — only created if LLM call needed
         self._migrate_legacy_code_project_files()
         self._migrate_project_filenames()
+        self._migrate_project_to_code_files()
 
     def _migrate_legacy_code_project_files(self):
         """Rewrite any project-*.md with type: code_project → type: project + category: code."""
@@ -107,6 +108,12 @@ class ProjectScanner:
                 # Check if this file belongs to us by reading frontmatter
                 text = path.read_text()
                 fm = _parse_frontmatter(text)
+                # Skip non-code projects (future generic project types)
+                if fm.get("type") == "project" and fm.get("category") != "code":
+                    continue
+                # Also skip if type is already "code" (already migrated by migration #3)
+                if fm.get("type") == "code":
+                    continue
                 fm_hostname = fm.get("hostname", "")
                 # If frontmatter hostname matches ours, this file belongs to us — rename it
                 if fm_hostname == my_hostname or not fm_hostname:
@@ -123,6 +130,54 @@ class ProjectScanner:
         if migrated:
             log.info("Migrated %d project files to hostname-scoped filenames", migrated)
 
+    def _migrate_project_to_code_files(self):
+        """Migrate project-{hostname}-*.md with type:project+category:code → code-{hostname}-*.md with type:code."""
+        if not MEMORIES_DIR.exists():
+            return
+        migrated = 0
+        for path in MEMORIES_DIR.glob("project-*.md"):
+            try:
+                text = path.read_text()
+                m = re.match(r"^(---\n)(.*?)(\n---\n)(.*)", text, re.DOTALL)
+                if not m:
+                    continue
+                fm_text = m.group(2)
+                fm = yaml.safe_load(fm_text) or {}
+                # Skip if not type:project+category:code
+                if fm.get("type") != "project":
+                    continue
+                if fm.get("category") != "code":
+                    continue
+                # Update frontmatter: remove category, change type to code
+                del fm["category"]
+                fm["type"] = "code"
+                # Compute new filename: replace project-{hostname}- with code-{hostname}-
+                stem = path.stem
+                if stem.startswith("project-"):
+                    rest = stem[len("project-"):]
+                    new_stem = f"code-{rest}"
+                    new_path = path.parent / f"{new_stem}.md"
+                else:
+                    # Should not happen but be defensive
+                    continue
+                # If new filename already exists, just delete old (partial run recovery)
+                if new_path.exists():
+                    path.unlink()
+                    continue
+                # Atomic write to new path
+                new_fm = yaml.dump(fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
+                new_text = f"---\n{new_fm}---\n{m.group(4)}"
+                tmp = new_path.with_suffix(".tmp")
+                tmp.write_text(new_text)
+                tmp.replace(new_path)
+                # Delete old file
+                path.unlink()
+                migrated += 1
+            except Exception:
+                log.exception("Code migration failed for %s", path)
+        if migrated:
+            log.info("Migrated %d project-{hostname}-*.md → code-{hostname}-*.md", migrated)
+
     def _load_config(self) -> dict:
         if CONFIG_PATH.exists():
             return yaml.safe_load(CONFIG_PATH.read_text()) or {}
@@ -130,21 +185,21 @@ class ProjectScanner:
 
     def _scanner_config(self) -> dict:
         cfg = self._load_config()
-        return cfg.get("project_scanner", {})
+        return cfg.get("code_scanner", {})
 
     async def backfill(self, days: int) -> dict:
-        """Delete all project memories and recreate from current state. days parameter ignored."""
-        # Delete only this host's project-*.md files
+        """Delete all code memories and recreate from current state. days parameter ignored."""
+        # Delete only this host's code-*.md files
         deleted = 0
         my_hostname = _hostname()
         if MEMORIES_DIR.exists():
-            for path in MEMORIES_DIR.glob(f"project-{my_hostname}-*.md"):
+            for path in MEMORIES_DIR.glob(f"code-{my_hostname}-*.md"):
                 try:
                     path.unlink()
                     deleted += 1
                 except Exception as e:
                     log.error(f"Failed to delete {path}: {e}")
-            # Also delete legacy project-*.md files that belong to us
+            # Also delete legacy project-*.md files that belong to us (migration remnants)
             for path in MEMORIES_DIR.glob("project-*.md"):
                 stem = path.stem
                 rest = stem[len("project-"):]
@@ -168,20 +223,20 @@ class ProjectScanner:
         # Count newly created files for this host
         created = 0
         if MEMORIES_DIR.exists():
-            for path in MEMORIES_DIR.glob(f"project-{my_hostname}-*.md"):
+            for path in MEMORIES_DIR.glob(f"code-{my_hostname}-*.md"):
                 created += 1
 
         return {
             "processed": created,
             "skipped": 0,
             "errors": 0,
-            "notes": f"Deleted {deleted} and recreated {created} project memories for {my_hostname}"
+            "notes": f"Deleted {deleted} and recreated {created} code memories for {my_hostname}"
         }
 
     async def run_loop(self, stop_event: asyncio.Event):
         sc = self._scanner_config()
         interval = sc.get("interval_seconds", 300)
-        log.info("Project scanner started — polling every %ds", interval)
+        log.info("Code scanner started — polling every %ds", interval)
 
         while not stop_event.is_set():
             try:
@@ -217,7 +272,7 @@ class ProjectScanner:
             except Exception:
                 log.exception("Error finalizing project %s", project.get("name"))
 
-        log.info("Project scan complete — %d repos processed", len(all_projects))
+        log.info("Code scan complete — %d repos processed", len(all_projects))
 
     def _discover_repos(self, sc: dict) -> list:
         repo_dirs_raw = sc.get("repo_dirs", ["~/repos", "~/repo"])
@@ -392,7 +447,7 @@ class ProjectScanner:
         for _score, proj in ranked:
             # Use summary from existing memory file if available
             # Try hostname-scoped filename first, then legacy
-            mem = MEMORIES_DIR / f"project-{my_hostname}-{proj['name']}.md"
+            mem = MEMORIES_DIR / f"code-{my_hostname}-{proj['name']}.md"
             if not mem.exists():
                 mem = MEMORIES_DIR / f"project-{proj['name']}.md"
             summary = ""
@@ -504,7 +559,7 @@ class ProjectScanner:
             return
         name = project["name"]
         my_hostname = _hostname()
-        memory_path = MEMORIES_DIR / f"project-{my_hostname}-{name}.md"
+        memory_path = MEMORIES_DIR / f"code-{my_hostname}-{name}.md"
         repo_path = Path(project["local_path"])
 
         if not self._needs_update(repo_path, memory_path):
@@ -548,7 +603,7 @@ class ProjectScanner:
         name = data["name"]
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         my_hostname = _hostname()
-        memory_path = MEMORIES_DIR / f"project-{my_hostname}-{name}.md"
+        memory_path = MEMORIES_DIR / f"code-{my_hostname}-{name}.md"
 
         tags = data.get("tags", [])
         if not isinstance(tags, list):
@@ -561,8 +616,7 @@ class ProjectScanner:
             "tags": tags,
             "last_scanned": now,
             "source_url": data["remote_url"],
-            "type": "project",
-            "category": "code",
+            "type": "code",
             "hostname": my_hostname,
             "local_path": data["local_path"],
             "default_branch": data["default_branch"],

@@ -262,9 +262,7 @@ Items with low confidence (0.5–0.69) show a ⚠️ indicator. The default thre
 /events [N]              # calendar events in a ±7-day window, sorted by start time
 /event <N>               # event detail: time, location, attendees, description, related commitments
 
-/projects [N]            # list git repos, sorted by last commit
-/projects code 50        # filter by category (currently only `code` exists)
-/project <N>             # full project detail: description, languages, commits, README summary
+/code [N]                # list git repos (default 10), or show detail for repo N
 ```
 
 All list commands accept an optional count (default 10, max 50). The `<N>` argument in detail commands refers to the index from the last list or search.
@@ -392,9 +390,8 @@ Muted state persists across daemon restarts. `/briefing` works even when muted �
 | `/contacts [N]` | List contacts sorted by most recent interaction (default 20, max 50). Deduplicated by email, display name is longest seen version, recency-weighted relationship score. |
 | `/people [N]` | Alias for `/contacts` |
 | `/contact <name\|N>` | Detailed contact view: interaction history, related threads, relationship score |
-| **Projects** | |
-| `/projects [category] [N]` | List git repos (default 10, max 50). Optional category filter (currently `code`). Sorted by last commit. When the same repo exists on multiple machines, displays `hosts: [hostname1, hostname2]`. |
-| `/project <N>` | Full project detail: description, languages, recent commits, README summary, related projects |
+| **Code repos** | |
+| `/code [N]` | List git repos (default 10, max 50). With N argument, show detail for repo N from last list. Sorted by last commit. When the same repo exists on multiple machines, displays `hosts: [hostname1, hostname2]`. |
 | **Calendar & meetings** | |
 | `/events [N]` | Calendar events in ±7-day window, sorted by start time (default 10, max 50) |
 | `/event <N>` | Event detail: time, location, attendees, description, related commitments |
@@ -664,7 +661,11 @@ After pulling or editing source files, re-run the installer to push changes to t
 
 The installer is idempotent — it skips unchanged files and only copies what has changed. The daemon is reloaded automatically at the end.
 
-**Note for multi-machine setups:** After upgrading to a version that includes hostname-scoped project files, restart the daemon on every machine. Each machine will automatically rename its `project-{name}.md` files to `project-{hostname}-{name}.md` on first start (migration runs once, safely).
+**Note for multi-machine setups:** After upgrading, restart the daemon on every machine. The code scanner will automatically migrate legacy files on first start:
+- `project-{name}.md` → `project-{hostname}-{name}.md` (v1.1.0)
+- `project-{hostname}-{name}.md` with `type: project` + `category: code` → `code-{hostname}-{name}.md` with `type: code` (v1.2.0)
+
+All migrations run once per machine and are idempotent.
 
 ---
 
@@ -685,7 +686,7 @@ tail -f ~/secondbrain/logs/out.log
 Key log lines to watch for:
 - `[calendar-scanner] INFO Calendar scan complete — N event(s) updated`
 - `[email-scanner] WARNING Envelope Index unavailable — falling back to AppleScript`
-- `[project-scanner] INFO Project scan complete — 29 repos processed`
+- `[code-scanner] INFO Code scan complete — 29 repos processed`
 - `[notification-manager] INFO Daily briefing sent`
 
 ---

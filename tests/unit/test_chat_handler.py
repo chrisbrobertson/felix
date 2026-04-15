@@ -995,83 +995,89 @@ def write_project_memory(memories_dir: Path, name: str, category: str = "code",
 
 
 @pytest.mark.asyncio
-async def test_cmd_projects_lists_all(handler, brain_dir):
+async def test_cmd_code_lists_all(handler, brain_dir):
     m = brain_dir / "memories"
     write_project_memory(m, "alpha")
     write_project_memory(m, "beta")
     update, ctx = _make_update(12345)
-    await handler.cmd_projects(update, ctx)
+    await handler.cmd_code(update, ctx)
     reply = update.message.reply_text.call_args[0][0]
     assert "alpha" in reply
     assert "beta" in reply
-    assert len(handler._last_project_set) == 2
+    assert len(handler._last_code_set) == 2
 
 
 @pytest.mark.asyncio
-async def test_cmd_projects_filter_by_category(handler, brain_dir):
+async def test_cmd_code_filter_by_category(handler, brain_dir):
     m = brain_dir / "memories"
     write_project_memory(m, "codeproj", category="code")
     write_project_memory(m, "workproj", category="work")
     update, ctx = _make_update(12345, ["code"])
-    await handler.cmd_projects(update, ctx)
+    await handler.cmd_code(update, ctx)
     reply = update.message.reply_text.call_args[0][0]
     assert "codeproj" in reply
     assert "workproj" not in reply
 
 
 @pytest.mark.asyncio
-async def test_cmd_projects_default_n_10(handler, brain_dir):
+async def test_cmd_code_default_n_10(handler, brain_dir):
     m = brain_dir / "memories"
     for i in range(15):
         write_project_memory(m, f"proj{i:02d}")
     update, ctx = _make_update(12345)
-    await handler.cmd_projects(update, ctx)
-    assert len(handler._last_project_set) == 10
+    await handler.cmd_code(update, ctx)
+    assert len(handler._last_code_set) == 10
 
 
 @pytest.mark.asyncio
-async def test_cmd_projects_n_clamped(handler, brain_dir):
+async def test_cmd_code_n_clamped(handler, brain_dir):
     m = brain_dir / "memories"
     for i in range(5):
         write_project_memory(m, f"proj{i}")
     # N=999 clamped to 50 — but only 5 exist so we get 5
     update, ctx = _make_update(12345, ["999"])
-    await handler.cmd_projects(update, ctx)
-    assert len(handler._last_project_set) == 5
+    await handler.cmd_code(update, ctx)
+    assert len(handler._last_code_set) == 5
     # N=0 clamped to 1
     update2, ctx2 = _make_update(12345, ["0"])
-    await handler.cmd_projects(update2, ctx2)
-    assert len(handler._last_project_set) == 1
+    await handler.cmd_code(update2, ctx2)
+    assert len(handler._last_code_set) == 1
 
 
 @pytest.mark.asyncio
-async def test_cmd_project_detail_view(handler, brain_dir):
+async def test_cmd_code_detail_view(handler, brain_dir):
     m = brain_dir / "memories"
     write_project_memory(m, "myrepo", summary="My test repo.")
-    handler._last_project_set = [m / "project-myrepo.md"]
+    handler._last_code_set = [m / "project-myrepo.md"]
     update, ctx = _make_update(12345, ["1"])
-    await handler.cmd_project(update, ctx)
+    await handler.cmd_code(update, ctx)
     reply = update.message.reply_text.call_args[0][0]
     assert "myrepo" in reply
     assert "My test repo" in reply
 
 
 @pytest.mark.asyncio
-async def test_cmd_project_invalid_index(handler):
-    handler._last_project_set = []
+async def test_cmd_code_invalid_index(handler, brain_dir):
+    # Create some files, populate the list, then try invalid index
+    m = brain_dir / "memories"
+    write_project_memory(m, "proj1")
+    write_project_memory(m, "proj2")
+    update_list, ctx_list = _make_update(12345)
+    await handler.cmd_code(update_list, ctx_list)
+    # Now list is populated with 2 items, try to access index 99
     update, ctx = _make_update(12345, ["99"])
-    await handler.cmd_project(update, ctx)
+    await handler.cmd_code(update, ctx)
     assert "Invalid index" in update.message.reply_text.call_args[0][0]
 
 
 @pytest.mark.asyncio
-async def test_cmd_projects_groups_by_base_name(handler, brain_dir):
+async def test_cmd_code_groups_by_base_name(handler, brain_dir):
     """Projects with same base name from different hosts are grouped."""
     m = brain_dir / "memories"
     write_project_memory(m, "myrepo", hostname="studio", summary="Studio version")
     write_project_memory(m, "myrepo", hostname="laptop", summary="Laptop version")
     update, ctx = _make_update(12345)
-    await handler.cmd_projects(update, ctx)
+    await handler.cmd_code(update, ctx)
     reply = update.message.reply_text.call_args[0][0]
     # Should show "myrepo" once (not twice)
     assert reply.count("myrepo") == 1
@@ -1081,24 +1087,24 @@ async def test_cmd_projects_groups_by_base_name(handler, brain_dir):
 
 
 @pytest.mark.asyncio
-async def test_cmd_projects_single_host_always_shown(handler, brain_dir):
+async def test_cmd_code_single_host_always_shown(handler, brain_dir):
     """A single-host project must include '· host: <hostname>' so the LLM
     can answer 'group by laptop' questions without burning tool iterations."""
     m = brain_dir / "memories"
     write_project_memory(m, "solo", hostname="macbook-air")
     update, ctx = _make_update(12345)
-    await handler.cmd_projects(update, ctx)
+    await handler.cmd_code(update, ctx)
     reply = update.message.reply_text.call_args[0][0]
     assert "· host: macbook-air" in reply
 
 
 @pytest.mark.asyncio
-async def test_cmd_projects_legacy_no_hostname_omitted(handler, brain_dir):
+async def test_cmd_code_legacy_no_hostname_omitted(handler, brain_dir):
     """Legacy files without a hostname field must not print '· host: legacy'."""
     m = brain_dir / "memories"
     write_project_memory(m, "oldrepo", hostname="")  # no hostname in frontmatter
     update, ctx = _make_update(12345)
-    await handler.cmd_projects(update, ctx)
+    await handler.cmd_code(update, ctx)
     reply = update.message.reply_text.call_args[0][0]
     # The sentinel "legacy" must not appear in the host column
     assert "· host: legacy" not in reply
@@ -1490,16 +1496,16 @@ async def test_cmd_people_is_alias_for_contacts(handler, brain_dir):
     assert contacts_reply == people_reply
 
 
-# ── project_scanner migration ─────────────────────────────────────────────────
+# ── code_scanner migration ───────────────────────────────────────────────────
 
 def test_migrate_legacy_code_project(tmp_path):
-    import project_scanner as ps_mod
-    from project_scanner import ProjectScanner
+    import code_scanner as cs_mod
+    from code_scanner import CodeScanner
 
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
-    # Write a legacy file (both type migration and filename migration will occur)
+    # Write a legacy file (type migration: code_project → project+code → code, filename migration)
     legacy = memories_dir / "project-legacy.md"
     legacy.write_text(
         "---\nsource_title: legacy\nsummary: old\ntags: [python]\n"
@@ -1509,32 +1515,33 @@ def test_migrate_legacy_code_project(tmp_path):
         "languages: [python]\nhead_sha: abc123\n---\n\n## Content\n"
     )
 
-    with patch.object(ps_mod, "MEMORIES_DIR", memories_dir), \
-         patch("project_scanner._hostname", return_value="testhost"):
-        _ = ProjectScanner()
+    with patch.object(cs_mod, "MEMORIES_DIR", memories_dir), \
+         patch("code_scanner._hostname", return_value="testhost"):
+        _ = CodeScanner()
 
     import yaml as _yaml
-    # File will be renamed to project-testhost-legacy.md
-    migrated = memories_dir / "project-testhost-legacy.md"
+    # File will be migrated through: code_project → project+category:code → code-testhost-legacy.md
+    migrated = memories_dir / "code-testhost-legacy.md"
     assert migrated.exists()
     assert not legacy.exists()
     text = migrated.read_text()
     parts = text.split("---", 2)
     fm = _yaml.safe_load(parts[1])
-    assert fm["type"] == "project"
-    assert fm["category"] == "code"
+    assert fm["type"] == "code"
+    assert "category" not in fm
 
 
 def test_migrate_idempotent(tmp_path):
-    import project_scanner as ps_mod
-    from project_scanner import ProjectScanner
+    import code_scanner as cs_mod
+    from code_scanner import CodeScanner
 
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
-    # Write an already-migrated file (with hostname)
-    migrated = memories_dir / "project-testhost-new.md"
-    migrated.write_text(
+    # Write a file in the intermediate state (type: project + category: code, hostname-scoped)
+    # This will be migrated to type: code, code-{hostname}-*.md
+    intermediate = memories_dir / "project-testhost-new.md"
+    intermediate.write_text(
         "---\nsource_title: new\nsummary: new project\ntags: [python]\n"
         "last_scanned: '2026-04-11T10:00:00'\n"
         "source_url: git@github.com:org/new.git\ntype: project\ncategory: code\n"
@@ -1542,16 +1549,18 @@ def test_migrate_idempotent(tmp_path):
         "languages: [python]\nhead_sha: def456\n---\n\n## Content\n"
     )
 
-    with patch.object(ps_mod, "MEMORIES_DIR", memories_dir), \
-         patch("project_scanner._hostname", return_value="testhost"):
-        _ = ProjectScanner()
+    with patch.object(cs_mod, "MEMORIES_DIR", memories_dir), \
+         patch("code_scanner._hostname", return_value="testhost"):
+        _ = CodeScanner()
 
-    # File should remain unchanged
-    assert migrated.exists()
+    # File should be migrated to code-testhost-new.md with type: code
+    migrated_final = memories_dir / "code-testhost-new.md"
+    assert migrated_final.exists()
+    assert not intermediate.exists()
     import yaml as _yaml
-    fm = _yaml.safe_load(migrated.read_text().split("---", 2)[1])
-    assert fm["type"] == "project"
-    assert fm["category"] == "code"
+    fm = _yaml.safe_load(migrated_final.read_text().split("---", 2)[1])
+    assert fm["type"] == "code"
+    assert "category" not in fm
 
 
 # ── /bug command ──────────────────────────────────────────────────────────────
@@ -1925,8 +1934,8 @@ async def test_backfill_calls_scanner_backfill_with_parsed_days(handler):
 async def test_backfill_reply_formats_result_dict(handler):
     mock_scanner = AsyncMock()
     mock_scanner.backfill = AsyncMock(return_value={"processed": 15, "skipped": 3, "errors": 1, "notes": "Done!"})
-    handler.scanners = {"projects": mock_scanner}
-    update, ctx = _make_update(12345, ["projects"])
+    handler.scanners = {"code": mock_scanner}
+    update, ctx = _make_update(12345, ["code"])
     with patch("chat_handler.socket.gethostname", return_value="local-host"):
         await handler.cmd_backfill(update, ctx)
     replies = [call[0][0] for call in update.message.reply_text.call_args_list]

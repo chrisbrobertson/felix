@@ -7,7 +7,7 @@ import yaml
 from pathlib import Path
 
 from browser_watcher import BrowserWatcher
-from project_scanner import ProjectScanner
+from code_scanner import CodeScanner
 from email_scanner import EmailScanner
 from calendar_scanner import CalendarScanner
 from slack_scanner import SlackScanner
@@ -79,14 +79,14 @@ async def main():
 
     # Tier 1: local-source scanners — run on both watcher and full roles
     watcher = BrowserWatcher(role=role)
-    project_scanner = ProjectScanner(role=role)
+    code_scanner = CodeScanner(role=role)
     email_scanner = EmailScanner(role=role)
     calendar_scanner = CalendarScanner(role=role)
     slack_scanner = SlackScanner(role=role)
 
     tasks = [
         watcher.run_loop,
-        project_scanner.run_loop,
+        code_scanner.run_loop,
         email_scanner.run_loop,
         calendar_scanner.run_loop,
         slack_scanner.run_loop,
@@ -120,7 +120,7 @@ async def main():
             "zoom": zoom_scanner,
             "calendar": calendar_scanner,
             "slack": slack_scanner,
-            "projects": project_scanner,
+            "code": code_scanner,
         }
 
         # Instantiate chat handler with scanners

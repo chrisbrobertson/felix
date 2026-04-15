@@ -37,9 +37,8 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("people",         "List contacts (alias of /contacts)"),
         ("contacts",       "List people you've interacted with"),
         ("contact",        "Show contact by name or N"),
-        ("projects",       "List code/work/person projects (optional category filter)"),
-        ("project",        "Show project N from last list"),
-        ("events",         "List calendar events. Filter: /events [calendar] [N]"),
+        ("code",           "List git repos"),
+        ("events",         "List recent and upcoming calendar events"),
         ("event",          "Show event N from last list"),
         ("meetings",       "List recent meeting transcripts"),
         ("meeting",        "Show meeting N from last list"),
@@ -123,7 +122,7 @@ BACKFILL_CONFIG = {
     "zoom":     {"default_days": 30, "max_days": 180},
     "calendar": {"default_days": 30, "max_days": 180},
     "slack":    {"default_days": 30, "max_days": 90},
-    "projects": {"default_days": 0,  "max_days": 0},
+    "code":     {"default_days": 0,  "max_days": 0},
 }
 
 
@@ -170,8 +169,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("contacts", self.cmd_contacts))
         self.app.add_handler(CommandHandler("contact", self.cmd_contact))
         self.app.add_handler(CommandHandler("people", self.cmd_contacts))
-        self.app.add_handler(CommandHandler("projects", self.cmd_projects))
-        self.app.add_handler(CommandHandler("project", self.cmd_project))
+        self.app.add_handler(CommandHandler("code", self.cmd_code))
         self.app.add_handler(CommandHandler("events", self.cmd_events))
         self.app.add_handler(CommandHandler("event", self.cmd_event))
         self.app.add_handler(CommandHandler("meetings", self.cmd_meetings))
@@ -237,8 +235,8 @@ class TelegramChatHandler:
         self._last_commitment_set: list = []
         # Last /contacts result set — used by /contact <N>.
         self._last_contact_set: list = []
-        # Last /projects result set — used by /project <N>.
-        self._last_project_set: list = []
+        # Last /code result set — used by /code <N> detail view.
+        self._last_code_set: list = []
         # Last /events result set — used by /event <N>.
         self._last_event_set: list = []
         # Last /meetings result set — used by /meeting <N>.
@@ -1708,45 +1706,59 @@ class TelegramChatHandler:
         text = "\n".join(lines).rstrip()
         await self._send_reply(update, text)
 
-    # ── /projects and /project commands ──────────────────────────────────────
+    # ── /code command ─────────────────────────────────────────────────────────
 
-    def _resolve_project_index(self, n: str):
+    def _resolve_code_index(self, n: str):
         try:
             idx = int(n) - 1
         except (ValueError, TypeError):
             return None
-        if 0 <= idx < len(self._last_project_set):
-            return self._last_project_set[idx]
+        if 0 <= idx < len(self._last_code_set):
+            return self._last_code_set[idx]
         return None
 
-    def _list_projects_text(self, category: Optional[str] = None, limit: int = 50) -> str:
-        """Return formatted projects list text (called by cmd_projects and tool dispatch)."""
+    def _list_code_text(self, limit: int = 50) -> str:
+        """Return formatted code repos list text (called by cmd_code and tool dispatch)."""
         limit = max(1, min(limit, 100))
-        files = list((BRAIN_DIR / "memories").glob("project-*.md"))
-        projects = []
+        files = list((BRAIN_DIR / "memories").glob("code-*.md"))
+        # Also include legacy project-*.md files that are type:code or type:project+category:code
+        for f in (BRAIN_DIR / "memories").glob("project-*.md"):
+            fm = self._parse_frontmatter(f)
+            if fm.get("type") == "code" or (fm.get("type") == "project" and fm.get("category") == "code"):
+                files.append(f)
+
+        code_repos = []
         for f in files:
             fm = self._parse_frontmatter(f)
-            if fm.get("type") not in ("project", "code_project"):
+            if fm.get("type") not in ("code", "project", "code_project"):
                 continue
-            if category and fm.get("category", "code") != category:
+            # Skip if type:project but category is not code
+            if fm.get("type") == "project" and fm.get("category") != "code":
                 continue
-            projects.append((f, fm))
+            code_repos.append((f, fm))
 
-        if not projects:
-            msg = (f"No {category} projects found." if category
-                   else "No projects found.")
-            return msg
+        if not code_repos:
+            return "No code repos found."
 
         # Group by base name (hostname-scoped files share same base name)
-        # Format: project-{hostname}-{base_name}.md or legacy project-{base_name}.md
+        # Format: code-{hostname}-{base_name}.md or legacy project-{base_name}.md
         from collections import defaultdict
         groups = defaultdict(list)  # base_name -> [(file, fm, hostname), ...]
 
-        for f, fm in projects:
+        for f, fm in code_repos:
             stem = f.stem
             hostname = fm.get("hostname", "")
             # Extract base name from filename
-            if stem.startswith("project-"):
+            if stem.startswith("code-"):
+                rest = stem[len("code-"):]
+                # Check if hostname-scoped: if hostname field exists, strip hostname- prefix
+                if hostname and rest.startswith(f"{hostname}-"):
+                    base_name = rest[len(f"{hostname}-"):]
+                else:
+                    # Legacy file (no hostname in filename)
+                    base_name = rest
+                groups[base_name].append((f, fm, hostname or "legacy"))
+            elif stem.startswith("project-"):
                 rest = stem[len("project-"):]
                 # Check if hostname-scoped: if hostname field exists, strip hostname- prefix
                 if hostname and rest.startswith(f"{hostname}-"):
@@ -1763,16 +1775,16 @@ class TelegramChatHandler:
         sorted_groups = sorted(groups.items(), key=lambda x: group_mtime(x[1]), reverse=True)
         sorted_groups = sorted_groups[:limit]
 
-        # Build flat list for _last_project_set (all files in display order)
-        self._last_project_set = []
+        # Build flat list for _last_code_set (all files in display order)
+        self._last_code_set = []
         for _, items in sorted_groups:
             # Sort by hostname within group for consistent ordering
             items.sort(key=lambda x: x[2])
             for f, _, _ in items:
-                self._last_project_set.append(f)
+                self._last_code_set.append(f)
 
         # Display grouped results
-        lines = [f"Projects ({len(sorted_groups)} shown):"]
+        lines = [f"Code repos ({len(sorted_groups)} shown):"]
         idx = 1
         for base_name, items in sorted_groups:
             # Pick most recent entry for display metadata
@@ -1780,7 +1792,6 @@ class TelegramChatHandler:
             _, fm_latest, _ = items_sorted[0]
 
             name = fm_latest.get("source_title") or "(no name)"
-            cat = fm_latest.get("category") or fm_latest.get("type", "code").replace("_project", "")
             last = (fm_latest.get("last_scanned") or "")[:10]
 
             # Always show host(s) so the LLM can group by laptop.
@@ -1794,51 +1805,72 @@ class TelegramChatHandler:
             else:
                 host_str = ""
 
-            lines.append(f"{idx}. {name} [{cat}] ({last}){host_str}")
+            lines.append(f"{idx}. {name} ({last}){host_str}")
             idx += 1
 
-        lines.append("\nUse /project <N> for details.")
         return "\n".join(lines)
 
-    async def cmd_projects(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def cmd_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /code command: list repos or show detail if N provided."""
         if not self._check_auth(update):
             return
 
         args = list(context.args) if context.args else []
-        category_filter = None
-        limit = 10
 
-        # Parse: /projects [category] [N]
-        if args and not args[0].isdigit():
-            category_filter = args[0].lower()
-            args = args[1:]
+        # If arg is a digit, decide: detail index or list limit?
+        # Strategy: if we have a populated list and idx is in range → detail.
+        # If we have a populated list and idx is out of range but > 50 → error.
+        # Otherwise → treat as list limit.
+        if args and args[0].isdigit():
+            try:
+                idx = int(args[0])
+                list_size = len(self._last_code_set)
+                # If we have a non-empty list, treat numbers as indices
+                if list_size > 0:
+                    if 1 <= idx <= list_size:
+                        # Valid index → show detail
+                        await self._cmd_code_detail(update, args[0])
+                        return
+                    elif idx > 50:
+                        # Out of range and too large to be list limit → error
+                        await update.message.reply_text("Invalid index. Run /code first.")
+                        return
+                    # else: treat as list limit (falls through)
+            except ValueError:
+                pass
+
+        # Show list with optional limit (when no existing list, or non-digit arg)
+        limit = 10
         if args:
             try:
                 limit = max(1, min(int(args[0]), 50))
             except ValueError:
                 pass
 
-        text = self._list_projects_text(category_filter, limit)
+        text = self._list_code_text(limit)
         await update.message.reply_text(text)
 
-    async def cmd_project(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self._check_auth(update):
-            return
-        if not context.args:
-            await update.message.reply_text("Usage: /project <N>")
-            return
-
-        path = self._resolve_project_index(context.args[0])
+    async def _cmd_code_detail(self, update: Update, index_str: str):
+        """Show detail for code repo N."""
+        path = self._resolve_code_index(index_str)
         if path is None:
-            await update.message.reply_text("Invalid index. Run /projects first.")
+            await update.message.reply_text("Invalid index. Run /code first.")
             return
 
-        # Find all hosts that have the same base project
+        # Find all hosts that have the same base repo
         # Extract base name from the selected file
         fm = self._parse_frontmatter(path)
         stem = path.stem
         hostname = fm.get("hostname", "")
-        if stem.startswith("project-"):
+
+        # Handle both code- and project- prefixes (migration transition)
+        if stem.startswith("code-"):
+            rest = stem[len("code-"):]
+            if hostname and rest.startswith(f"{hostname}-"):
+                base_name = rest[len(f"{hostname}-"):]
+            else:
+                base_name = rest
+        elif stem.startswith("project-"):
             rest = stem[len("project-"):]
             if hostname and rest.startswith(f"{hostname}-"):
                 base_name = rest[len(f"{hostname}-"):]
@@ -1847,10 +1879,29 @@ class TelegramChatHandler:
         else:
             base_name = stem
 
-        # Find all files with this base name
+        # Find all files with this base name (check both code- and project- prefixes)
         all_files = []
+        for f in (BRAIN_DIR / "memories").glob("code-*.md"):
+            f_fm = self._parse_frontmatter(f)
+            f_stem = f.stem
+            f_hostname = f_fm.get("hostname", "")
+            if f_stem.startswith("code-"):
+                f_rest = f_stem[len("code-"):]
+                if f_hostname and f_rest.startswith(f"{f_hostname}-"):
+                    f_base = f_rest[len(f"{f_hostname}-"):]
+                else:
+                    f_base = f_rest
+                if f_base == base_name:
+                    all_files.append((f, f_fm, f_hostname or "legacy"))
+
+        # Also check legacy project- files
         for f in (BRAIN_DIR / "memories").glob("project-*.md"):
             f_fm = self._parse_frontmatter(f)
+            # Only include if type:code or type:project+category:code
+            if f_fm.get("type") not in ("code", "project", "code_project"):
+                continue
+            if f_fm.get("type") == "project" and f_fm.get("category") != "code":
+                continue
             f_stem = f.stem
             f_hostname = f_fm.get("hostname", "")
             if f_stem.startswith("project-"):
@@ -1861,6 +1912,10 @@ class TelegramChatHandler:
                     f_base = f_rest
                 if f_base == base_name:
                     all_files.append((f, f_fm, f_hostname or "legacy"))
+
+        if not all_files:
+            await update.message.reply_text("Code repo not found.")
+            return
 
         # Sort by hostname for consistent display
         all_files.sort(key=lambda x: x[2])
@@ -1876,10 +1931,9 @@ class TelegramChatHandler:
             summary = fm.get("summary") or ""
             tags = fm.get("tags") or []
             tag_str = f"\nTags: {', '.join(tags)}" if tags else ""
-            cat = fm.get("category") or "code"
 
             lines = [
-                f"{name} [{cat}]",
+                f"{name}",
                 url,
                 f"Local: {local}",
                 f"Languages: {langs}",
@@ -1899,9 +1953,8 @@ class TelegramChatHandler:
                 local = fm.get("local_path") or ""
                 last = (fm.get("last_scanned") or "")[:10]
                 summary = fm.get("summary") or ""
-                cat = fm.get("category") or "code"
 
-                lines.append(f"{name} [{cat}] @ {h}")
+                lines.append(f"{name} @ {h}")
                 lines.append(url)
                 lines.append(f"Local: {local}")
                 lines.append(f"Last scanned: {last}")
