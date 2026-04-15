@@ -2737,3 +2737,137 @@ async def test_forget_indices_helper_regression(handler, brain_dir):
     assert not f2.exists()
     assert f1.exists()
     assert f3.exists()
+
+# --- FR-7: Active goals/projects context injection ---
+
+def test_build_goal_project_context_returns_active_goals(handler, brain_dir):
+    """_build_goal_project_context includes active goals."""
+    # Write a goal file
+    goal_path = brain_dir / "memories" / "goal-run-5k-abc123.md"
+    goal_path.write_text(
+        "---\n"
+        "type: goal\n"
+        "category: personal\n"
+        "source_title: Run a 5K\n"
+        "summary: ''\n"
+        "tags: []\n"
+        "created: '2026-04-15T09:00:00'\n"
+        "due_date: '2026-06-30'\n"
+        "status: active\n"
+        "priority: medium\n"
+        "linked_projects: []\n"
+        "notes: ''\n"
+        "---\n\n## Notes\n"
+    )
+
+    result = handler._build_goal_project_context()
+    assert "## Active Goals" in result
+    assert "Run a 5K" in result
+    assert "[personal]" in result
+    assert "2026-06-30" in result
+
+
+def test_build_goal_project_context_returns_active_projects(handler, brain_dir):
+    """_build_goal_project_context includes active and on-hold projects."""
+    # Write an active project
+    active_path = brain_dir / "memories" / "project-work-q2-rollout-def456.md"
+    active_path.write_text(
+        "---\n"
+        "type: project\n"
+        "category: work\n"
+        "source_title: Q2 rollout plan\n"
+        "summary: ''\n"
+        "tags: []\n"
+        "created: '2026-04-15T09:00:00'\n"
+        "due_date: '2026-07-01'\n"
+        "status: active\n"
+        "priority: high\n"
+        "linked_goal: null\n"
+        "milestones:\n"
+        "  - text: Lock scope\n"
+        "    done: true\n"
+        "  - text: Draft checklist\n"
+        "    done: false\n"
+        "inferred_from: []\n"
+        "notes: ''\n"
+        "---\n\n## Notes\n"
+    )
+
+    # Write an on-hold project
+    onhold_path = brain_dir / "memories" / "project-personal-garden-shed-ghi789.md"
+    onhold_path.write_text(
+        "---\n"
+        "type: project\n"
+        "category: personal\n"
+        "source_title: Garden shed build\n"
+        "summary: ''\n"
+        "tags: []\n"
+        "created: '2026-04-15T09:00:00'\n"
+        "due_date: null\n"
+        "status: on-hold\n"
+        "priority: medium\n"
+        "linked_goal: null\n"
+        "milestones: []\n"
+        "inferred_from: []\n"
+        "notes: ''\n"
+        "---\n\n## Notes\n"
+    )
+
+    result = handler._build_goal_project_context()
+    assert "## Active Projects" in result
+    assert "Q2 rollout plan" in result
+    assert "milestones: 1/2 done" in result
+    assert "Garden shed build" in result
+    assert "no due date" in result
+
+
+def test_build_goal_project_context_empty_when_no_active(handler, brain_dir):
+    """_build_goal_project_context returns empty string when no active goals/projects."""
+    # Write a completed goal
+    goal_path = brain_dir / "memories" / "goal-old-abc123.md"
+    goal_path.write_text(
+        "---\n"
+        "type: goal\n"
+        "category: personal\n"
+        "source_title: Old Goal\n"
+        "summary: ''\n"
+        "tags: []\n"
+        "created: '2026-04-15T09:00:00'\n"
+        "due_date: '2026-06-30'\n"
+        "status: completed\n"
+        "priority: medium\n"
+        "linked_projects: []\n"
+        "notes: ''\n"
+        "---\n\n## Notes\n"
+    )
+
+    result = handler._build_goal_project_context()
+    assert result == ""
+
+
+def test_load_context_includes_goal_project_context(handler, brain_dir):
+    """_load_context includes active goals/projects even without keyword match."""
+    # Write an active goal
+    goal_path = brain_dir / "memories" / "goal-run-5k-abc123.md"
+    goal_path.write_text(
+        "---\n"
+        "type: goal\n"
+        "category: personal\n"
+        "source_title: Run a 5K\n"
+        "summary: ''\n"
+        "tags: []\n"
+        "created: '2026-04-15T09:00:00'\n"
+        "due_date: '2026-06-30'\n"
+        "status: active\n"
+        "priority: medium\n"
+        "linked_projects: []\n"
+        "notes: ''\n"
+        "---\n\n## Notes\n"
+    )
+
+    # Query has no keyword match with the goal
+    context = handler._load_context("litellm routing config")
+
+    # Goal should still appear in context
+    assert "## Active Goals" in context
+    assert "Run a 5K" in context

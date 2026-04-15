@@ -165,11 +165,16 @@ class TelegramChatHandler:
         except OSError as e:
             log.warning("Could not read config.yaml at startup: %s — using defaults", e)
             config = {}
+        self._config = config  # Store for access by tools and helpers
         self.token = config["telegram"]["bot_token"]
         self.allowed_user_id = int(config["user"]["telegram_user_id"])
         self.executor = SkillExecutor("chat")
         self.app = ApplicationBuilder().token(self.token).build()
         self.scanners = scanners or {}
+
+        # Goal manager for FR-7 context injection and FR-8 LLM tools
+        from goals_tracker import GoalManager
+        self._goal_manager = GoalManager(BRAIN_DIR / "memories", config)
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
         )
@@ -464,6 +469,81 @@ class TelegramChatHandler:
             return f"{hours}h"
         return f"{mins}m"
 
+    def _build_goal_project_context(self) -> str:
+        """Build context block for active goals and projects (FR-7).
+
+        Always injected into chat LLM context, bypassing keyword relevance.
+        Returns empty string if no active goals or projects exist.
+        """
+        import re
+        import yaml
+
+        max_items = self._config.get("goals", {}).get("max_context_items", 5)
+        lines = []
+
+        # Active goals
+        try:
+            active_goals = self._goal_manager.list_goals(status="active")[:max_items]
+            if active_goals:
+                lines.append("## Active Goals")
+                for goal_path in active_goals:
+                    try:
+                        with open(goal_path) as f:
+                            content = f.read()
+                        match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
+                        if match:
+                            fm = yaml.safe_load(match.group(1))
+                            title = fm.get("source_title", goal_path.stem)
+                            category = fm.get("category", "")
+                            due = fm.get("due_date", "")
+                            due_str = f" — due {due}" if due else ""
+                            lines.append(f"- {title} [{category}]{due_str}")
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        # Active + on-hold projects
+        try:
+            all_projects = self._goal_manager.list_projects()
+            # Filter to active or on-hold
+            active_projects = []
+            for project_path in all_projects:
+                try:
+                    with open(project_path) as f:
+                        content = f.read()
+                    match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
+                    if match:
+                        fm = yaml.safe_load(match.group(1))
+                        status = fm.get("status", "")
+                        if status in ("active", "on-hold"):
+                            active_projects.append((project_path, fm))
+                except Exception:
+                    continue
+
+            # Cap to max_items
+            active_projects = active_projects[:max_items]
+
+            if active_projects:
+                if lines:
+                    lines.append("")
+                lines.append("## Active Projects")
+                for project_path, fm in active_projects:
+                    title = fm.get("source_title", project_path.stem)
+                    category = fm.get("category", "")
+                    due = fm.get("due_date", "")
+                    milestones = fm.get("milestones", [])
+                    done_count = sum(1 for m in milestones if m.get("done", False))
+                    total_count = len(milestones)
+
+                    due_str = f" — due {due}" if due else " — no due date"
+                    milestone_str = f" (milestones: {done_count}/{total_count} done)" if milestones else ""
+                    lines.append(f"- {title} [{category}]{due_str}{milestone_str}")
+        except Exception:
+            pass
+
+        return "\n".join(lines) if lines else ""
+
     def _load_context(self, query: str) -> str:
         """Load memory files into context with relevance sorting and hard char budget."""
         parts = []
@@ -477,6 +557,12 @@ class TelegramChatHandler:
                 budget -= len(chunk)
             except OSError:
                 pass
+
+        # FR-7: Inject active goals and projects before keyword-matched memories
+        goal_context = self._build_goal_project_context()
+        if goal_context:
+            parts.append(goal_context)
+            budget -= len(goal_context)
 
         memory_files = list((BRAIN_DIR / "memories").glob("*.md"))
 
