@@ -26,6 +26,7 @@ zoom_scanner.py        # Polls Zoom API, parses VTT transcripts, writes meeting-
 commitment_tracker.py  # Extracts commitments from meeting/email memories, /commitments cmd
 contact_tracker.py     # Aggregates participants across memories, /contacts cmd
 github_client.py       # Async GitHub Issues API client (optional GH backing for /feature and /bug)
+llm_routes.py          # resolve(alias) → concrete model ID; centralises LiteLLM route aliases
 utils.py               # Shared helpers
 skills/                # Skill .md files (committed; deployed to iCloud skills/ dir)
 tests/
@@ -176,9 +177,8 @@ All runtime state lives in `~/secondbrain/` — separate from the repo and from 
 ```
 ~/secondbrain/
 ├── venv/                           # Python virtual environment (created by install.sh)
-├── logs/                           # out.log, error.log (written by launchd)
+├── logs/                           # out.log, error.log (RotatingFileHandler; 10 MB × 5 backups)
 ├── seen-urls                       # flat file of processed URLs (browser watcher)
-├── errors.log                      # LLM API errors
 ├── execution-log.jsonl             # watcher-node skill execution log
 ├── email-scanner-state.json        # high-water ROWID for email scanner
 ├── zoom-scanner-state.json         # processed meeting UUIDs for zoom scanner
