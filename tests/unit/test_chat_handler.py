@@ -2997,11 +2997,10 @@ async def test_cmd_confirm_code_repo_creates_code_file(brain_dir, handler):
 
 
 @pytest.mark.asyncio
-async def test_cmd_reject_updates_json(brain_dir, handler):
+async def test_cmd_reject_updates_json(brain_dir, handler, tmp_path):
     """Rejecting a candidate should update rejected-candidates.json and delete file."""
     mem_dir = brain_dir / "memories"
-    deploy_dir = brain_dir.parent / "deploy"
-    deploy_dir.mkdir()
+    deploy_dir = tmp_path / "deploy"  # Already created by handler fixture
 
     # Write a project candidate
     candidate = mem_dir / "project-candidate-test-abc123.md"
