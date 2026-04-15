@@ -61,7 +61,7 @@ memory:
   max_context_memories: 20       # max files loaded into chat context
   index_rebuild_interval: 3600   # rebuild index.md every hour
 
-project_scanner:
+code_scanner:
   interval_seconds: 300          # scan every 5 minutes
   repo_dirs:                     # directories to search for git repos
     - ~/repos

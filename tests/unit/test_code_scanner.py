@@ -1,5 +1,5 @@
 """
-Unit tests for project_scanner.ProjectScanner.
+Unit tests for code_scanner.CodeScanner.
 
 All git subprocess calls are patched. All file I/O uses tmp_path.
 """
@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import yaml
 
-import project_scanner as ps
-from project_scanner import ProjectScanner, _parse_frontmatter
+import code_scanner as cs
+from code_scanner import CodeScanner, _parse_frontmatter
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -49,7 +49,7 @@ def test_discover_repos_finds_git_dirs(tmp_path):
     non_git = tmp_path / "not-a-repo"
     non_git.mkdir()
 
-    scanner = ProjectScanner()
+    scanner = CodeScanner()
     sc = {"repo_dirs": [str(tmp_path)], "skip_repos": []}
     result = scanner._discover_repos(sc)
 
@@ -66,7 +66,7 @@ def test_discover_repos_skips_configured(tmp_path):
     repo_b.mkdir()
     (repo_b / ".git").mkdir()
 
-    scanner = ProjectScanner()
+    scanner = CodeScanner()
     sc = {"repo_dirs": [str(tmp_path)], "skip_repos": ["skip-me"]}
     result = scanner._discover_repos(sc)
 
@@ -75,7 +75,7 @@ def test_discover_repos_skips_configured(tmp_path):
 
 
 def test_discover_repos_ignores_nonexistent_dirs(tmp_path):
-    scanner = ProjectScanner()
+    scanner = CodeScanner()
     sc = {"repo_dirs": [str(tmp_path / "does-not-exist")], "skip_repos": []}
     result = scanner._discover_repos(sc)
     assert result == []
@@ -89,7 +89,7 @@ def test_detect_languages_python(tmp_path):
     (repo / "main.py").write_text("# python")
     (repo / "utils.py").write_text("# python")
 
-    scanner = ProjectScanner()
+    scanner = CodeScanner()
     langs = scanner._detect_languages(repo)
     assert "python" in langs
 
@@ -102,7 +102,7 @@ def test_detect_languages_multi(tmp_path):
     (repo / "app.ts").write_text("")
     (repo / "server.go").write_text("")
 
-    scanner = ProjectScanner()
+    scanner = CodeScanner()
     langs = scanner._detect_languages(repo)
     assert len(langs) <= 3
     assert "python" in langs
@@ -117,7 +117,7 @@ def test_detect_languages_skips_venv(tmp_path):
     for i in range(20):
         (venv / f"fake{i}.py").write_text("")  # would dominate if counted
 
-    scanner = ProjectScanner()
+    scanner = CodeScanner()
     langs = scanner._detect_languages(repo)
     # venv Python files must not appear; only main.go should register
     assert langs == ["go"]
@@ -132,7 +132,7 @@ def test_detect_languages_skips_dot_venv(tmp_path):
     for i in range(20):
         (dotvenv / f"fake{i}.py").write_text("")
 
-    scanner = ProjectScanner()
+    scanner = CodeScanner()
     langs = scanner._detect_languages(repo)
     assert langs == ["go"]
 
@@ -145,7 +145,7 @@ def test_detect_languages_recurses_into_src(tmp_path):
     for i in range(5):
         (src / f"mod{i}.ts").write_text("")
 
-    scanner = ProjectScanner()
+    scanner = CodeScanner()
     langs = scanner._detect_languages(repo)
     assert "typescript" in langs
 
@@ -161,7 +161,7 @@ def test_detect_languages_returns_top_3(tmp_path):
         (repo / f"c{i}.go").write_text("")
     (repo / "extra.rb").write_text("")
 
-    scanner = ProjectScanner()
+    scanner = CodeScanner()
     langs = scanner._detect_languages(repo)
     assert len(langs) <= 3
     assert langs[0] == "python"
@@ -177,7 +177,7 @@ def test_needs_update_true_when_no_memory(tmp_path):
     memories_dir.mkdir()
     memory_path = memories_dir / "project-myrepo.md"
 
-    scanner = ProjectScanner()
+    scanner = CodeScanner()
     with patch.object(scanner, "_git", return_value="newsha123"):
         result = scanner._needs_update(repo, memory_path)
     assert result is True
@@ -191,7 +191,7 @@ def test_needs_update_false_when_sha_matches(tmp_path):
     write_memory(memories_dir, "myrepo", head_sha="abc123")
     memory_path = memories_dir / "project-myrepo.md"
 
-    scanner = ProjectScanner()
+    scanner = CodeScanner()
     with patch.object(scanner, "_git", return_value="abc123"):
         result = scanner._needs_update(repo, memory_path)
     assert result is False
@@ -205,7 +205,7 @@ def test_needs_update_true_when_sha_differs(tmp_path):
     write_memory(memories_dir, "myrepo", head_sha="old_sha")
     memory_path = memories_dir / "project-myrepo.md"
 
-    scanner = ProjectScanner()
+    scanner = CodeScanner()
     with patch.object(scanner, "_git", return_value="new_sha"):
         result = scanner._needs_update(repo, memory_path)
     assert result is True
@@ -217,9 +217,9 @@ def test_write_memory_field_order(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
-    scanner = ProjectScanner()
-    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
-         patch("project_scanner._hostname", return_value="testhost"):
+    scanner = CodeScanner()
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch("code_scanner._hostname", return_value="testhost"):
         scanner._write_memory({
             "name": "testproject",
             "local_path": "/Users/chris/repos/testproject",
@@ -234,7 +234,7 @@ def test_write_memory_field_order(tmp_path):
             "related": [],
         })
 
-    mem = memories_dir / "project-testhost-testproject.md"
+    mem = memories_dir / "code-testhost-testproject.md"
     assert mem.exists()
     lines = mem.read_text().splitlines()
     # First line is "---", second is first frontmatter field
@@ -249,9 +249,9 @@ def test_write_memory_atomic(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
-    scanner = ProjectScanner()
-    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
-         patch("project_scanner._hostname", return_value="testhost"):
+    scanner = CodeScanner()
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch("code_scanner._hostname", return_value="testhost"):
         scanner._write_memory({
             "name": "atomictest",
             "local_path": str(tmp_path),
@@ -269,16 +269,16 @@ def test_write_memory_atomic(tmp_path):
     # No leftover .tmp file
     tmp_files = list(memories_dir.glob("*.tmp"))
     assert tmp_files == []
-    assert (memories_dir / "project-testhost-atomictest.md").exists()
+    assert (memories_dir / "code-testhost-atomictest.md").exists()
 
 
 def test_write_memory_type_is_project(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
-    scanner = ProjectScanner()
-    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
-         patch("project_scanner._hostname", return_value="testhost"):
+    scanner = CodeScanner()
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch("code_scanner._hostname", return_value="testhost"):
         scanner._write_memory({
             "name": "typecheck",
             "local_path": str(tmp_path),
@@ -293,20 +293,20 @@ def test_write_memory_type_is_project(tmp_path):
             "related": [],
         })
 
-    mem = memories_dir / "project-testhost-typecheck.md"
+    mem = memories_dir / "code-testhost-typecheck.md"
     text = mem.read_text()
     fm = _parse_frontmatter(text)
-    assert fm["type"] == "project"
-    assert fm["category"] == "code"
+    assert fm["type"] == "code"
+    assert "category" not in fm
 
 
 def test_write_memory_frontmatter_parseable(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
-    scanner = ProjectScanner()
-    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
-         patch("project_scanner._hostname", return_value="testhost"):
+    scanner = CodeScanner()
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch("code_scanner._hostname", return_value="testhost"):
         scanner._write_memory({
             "name": "parsetest",
             "local_path": "/tmp/parsetest",
@@ -321,12 +321,12 @@ def test_write_memory_frontmatter_parseable(tmp_path):
             "related": [{"name": "other", "summary": "Another project."}],
         })
 
-    mem = memories_dir / "project-testhost-parsetest.md"
+    mem = memories_dir / "code-testhost-parsetest.md"
     fm = _parse_frontmatter(mem.read_text())
     assert fm["source_title"] == "parsetest"
     assert fm["head_sha"] == "sha42"
-    assert fm["type"] == "project"
-    assert fm["category"] == "code"
+    assert fm["type"] == "code"
+    assert "category" not in fm
     assert "python" in fm["languages"]
     assert isinstance(fm["tags"], list)
 
@@ -358,11 +358,11 @@ def test_find_related_same_org(tmp_path):
         },
     ]
 
-    scanner = ProjectScanner()
+    scanner = CodeScanner()
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
-    with patch.object(ps, "MEMORIES_DIR", memories_dir):
+    with patch.object(cs, "MEMORIES_DIR", memories_dir):
         related = scanner._find_related(
             "alpha",
             ["python"],
@@ -400,11 +400,11 @@ def test_find_related_shared_language(tmp_path):
         },
     ]
 
-    scanner = ProjectScanner()
+    scanner = CodeScanner()
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
-    with patch.object(ps, "MEMORIES_DIR", memories_dir):
+    with patch.object(cs, "MEMORIES_DIR", memories_dir):
         related = scanner._find_related(
             "proj-a",
             ["typescript", "python"],
@@ -420,14 +420,14 @@ def test_find_related_shared_language(tmp_path):
 # ── Subprocess helper ─────────────────────────────────────────────────────────
 
 def test_git_helper_returns_empty_on_error(tmp_path):
-    scanner = ProjectScanner()
+    scanner = CodeScanner()
     # Point at a non-git path — git will fail
     result = scanner._git(tmp_path / "nonexistent", "rev-parse", "HEAD")
     assert result == ""
 
 
 def test_git_helper_strips_whitespace(tmp_path):
-    scanner = ProjectScanner()
+    scanner = CodeScanner()
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(stdout="  abc123\n", returncode=0)
         result = scanner._git(tmp_path, "rev-parse", "HEAD")
@@ -460,14 +460,14 @@ async def test_backfill_deletes_and_recreates_memory_files(tmp_path):
     (memories_dir / "project-foo.md").write_text("old content 1")
     (memories_dir / "project-bar.md").write_text("old content 2")
 
-    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
-         patch.object(ps, "CONFIG_PATH", tmp_path / "config.yaml"):
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "CONFIG_PATH", tmp_path / "config.yaml"):
 
-        scanner = ProjectScanner(role="full")
+        scanner = CodeScanner(role="full")
         mock_run_scan = AsyncMock()
         scanner._run_scan = mock_run_scan
 
-        (tmp_path / "config.yaml").write_text("project_scanner:\n  repo_dirs: []\n")
+        (tmp_path / "config.yaml").write_text("code_scanner:\n  repo_dirs: []\n")
 
         result = await scanner.backfill(0)  # days ignored
 
@@ -487,9 +487,9 @@ def test_hostname_scoped_filename_written(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
-    scanner = ProjectScanner()
-    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
-         patch("project_scanner._hostname", return_value="testhost"):
+    scanner = CodeScanner()
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch("code_scanner._hostname", return_value="testhost"):
         scanner._write_memory({
             "name": "myrepo",
             "local_path": str(tmp_path),
@@ -505,7 +505,7 @@ def test_hostname_scoped_filename_written(tmp_path):
         })
 
     # Should write project-testhost-myrepo.md
-    expected = memories_dir / "project-testhost-myrepo.md"
+    expected = memories_dir / "code-testhost-myrepo.md"
     assert expected.exists()
     fm = _parse_frontmatter(expected.read_text())
     assert fm["hostname"] == "testhost"
@@ -513,69 +513,77 @@ def test_hostname_scoped_filename_written(tmp_path):
 
 
 def test_migration_renames_legacy_file(tmp_path):
-    """Migration renames project-{name}.md → project-{hostname}-{name}.md if hostname matches."""
+    """Migration renames project-{name}.md → code-{hostname}-{name}.md (all 3 migrations run)."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
-    # Create legacy file with matching hostname in frontmatter
+    # Create legacy file with matching hostname in frontmatter (type:project+category:code)
     legacy_file = memories_dir / "project-oldrepo.md"
     legacy_file.write_text(
         "---\nsource_title: oldrepo\nhostname: testhost\nhead_sha: abc\n"
         "type: project\ncategory: code\n---\n\nBody\n"
     )
 
-    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
-         patch("project_scanner._hostname", return_value="testhost"):
-        scanner = ProjectScanner(role="full")  # triggers migration in __init__
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch("code_scanner._hostname", return_value="testhost"):
+        scanner = CodeScanner(role="full")  # triggers all 3 migrations in __init__
 
-    # Legacy file should be renamed
+    # Legacy file should be fully migrated to code-{hostname}-{name}.md with type:code
     assert not legacy_file.exists()
-    new_file = memories_dir / "project-testhost-oldrepo.md"
+    new_file = memories_dir / "code-testhost-oldrepo.md"
     assert new_file.exists()
     fm = _parse_frontmatter(new_file.read_text())
     assert fm["source_title"] == "oldrepo"
+    assert fm["type"] == "code"
+    assert "category" not in fm
 
 
 def test_migration_leaves_other_hosts_file(tmp_path):
-    """Migration does not rename files with a different hostname."""
+    """Migration #2 doesn't rename files from other hosts, but migration #3 does convert project→code."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
-    # Create file with different hostname
-    other_file = memories_dir / "project-otherrepo.md"
+    # Create file from a different host (already hostname-scoped)
+    other_file = memories_dir / "project-otherhost-otherrepo.md"
     other_file.write_text(
         "---\nsource_title: otherrepo\nhostname: otherhost\nhead_sha: xyz\n"
         "type: project\ncategory: code\n---\n\nBody\n"
     )
 
-    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
-         patch("project_scanner._hostname", return_value="testhost"):
-        scanner = ProjectScanner(role="full")
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch("code_scanner._hostname", return_value="testhost"):
+        scanner = CodeScanner(role="full")
 
-    # File should remain unchanged
-    assert other_file.exists()
-    assert not (memories_dir / "project-testhost-otherrepo.md").exists()
+    # Original file should be gone, migrated to code-otherhost-otherrepo.md
+    assert not other_file.exists()
+    migrated = memories_dir / "code-otherhost-otherrepo.md"
+    assert migrated.exists()
+    fm = _parse_frontmatter(migrated.read_text())
+    assert fm["type"] == "code"
+    assert "category" not in fm
 
 
-def test_migration_handles_already_scoped_files(tmp_path):
-    """Migration skips files already in project-{hostname}-{name}.md format."""
+def test_migration_handles_already_migrated_files(tmp_path):
+    """Migration skips files already fully migrated to code-{hostname}-{name}.md with type:code."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
-    scoped_file = memories_dir / "project-testhost-myrepo.md"
-    scoped_file.write_text(
+    already_migrated = memories_dir / "code-testhost-myrepo.md"
+    already_migrated.write_text(
         "---\nsource_title: myrepo\nhostname: testhost\nhead_sha: abc\n"
-        "type: project\ncategory: code\n---\n\nBody\n"
+        "type: code\n---\n\nBody\n"
     )
 
-    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
-         patch("project_scanner._hostname", return_value="testhost"):
-        scanner = ProjectScanner(role="full")
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch("code_scanner._hostname", return_value="testhost"):
+        scanner = CodeScanner(role="full")
 
-    # Should remain unchanged
-    assert scoped_file.exists()
-    fm = _parse_frontmatter(scoped_file.read_text())
+    # Should remain unchanged (already migrated)
+    assert already_migrated.exists()
+    fm = _parse_frontmatter(already_migrated.read_text())
     assert fm["source_title"] == "myrepo"
+    assert fm["type"] == "code"
+    assert "category" not in fm
 
 
 @pytest.mark.asyncio
@@ -588,15 +596,15 @@ async def test_backfill_only_deletes_own_host_files(tmp_path):
     (memories_dir / "project-testhost-a.md").write_text("---\nhostname: testhost\n---\n")
     (memories_dir / "project-otherhost-a.md").write_text("---\nhostname: otherhost\n---\n")
 
-    with patch.object(ps, "MEMORIES_DIR", memories_dir), \
-         patch.object(ps, "CONFIG_PATH", tmp_path / "config.yaml"), \
-         patch("project_scanner._hostname", return_value="testhost"):
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch("code_scanner._hostname", return_value="testhost"):
 
-        scanner = ProjectScanner(role="full")
+        scanner = CodeScanner(role="full")
         mock_run_scan = AsyncMock()
         scanner._run_scan = mock_run_scan
 
-        (tmp_path / "config.yaml").write_text("project_scanner:\n  repo_dirs: []\n")
+        (tmp_path / "config.yaml").write_text("code_scanner:\n  repo_dirs: []\n")
 
         await scanner.backfill(0)
 
@@ -604,3 +612,83 @@ async def test_backfill_only_deletes_own_host_files(tmp_path):
     assert not (memories_dir / "project-testhost-a.md").exists()
     # otherhost file should remain
     assert (memories_dir / "project-otherhost-a.md").exists()
+
+
+# ── Migration: project → code ─────────────────────────────────────────────────
+
+def test_migration_renames_file(tmp_path):
+    """project-host-foo.md with type:project+category:code → code-host-foo.md"""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    old_file = memories_dir / "project-mymac-testrepo.md"
+    fm = {"type": "project", "category": "code", "source_title": "testrepo", "hostname": "mymac"}
+    old_file.write_text(f"---\n{yaml.dump(fm, sort_keys=False)}---\n\n## Notes\ntest\n")
+    import code_scanner as cs
+    with patch.object(cs, "MEMORIES_DIR", memories_dir):
+        scanner = CodeScanner(role="full")
+    new_file = memories_dir / "code-mymac-testrepo.md"
+    assert new_file.exists()
+    assert not old_file.exists()
+
+
+def test_migration_updates_type_removes_category(tmp_path):
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    old_file = memories_dir / "project-mymac-testrepo.md"
+    fm = {"type": "project", "category": "code", "source_title": "testrepo", "hostname": "mymac"}
+    old_file.write_text(f"---\n{yaml.dump(fm, sort_keys=False)}---\n\n## Notes\ntest\n")
+    import code_scanner as cs
+    with patch.object(cs, "MEMORIES_DIR", memories_dir):
+        CodeScanner(role="full")
+    new_file = memories_dir / "code-mymac-testrepo.md"
+    content = yaml.safe_load(new_file.read_text().split("---")[1])
+    assert content["type"] == "code"
+    assert "category" not in content
+
+
+def test_migration_idempotent(tmp_path):
+    """Running migration twice on already-migrated files is a no-op (no errors)."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    # Already-migrated file (type:code, no category)
+    already_migrated = memories_dir / "code-mymac-alreadydone.md"
+    fm = {"type": "code", "source_title": "alreadydone", "hostname": "mymac"}
+    already_migrated.write_text(f"---\n{yaml.dump(fm, sort_keys=False)}---\n\n")
+    import code_scanner as cs
+    with patch.object(cs, "MEMORIES_DIR", memories_dir):
+        CodeScanner(role="full")
+        CodeScanner(role="full")  # second run
+    # File still there, still type:code
+    assert already_migrated.exists()
+
+
+def test_migration_skips_generic_projects(tmp_path):
+    """Future project-work-*.md files (type:project, category:work) must not be touched."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    generic = memories_dir / "project-work-build-shed-abc123.md"
+    fm = {"type": "project", "category": "work", "source_title": "Build a shed"}
+    generic.write_text(f"---\n{yaml.dump(fm, sort_keys=False)}---\n\n")
+    import code_scanner as cs
+    with patch.object(cs, "MEMORIES_DIR", memories_dir):
+        CodeScanner(role="full")
+    assert generic.exists()  # untouched
+    content = yaml.safe_load(generic.read_text().split("---")[1])
+    assert content["type"] == "project"
+    assert content["category"] == "work"
+
+
+def test_migration_partial_recovery(tmp_path):
+    """If new filename already exists when old also exists, just delete old."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    old_file = memories_dir / "project-mymac-testrepo.md"
+    new_file = memories_dir / "code-mymac-testrepo.md"
+    fm = {"type": "project", "category": "code", "source_title": "testrepo", "hostname": "mymac"}
+    old_file.write_text(f"---\n{yaml.dump(fm, sort_keys=False)}---\n\n")
+    new_file.write_text("already exists\n")
+    import code_scanner as cs
+    with patch.object(cs, "MEMORIES_DIR", memories_dir):
+        CodeScanner(role="full")
+    assert not old_file.exists()  # old deleted
+    assert new_file.read_text() == "already exists\n"  # new not overwritten
