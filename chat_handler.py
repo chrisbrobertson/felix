@@ -1525,7 +1525,7 @@ class TelegramChatHandler:
         try:
             n = int(n_str)
         except (ValueError, TypeError):
-            return (None, "To create a goal use /addgoal.\nTo view one, run /goals then /goal N.")
+            return (None, "Looks like you want to create a goal — use /addgoal instead.\n(/goal N shows details for goal #N from your /goals list.)")
         if not self._last_goal_set:
             return (None, "You don't have any active goals yet. Use /addgoal to create one.")
         if 1 <= n <= len(self._last_goal_set):
@@ -1543,7 +1543,7 @@ class TelegramChatHandler:
         try:
             n = int(n_str)
         except (ValueError, TypeError):
-            return (None, "To create a project use /addproject.\nTo view one, run /projects then /project N.")
+            return (None, "Looks like you want to create a project — use /addproject instead.\n(/project N shows details for project #N from your /projects list.)")
         if not self._last_project_set:
             return (None, "You don't have any active projects yet. Use /addproject to create one.")
         if 1 <= n <= len(self._last_project_set):
