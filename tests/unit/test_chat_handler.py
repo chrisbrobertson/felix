@@ -3122,18 +3122,19 @@ async def test_cmd_goal_empty_shows_addgoal_hint(brain_dir, handler):
 
 
 @pytest.mark.asyncio
-async def test_cmd_goal_non_integer_shows_addgoal_hint(brain_dir, handler):
-    """/goal add (or any non-integer) should point at /addgoal."""
+async def test_cmd_goal_non_integer_shows_command_list(brain_dir, handler):
+    """/goal <word> (add, delete, update, etc.) should show the full command family."""
     mem_dir = brain_dir / "memories"
     (mem_dir / "goal-run-abc123.md").write_text(GOAL_FILE_TEXT)
 
     handler._last_goal_set = []  # force lazy-populate
-    update, context = _make_update(12345, args=["add"])
-
-    await handler.cmd_goal(update, context)
-
-    text = update.message.reply_text.call_args[0][0]
-    assert "/addgoal" in text
+    for verb in ["add", "delete", "update", "remove"]:
+        update, context = _make_update(12345, args=[verb])
+        await handler.cmd_goal(update, context)
+        text = update.message.reply_text.call_args[0][0]
+        assert "/addgoal" in text
+        assert "/completegoal" in text
+        assert "/goals" in text
 
 
 @pytest.mark.asyncio
@@ -3183,18 +3184,19 @@ async def test_cmd_project_empty_shows_addproject_hint(brain_dir, handler):
 
 
 @pytest.mark.asyncio
-async def test_cmd_project_non_integer_shows_addproject_hint(brain_dir, handler):
-    """/project add (or any non-integer) should point at /addproject."""
+async def test_cmd_project_non_integer_shows_command_list(brain_dir, handler):
+    """/project <word> (add, delete, update, etc.) should show the full command family."""
     mem_dir = brain_dir / "memories"
     (mem_dir / "project-work-q2-def456.md").write_text(PROJECT_FILE_TEXT)
 
     handler._last_project_set = []
-    update, context = _make_update(12345, args=["add"])
-
-    await handler.cmd_project(update, context)
-
-    text = update.message.reply_text.call_args[0][0]
-    assert "/addproject" in text
+    for verb in ["add", "delete", "update", "remove"]:
+        update, context = _make_update(12345, args=[verb])
+        await handler.cmd_project(update, context)
+        text = update.message.reply_text.call_args[0][0]
+        assert "/addproject" in text
+        assert "/completeproject" in text
+        assert "/projects" in text
 
 
 @pytest.mark.asyncio
