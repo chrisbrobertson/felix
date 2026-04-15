@@ -61,13 +61,25 @@ memory:
   max_context_memories: 20       # max files loaded into chat context
   index_rebuild_interval: 3600   # rebuild index.md every hour
 
+goals:
+  categories:                    # configurable category list for goals and projects
+    - personal
+    - work
+    - family
+    - learning
+    - other
+  deadline_horizons:
+    - 7   # days before due_date to send first alert
+    - 1   # days before due_date to send final alert
+  max_context_items: 5   # max goals and max projects injected into chat context
+
 code_scanner:
   interval_seconds: 300          # scan every 5 minutes
   repo_dirs:                     # directories to search for git repos
     - ~/repos
     - ~/repo
   skip_repos: []                 # repo directory names to ignore (e.g. [archived-project])
-  require_confirmation: false    # Set true to confirm new repos before indexing
+  require_confirmation: false    # set true to require /confirm before indexing new repos
 
 email_scanner:
   interval_seconds: 300          # scan every 5 minutes
@@ -123,24 +135,21 @@ calendar_scanner:
   skip_calendars: []             # calendar names to exclude (e.g. ["Birthdays", "Holidays"])
   max_events_per_cycle: 50
 
+project_inference:
+  enabled: true                  # infer projects from emails, meetings, Slack threads
+  scan_interval_min: 15          # scan every 15 minutes
+  confidence_threshold: 0.7      # minimum confidence to create a candidate
+  source_types:                  # memory types to scan for project mentions
+    - email_thread
+    - meeting_transcript
+    - slack_thread
+
 notifications:
   enabled: true
   briefing_time: "07:30"           # local time (uses user.timezone)
   pre_meeting_minutes: 10          # push context N minutes before events
   stale_waiting_on_days: 7         # waiting-ons older than N days appear in briefing
   telegram_chat_id: null           # auto-detected from first message if null
-
-goals:
-  categories:
-    - personal
-    - work
-    - family
-    - learning
-    - other
-  deadline_horizons:
-    - 7   # days before due_date to send first alert
-    - 1   # days before due_date to send final alert
-  max_context_items: 5   # max goals and max projects injected into chat context
 
 # GitHub Issues backing for /feature and /bug (optional)
 # If GITHUB_PAT and GITHUB_REPO env vars are set (via install.sh), they take

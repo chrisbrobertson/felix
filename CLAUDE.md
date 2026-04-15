@@ -13,25 +13,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Code Structure
 
 ```
-daemon.py              # Entry point; starts all async loops
-browser_watcher.py     # Polls Chrome/Firefox SQLite history DBs
-skill_executor.py      # Loads skill .md files, calls LiteLLM, appends execution log
-memory_writer.py       # Atomic writes of memory markdown to iCloud
-chat_handler.py        # Telegram bot; keyword-relevance context loading
-index_builder.py       # Hourly index.md rebuild
-skill_optimizer.py     # Daily LLM-as-judge skill improvement (v0.1 is a stub)
-code_scanner.py        # Scans ~/repos for git repos, writes code-{hostname}-*.md memory files
-email_scanner.py       # Reads Apple Mail, writes email-thread-*.md memory files
-zoom_scanner.py        # Polls Zoom API, parses VTT transcripts, writes meeting-*.md files
-commitment_tracker.py  # Extracts commitments from meeting/email memories, /commitments cmd
-contact_tracker.py     # Aggregates participants across memories, /contacts cmd
-github_client.py       # Async GitHub Issues API client (optional GH backing for /feature and /bug)
-llm_routes.py          # resolve(alias) → concrete model ID; centralises LiteLLM route aliases
-utils.py               # Shared helpers
-skills/                # Skill .md files (committed; deployed to iCloud skills/ dir)
+daemon.py                      # Entry point; starts all async loops
+browser_watcher.py             # Polls Chrome/Firefox SQLite history DBs
+skill_executor.py              # Loads skill .md files, calls LiteLLM, appends execution log
+memory_writer.py               # Atomic writes of memory markdown to iCloud
+chat_handler.py                # Telegram bot; keyword-relevance context loading
+index_builder.py               # Hourly index.md rebuild
+skill_optimizer.py             # Daily LLM-as-judge skill improvement (v0.1 is a stub)
+code_scanner.py                # Scans ~/repos for git repos, writes code-{hostname}-*.md memory files
+email_scanner.py               # Reads Apple Mail, writes email-thread-*.md memory files
+zoom_scanner.py                # Polls Zoom API, parses VTT transcripts, writes meeting-*.md files
+commitment_tracker.py          # Extracts commitments from meeting/email memories, /commitments cmd
+contact_tracker.py             # Aggregates participants across memories, /contacts cmd
+goals_tracker.py               # GoalManager CRUD class for goal and project memories
+project_inference_scanner.py  # Scans comms memories, infers projects, writes candidates
+github_client.py               # Async GitHub Issues API client (optional GH backing for /feature and /bug)
+llm_routes.py                  # resolve(alias) → concrete model ID; centralises LiteLLM route aliases
+utils.py                       # Shared helpers
+skills/                        # Skill .md files (committed; deployed to iCloud skills/ dir)
 tests/
-├── unit/              # Per-module unit tests (mocked LLM + filesystem)
-└── integration/       # End-to-end flow tests (real file I/O, mocked LLM)
+├── unit/                      # Per-module unit tests (mocked LLM + filesystem)
+└── integration/               # End-to-end flow tests (real file I/O, mocked LLM)
 ```
 
 ## Testing
@@ -114,7 +116,7 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 `GITHUB_PAT` + `GITHUB_REPO` (optional) enable GitHub-Issues backing for `/feature` and `/bug`. Both must be set; if either is missing, the local-file fallback is used.
 
-## Architecture: Twelve Async Loops
+## Architecture: Thirteen Async Loops
 
 1. **Browser Watcher** (every 5 min) — reads Chrome/Firefox SQLite DBs, filters by dwell time and skip-domain list, fetches page content, runs `summarize-webpage` skill, writes memory file.
 
@@ -124,7 +126,7 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 4. **Skill Optimizer** (3 AM daily) — scores recent executions using LLM-as-judge against source content, rewrites underperforming skill instructions, appends to evolution log.
 
-5. **Code Scanner** (every 5 min) — globs `~/repos/` and `~/repo/` for git repos, extracts metadata (remote URL, HEAD sha, recent commits, branches, languages), generates a 1-2 sentence LLM summary from README on first scan or README change, writes `code-{hostname}-{name}.md` memory file. Skips write when HEAD sha unchanged. `type: code` in frontmatter (was `type: code_project` before v1.1.0, then `type: project` + `category: code` before v1.2.0 — migration runs automatically on `CodeScanner.__init__`). Filename migration from `project-{name}.md` to hostname-scoped pattern and then from `project-{hostname}-*.md` to `code-{hostname}-*.md` also runs automatically on init. Exposes `/code [N]` Telegram command (with N argument shows detail, without shows list); the list view groups by repo base name when the same repo exists on multiple machines.
+5. **Code Scanner** (every 5 min) — globs `~/repos/` and `~/repo/` for git repos, extracts metadata (remote URL, HEAD sha, recent commits, branches, languages), generates a 1-2 sentence LLM summary from README on first scan or README change, writes `code-{hostname}-{name}.md` memory file. Skips write when HEAD sha unchanged. `type: code` in frontmatter (was `type: code_project` before v1.1.0, then `type: project` + `category: code` before v1.2.0 — migration runs automatically on `CodeScanner.__init__`). Filename migration from `project-{name}.md` to hostname-scoped pattern and then from `project-{hostname}-*.md` to `code-{hostname}-*.md` also runs automatically on init. Exposes `/code [N]` Telegram command (with N argument shows detail, without shows list); the list view groups by repo base name when the same repo exists on multiple machines. New repos optionally go through the candidate confirmation flow when `code_scanner.require_confirmation: true`.
 
 6. **Email Scanner** (every 5 min) — reads Apple Mail.app data (SQLite Envelope Index primary, AppleScript fallback), writes one `email-thread-{slug}-{conv-id}.md` per conversation thread. Skips write when `message_count` and `last_message` unchanged. `type: email_thread` + `classification:` (one of `human`, `transactional`, `marketing`, `automated`, `unknown`) in frontmatter. Classification happens during the same LLM call that generates summary + tags. Downstream consumers (`contact_tracker`, `commitment_tracker`) skip `marketing` and `automated` emails; `chat_handler`'s `/comms email` hides those two unless `/comms email all` is used. Kill-switch: `email_scanner.classification_enabled: false` in config. Requires Full Disk Access for SQLite path; on macOS Sonoma, Homebrew Python (ad-hoc signed) silently fails FDA at runtime even when granted — AppleScript fallback (120s timeout, last-500-message item-slice approach) is the operative path on most setups. State (high-water ROWID) persisted in `DEPLOY_DIR/email-scanner-state.json`.
 
@@ -138,13 +140,15 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 11. **Slack Scanner** (every 5 min, `full` role only) — polls Slack Web API for threads in monitored channels, writes `slack-thread-*.md` memory files. Requires `SLACK_USER_TOKEN` env var (xoxp-); user ID auto-discovered via auth.test. Exits gracefully if missing. State persisted in `DEPLOY_DIR/slack-scanner-state.json`.
 
-12. **Notification Manager** (every 60 sec, `full` role only) — pushes proactive messages to Telegram: daily morning briefing (calendar, commitments, memory digest), pre-meeting context (10 min before events), commitment deadline alerts (today/tomorrow). Exposes `/briefing`, `/mute`, `/unmute` commands. State persisted in `DEPLOY_DIR/notification-state.json`.
+12. **Notification Manager** (every 60 sec, `full` role only) — pushes proactive messages to Telegram: daily morning briefing (calendar, commitments, goals/projects, memory digest), pre-meeting context (10 min before events), commitment deadline alerts (today/tomorrow), goal and project deadline alerts (7 days and 1 day before due date). Exposes `/briefing`, `/mute`, `/unmute` commands. State persisted in `DEPLOY_DIR/notification-state.json`.
+
+13. **Project Inference Scanner** (every 15 min, `full` role only) — scans `email_thread`, `meeting_transcript`, and `slack_thread` memory files for new/updated content (mtime-based), calls LLM to infer what projects the user is working on (confidence ≥ 0.7), writes `project-candidate-{slug}-{id}.md` files with `status: pending_confirmation`. Users review via `/review` and confirm/reject via `/confirm` and `/reject`. Deduplication against existing project files (title similarity ≥ 0.8) and `rejected-candidates.json`. State persisted in `DEPLOY_DIR/project-inference-state.json`.
 
 **Zoom Scanner** also exposes `/meetings [N]` and `/meeting <N>` Telegram commands for browsing meeting transcripts.
 
 ## Two Deployment Roles
 
-- **`full`** — all twelve loops. Runs on always-on machine (Mac Studio/Mini). Needs `ANTHROPIC_API_KEY` + `GEMINI_API_KEY`.
+- **`full`** — all thirteen loops. Runs on always-on machine (Mac Studio/Mini). Needs `ANTHROPIC_API_KEY` + `GEMINI_API_KEY`.
 - **`watcher`** — five capture loops (browser watcher + code/email/calendar/slack scanners). Runs on MacBook. Needs only `GEMINI_API_KEY`. Full-node imports (`python-telegram-bot`, etc.) must be deferred inside the `role == "full"` block to avoid crashing on watcher nodes that don't have those packages installed.
 
 ## LLM Routing
@@ -167,7 +171,8 @@ Config lives at `~/.litellm/config.yaml`. API keys come from env vars (`GEMINI_A
 - **Max memory file size:** ~2KB. Summarize harder if content is longer.
 - **Telegram 4096-char limit:** Chat handler must chunk responses.
 - **COMMAND_REGISTRY:** Module-level constant in `chat_handler.py` is the single source of truth for all Telegram commands. `/help` renders from it. A test asserts every `CommandHandler` registration has a matching entry — add both when adding a new command.
-- **Code repo namespace:** Code repo memories use `type: code` (was `type: code_project` before v1.1.0, then `type: project` + `category: code` before v1.2.0). `CodeScanner.__init__` migrates legacy files automatically. Filename prefix evolved from `project-{name}.md` → `project-{hostname}-{name}.md` → `code-{hostname}-{name}.md`. Module renamed from `project_scanner.py` → `code_scanner.py`. Telegram command renamed from `/projects` → `/code`. Future scanners for generic projects (work/person) will use `type: project` with a `category` field.
+- **Code repo namespace:** Code repo memories use `type: code` (was `type: code_project` before v1.1.0, then `type: project` + `category: code` before v1.2.0). `CodeScanner.__init__` migrates legacy files automatically. Filename prefix evolved from `project-{name}.md` → `project-{hostname}-{name}.md` → `code-{hostname}-{name}.md`. Module renamed from `project_scanner.py` → `code_scanner.py`. Telegram command renamed from `/projects` → `/code`.
+- **Goals and projects namespace:** `type: goal` (outcomes) and `type: project` (efforts) are distinct from `type: code` (auto-scanned repositories). Categories for goals/projects are configurable via `goals.categories` in config.yaml. The `code` category is reserved and cannot be used for goals or projects. The rename of `type: project` + `category: code` → `type: code` was completed in April 2026; see the one-shot migration in `CodeScanner.__init__`.
 - **Unified /comms:** Email and Slack threads share `/comms [email|slack]` + `/comm <N>`. No separate `/emails` or `/slack` commands.
 
 ## Deploy directory
@@ -186,8 +191,10 @@ All runtime state lives in `~/secondbrain/` — separate from the repo and from 
 ├── calendar-scanner-state.json     # processed event modification timestamps
 ├── contact-tracker-state.json      # processed file mtimes and interaction timestamps
 ├── slack-scanner-state.json        # processed Slack thread timestamps
+├── project-inference-state.json    # mtime state for project inference scanner
 ├── commitment-corrections.jsonl    # /wrong and /missed feedback log
 ├── commitment-accuracy.json        # extraction precision stats per source type
+├── rejected-candidates.json        # rejected candidate sources to prevent re-proposal
 └── notification-state.json         # chat_id, mute state, sent alerts for notification manager
 ```
 

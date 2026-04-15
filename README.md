@@ -245,6 +245,76 @@ Contacts are deduplicated by email address. The system picks the longest display
 
 Items with low confidence (0.5–0.69) show a ⚠️ indicator. The default threshold is 0.7 for auto-active, configurable via `commitment_tracker.min_confidence` in `config.yaml`.
 
+### Tracking goals
+
+```
+/addgoal                 # conversational flow to create a new goal
+/goals                   # list active goals
+/goals personal          # filter by category (personal, work, family, learning, other)
+/goals completed         # filter by status (active, completed, abandoned)
+/goal 3                  # show full detail of goal #3 from the last list
+
+/completegoal 3          # mark goal #3 as completed
+/abandongoal 3           # mark goal #3 as abandoned
+```
+
+Goals represent outcomes you want to achieve. Each has a category, optional due date, and priority. You can also create goals through natural language: say "I want to run a 5K by June" and the assistant will create the goal automatically.
+
+Goals with approaching deadlines receive proactive notifications at 7 days and 1 day before the due date (unless you've muted notifications via `/mute`).
+
+### Tracking projects
+
+```
+/addproject              # conversational flow to create a new project
+/projects                # list active projects
+/projects work           # filter by category
+/projects completed      # filter by status (active, completed, abandoned, on-hold)
+/project 3               # show project detail with milestone list
+
+/completeproject 3       # mark project #3 as completed
+/abandonproject 3        # mark project #3 as abandoned
+/holdproject 3           # put project #3 on hold
+
+/addmilestone 3 Lock feature scope       # add a milestone to project #3
+/milestone 3 2           # toggle milestone #2 on project #3 (done/undone)
+
+/linkgoal 3 2            # link project #3 to goal #2 (from last /goals list)
+/unlinkgoal 3            # remove the goal link from project #3
+```
+
+Projects track efforts you're working on — any domain, any scale. Unlike goals (which are outcomes), projects are the actual work. Projects support inline milestones and can be linked to a parent goal.
+
+Categories are configurable via `goals.categories` in config.yaml (default: `personal`, `work`, `family`, `learning`, `other`). The `code` category is reserved for auto-scanned repositories (see below).
+
+Projects with approaching deadlines receive the same 7-day and 1-day notifications as goals.
+
+### Reviewing discovered projects
+
+The assistant can infer projects from your emails, meetings, and Slack threads. Newly discovered code repositories can also require confirmation before being indexed (see `code_scanner.require_confirmation` in config).
+
+Discovered items appear as candidates until you confirm or reject them:
+
+```
+/review                  # list pending candidates
+/review 3                # show detail for candidate #3 (with evidence)
+/confirm 3               # confirm candidate #3 as a real project or code repo
+/confirm 3 work          # confirm and override the category guess
+/reject 3                # reject candidate #3 (won't be re-proposed)
+/edit 3 due_date=2026-08-01  # edit a field on candidate #3 before confirming
+```
+
+**Configuration:**
+```yaml
+project_inference:
+  enabled: true
+  scan_interval_min: 15
+  confidence_threshold: 0.7
+  source_types: [email_thread, meeting_transcript, slack_thread]
+
+code_scanner:
+  require_confirmation: false  # set true to require confirmation for new repos
+```
+
 ### Browsing recent activity
 
 ```
@@ -262,16 +332,19 @@ Items with low confidence (0.5–0.69) show a ⚠️ indicator. The default thre
 /events [N]              # calendar events in a ±7-day window, sorted by start time
 /event <N>               # event detail: time, location, attendees, description, related commitments
 
-/code [N]                # list git repos (default 10), or show detail for repo N
+/code [N]                # list indexed git repos, sorted by last commit (default 10)
+/code 3                  # show code repo #3 detail: description, languages, commits, README summary
 ```
+
+> **Upgrade note:** If you have existing `project-{hostname}-*.md` memory files from a previous version, they are automatically migrated to `code-{hostname}-*.md` on first daemon startup after upgrading.
 
 All list commands accept an optional count (default 10, max 50). The `<N>` argument in detail commands refers to the index from the last list or search.
 
 ### Searching across all your knowledge
 
 ```
-/search rust async       # search ALL memory types — grouped results: Contacts, Commitments, Projects, Meetings, Emails, Slack, Events, Web
-/search email rust async # filter to one type: email, slack, meeting, project, commitment, event, contact, web
+/search rust async       # search ALL memory types — grouped results: Contacts, Commitments, Goals, Projects, Code repos, Meetings, Emails, Slack, Events, Web
+/search email rust async # filter to one type: email, slack, meeting, goal, project, code, commitment, event, contact, web
 ```
 
 Results are grouped by type with up to 5 per group. If a group has more than 5, you'll see a hint like "12 more — try `/search email rust async`" to filter.
@@ -390,8 +463,30 @@ Muted state persists across daemon restarts. `/briefing` works even when muted �
 | `/contacts [N]` | List contacts sorted by most recent interaction (default 20, max 50). Deduplicated by email, display name is longest seen version, recency-weighted relationship score. |
 | `/people [N]` | Alias for `/contacts` |
 | `/contact <name\|N>` | Detailed contact view: interaction history, related threads, relationship score |
-| **Code repos** | |
-| `/code [N]` | List git repos (default 10, max 50). With N argument, show detail for repo N from last list. Sorted by last commit. When the same repo exists on multiple machines, displays `hosts: [hostname1, hostname2]`. |
+| **Goals** | |
+| `/addgoal` | Start a conversational flow to create a new goal |
+| `/goals [category\|status]` | List active goals; filter by category (personal, work, family, learning, other) or status (active, completed, abandoned) |
+| `/goal <N>` | Show detail for goal N from the last list |
+| `/completegoal <N>` | Mark goal N as completed |
+| `/abandongoal <N>` | Mark goal N as abandoned |
+| **Projects** | |
+| `/addproject` | Create a new project (conversational flow) |
+| `/projects [category\|status]` | List projects; status options: active, completed, abandoned, on-hold |
+| `/project <N>` | Show project detail with milestone list |
+| `/completeproject <N>` | Mark project N as completed |
+| `/abandonproject <N>` | Mark project N as abandoned |
+| `/holdproject <N>` | Put project N on hold |
+| `/addmilestone <N> <text>` | Add a milestone to project N |
+| `/milestone <N> <M>` | Toggle milestone M on project N (done/undone) |
+| `/linkgoal <N> <M>` | Link project N to goal M (from last `/goals` list) |
+| `/unlinkgoal <N>` | Remove the goal link from project N |
+| **Candidate review** | |
+| `/review [N]` | List pending candidates, or show detail for candidate N |
+| `/confirm <N> [category]` | Confirm candidate N as a real project or code repo; optionally override category |
+| `/reject <N>` | Reject candidate N (won't be re-proposed) |
+| `/edit <N> field=value` | Edit a field on candidate N before confirming |
+| **Code repositories** | |
+| `/code [N]` | List indexed repos (default 10, max 50). Sorted by last commit. When the same repo exists on multiple machines, displays `hosts: [hostname1, hostname2]`. |
 | **Calendar & meetings** | |
 | `/events [N]` | Calendar events in ±7-day window, sorted by start time (default 10, max 50) |
 | `/event <N>` | Event detail: time, location, attendees, description, related commitments |
@@ -413,8 +508,8 @@ Muted state persists across daemon restarts. `/briefing` works even when muted �
 | `/accuracy` | Show extraction precision per source type |
 | **Memory browsing** | |
 | `/memories [N]` | List N most recent web captures (default 10, max 50) |
-| `/search <query>` | Search across ALL memory types. Results grouped by type: Contacts, Commitments, Projects, Meetings, Email threads, Slack threads, Calendar events, Web memories. Up to 5 per group, overflow hint shows `/search <type> <query>`. |
-| `/search <type> <query>` | Filter to one type: `email`, `slack`, `meeting`, `project`, `commitment`, `event`, `contact`, `web` |
+| `/search <query>` | Search across ALL memory types. Results grouped by type: Contacts, Commitments, Goals, Projects, Code repos, Meetings, Email threads, Slack threads, Calendar events, Web memories. Up to 5 per group, overflow hint shows `/search <type> <query>`. |
+| `/search <type> <query>` | Filter to one type: `email`, `slack`, `meeting`, `goal`, `project`, `code`, `commitment`, `event`, `contact`, `web` |
 | `/memory <N>` | Show full detail of item N from last list or search |
 | `/delete <N>` | Delete item N from last list or search |
 | **Proactive notifications** | |
@@ -428,7 +523,7 @@ Muted state persists across daemon restarts. `/briefing` works even when muted �
 | `/purge <domain>` | Delete all captured memories whose URL contains domain |
 | `/purgeall` | Delete memories for every domain on the skip list |
 | **Scanner management** | |
-| `/backfill <type> [days] [hostname]` | Force historical reprocessing without manual state file deletion. Types: `readings`, `email`, `zoom`, `calendar`, `slack`, `projects`. Days default to 30 (90 max for readings/email/slack, 180 max for zoom/calendar, N/A for projects). Optional hostname arg — if given and doesn't match current node, returns "cross-node not yet implemented". Derivative scanners (commitment_tracker, contact_tracker) re-run automatically on next cycle due to updated mtimes. Full-role only. |
+| `/backfill <type> [days] [hostname]` | Force historical reprocessing without manual state file deletion. Types: `readings`, `email`, `zoom`, `calendar`, `slack`, `code`. Days default to 30 (90 max for readings/email/slack, 180 max for zoom/calendar, N/A for code). Optional hostname arg — if given and doesn't match current node, returns "cross-node not yet implemented". Derivative scanners (commitment_tracker, contact_tracker, project_inference_scanner) re-run automatically on next cycle due to updated mtimes. Full-role only. |
 | **Feature & bug tracking** | |
 | `/feature <description>` | Capture a new feature request (hashtags become labels) |
 | `/bug <description>` | Capture a new bug report (hashtags become labels) |
@@ -471,8 +566,10 @@ Runtime state (local per machine):
 ├── calendar-scanner-state.json     # processed event modification timestamps
 ├── contact-tracker-state.json      # processed file mtimes and interaction timestamps
 ├── slack-scanner-state.json        # processed Slack thread timestamps
+├── project-inference-state.json    # mtime state for project inference scanner
 ├── commitment-corrections.jsonl    # /wrong and /missed feedback log
 ├── commitment-accuracy.json        # extraction precision stats per source type
+├── rejected-candidates.json        # rejected candidate sources to prevent re-proposal
 └── notification-state.json         # chat_id, mute state, sent alerts
 
 iCloud (shared across all machines):
