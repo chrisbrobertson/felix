@@ -61,12 +61,21 @@ memory:
   max_context_memories: 20       # max files loaded into chat context
   index_rebuild_interval: 3600   # rebuild index.md every hour
 
-project_scanner:
+goals:
+  categories:                    # configurable category list for goals and projects
+    - personal
+    - work
+    - family
+    - learning
+    - other
+
+code_scanner:
   interval_seconds: 300          # scan every 5 minutes
   repo_dirs:                     # directories to search for git repos
     - ~/repos
     - ~/repo
   skip_repos: []                 # repo directory names to ignore (e.g. [archived-project])
+  require_confirmation: false    # set true to require /confirm before indexing new repos
 
 email_scanner:
   interval_seconds: 300          # scan every 5 minutes
@@ -121,6 +130,15 @@ calendar_scanner:
   forward_days: 7                # events up to N days in the future
   skip_calendars: []             # calendar names to exclude (e.g. ["Birthdays", "Holidays"])
   max_events_per_cycle: 50
+
+project_inference:
+  enabled: true                  # infer projects from emails, meetings, Slack threads
+  scan_interval_min: 15          # scan every 15 minutes
+  confidence_threshold: 0.7      # minimum confidence to create a candidate
+  source_types:                  # memory types to scan for project mentions
+    - email_thread
+    - meeting_transcript
+    - slack_thread
 
 notifications:
   enabled: true
