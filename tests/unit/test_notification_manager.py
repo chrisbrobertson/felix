@@ -33,7 +33,7 @@ def make_calendar_event(
     fm = {
         "type": "calendar_event",
         "event_id": event_id,
-        "source_title": title,
+        "title": title,
         "start_time": start_time,
         "all_day": all_day,
         "participants": participants or [],
@@ -1136,54 +1136,446 @@ def test_save_state_raises_on_failure(tmp_path):
             nm._save_state({"chat_id": None})
 
 
-@pytest.mark.asyncio
-async def test_pre_meeting_reads_source_title_not_title(tmp_path):
-    """Pre-meeting alert must read source_title (written by calendar_scanner), not title.
+def make_goal(
+    memories_dir: Path,
+    goal_id: str,
+    title: str,
+    status: str = "active",
+    due_date: str = None,
+    category: str = "personal",
+) -> Path:
+    """Create a goal memory file."""
+    slug = title.lower().replace(" ", "-")[:40]
+    p = memories_dir / f"goal-{slug}-{goal_id}.md"
+    fm = {
+        "type": "goal",
+        "category": category,
+        "source_title": title,
+        "summary": f"{title} summary",
+        "tags": [],
+        "created": "2026-04-10T10:00:00",
+        "due_date": due_date,
+        "status": status,
+        "priority": "medium",
+        "linked_projects": [],
+        "notes": "",
+    }
+    frontmatter = yaml.dump(fm, sort_keys=False)
+    p.write_text(f"---\n{frontmatter}---\n\n## Notes\nTest goal.\n")
+    return p
 
-    Regression: notification_manager previously used fm.get("title"), but calendar_scanner
-    writes the event title under source_title. This test writes a calendar event file with
-    ONLY source_title (no title key) and asserts the notification contains the real title.
-    """
+
+def make_project(
+    memories_dir: Path,
+    project_id: str,
+    title: str,
+    status: str = "active",
+    due_date: str = None,
+    category: str = "work",
+) -> Path:
+    """Create a project memory file."""
+    slug = title.lower().replace(" ", "-")[:40]
+    p = memories_dir / f"project-{category}-{slug}-{project_id}.md"
+    fm = {
+        "type": "project",
+        "category": category,
+        "source_title": title,
+        "summary": f"{title} summary",
+        "tags": [],
+        "created": "2026-04-10T10:00:00",
+        "due_date": due_date,
+        "status": status,
+        "priority": "medium",
+        "linked_goal": None,
+        "milestones": [],
+        "inferred_from": [],
+        "notes": "",
+    }
+    frontmatter = yaml.dump(fm, sort_keys=False)
+    p.write_text(f"---\n{frontmatter}---\n\n## Notes\nTest project.\n")
+    return p
+
+
+# ── Goal Deadline Alerts ──────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_goal_alert_fires_at_7_days(tmp_path):
+    """Alert fires when goal is due in exactly 7 days."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
     state_file = tmp_path / "notification-state.json"
-    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_pre_meeting": []}))
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_goal_alerts": []}))
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     config_file = config_dir / "config.yaml"
     config_file.write_text(
-        "user:\n  timezone: America/Los_Angeles\nnotifications:\n  enabled: true\n  pre_meeting_minutes: 10\n"
+        "user:\n  timezone: America/Los_Angeles\n"
+        "notifications:\n  enabled: true\n"
+        "goals:\n  deadline_horizons: [7, 1]\n"
     )
 
-    now = datetime(2026, 4, 11, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
-    event_time = now + timedelta(minutes=10)
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    due_date = (now + timedelta(days=7)).date().isoformat()
 
-    # Write event with ONLY source_title — no "title" key — matching what calendar_scanner writes
-    event_file = memories_dir / "calendar-event-regression123.md"
-    fm = {
-        "type": "calendar_event",
-        "event_id": "regression123",
-        "source_title": "Team Standup",  # ONLY source_title, no "title" key
-        "start_time": event_time.isoformat(),
-        "all_day": False,
-        "participants": [],
-        "location": None,
-        "last_scanned": "2026-04-11T10:00:00",
-    }
-    event_file.write_text(f"---\n{yaml.dump(fm, sort_keys=False)}---\n\n## Details\nTest.\n")
+    make_goal(memories_dir, "abc123", "Run a 5K", due_date=due_date)
 
     bot_mock = AsyncMock()
 
-    with patch.object(nm, "STATE_FILE", state_file), \
-         patch.object(nm, "CONFIG_PATH", config_file), \
-         patch.object(nm, "MEMORIES_DIR", memories_dir):
-        mgr = NotificationManager(bot=bot_mock)
-        with patch.object(mgr, "_get_local_now", return_value=now):
-            state = nm._load_state()
-            await mgr._check_pre_meeting_alerts(state)
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_goal_alerts(state)
 
     bot_mock.send_message.assert_called_once()
     text = bot_mock.send_message.call_args[1]["text"]
-    assert "Team Standup" in text, f"Expected real title in notification, got: {text!r}"
-    assert "(no title)" not in text, f"Got '(no title)' fallback — source_title key not being read"
+    assert "Goal deadline approaching" in text
+    assert "Run a 5K" in text
+    assert "due in 7 days" in text
+
+
+@pytest.mark.asyncio
+async def test_goal_alert_fires_at_1_day(tmp_path):
+    """Alert fires when goal is due in exactly 1 day."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_goal_alerts": []}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\n"
+        "notifications:\n  enabled: true\n"
+        "goals:\n  deadline_horizons: [7, 1]\n"
+    )
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    due_date = (now + timedelta(days=1)).date().isoformat()
+
+    make_goal(memories_dir, "def456", "Complete garden project", due_date=due_date)
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_goal_alerts(state)
+
+    bot_mock.send_message.assert_called_once()
+    text = bot_mock.send_message.call_args[1]["text"]
+    assert "Goal deadline approaching" in text
+    assert "Complete garden project" in text
+    assert "due in 1 day" in text
+
+
+@pytest.mark.asyncio
+async def test_goal_alert_dedup(tmp_path):
+    """Alert does not fire twice for same goal+horizon."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({
+        "chat_id": 123456789,
+        "muted": False,
+        "sent_goal_alerts": ["goal:abc123:7d"]
+    }))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\n"
+        "notifications:\n  enabled: true\n"
+        "goals:\n  deadline_horizons: [7, 1]\n"
+    )
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    due_date = (now + timedelta(days=7)).date().isoformat()
+
+    make_goal(memories_dir, "abc123", "Run a 5K", due_date=due_date)
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_goal_alerts(state)
+
+    bot_mock.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_alert_skips_completed_goals(tmp_path):
+    """No alert for goals with status: completed."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_goal_alerts": []}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\n"
+        "notifications:\n  enabled: true\n"
+        "goals:\n  deadline_horizons: [7, 1]\n"
+    )
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    due_date = (now + timedelta(days=7)).date().isoformat()
+
+    make_goal(memories_dir, "abc123", "Run a 5K", status="completed", due_date=due_date)
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_goal_alerts(state)
+
+    bot_mock.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_alert_skips_goals_without_due_date(tmp_path):
+    """No alert when due_date is null."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_goal_alerts": []}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\n"
+        "notifications:\n  enabled: true\n"
+        "goals:\n  deadline_horizons: [7, 1]\n"
+    )
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+
+    make_goal(memories_dir, "abc123", "Run a 5K", due_date=None)
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_goal_alerts(state)
+
+    bot_mock.send_message.assert_not_called()
+
+
+# ── Project Deadline Alerts ───────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_project_alert_fires_at_1_day(tmp_path):
+    """Alert fires when project is due in 1 day."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_project_alerts": []}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\n"
+        "notifications:\n  enabled: true\n"
+        "goals:\n  deadline_horizons: [7, 1]\n"
+    )
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    due_date = (now + timedelta(days=1)).date().isoformat()
+
+    make_project(memories_dir, "xyz789", "Q2 rollout plan", due_date=due_date)
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_project_alerts(state)
+
+    bot_mock.send_message.assert_called_once()
+    text = bot_mock.send_message.call_args[1]["text"]
+    assert "Project deadline approaching" in text
+    assert "Q2 rollout plan" in text
+    assert "due in 1 day" in text
+
+
+@pytest.mark.asyncio
+async def test_onhold_project_still_alerts(tmp_path):
+    """on-hold projects still generate deadline alerts."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_project_alerts": []}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\n"
+        "notifications:\n  enabled: true\n"
+        "goals:\n  deadline_horizons: [7, 1]\n"
+    )
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    due_date = (now + timedelta(days=7)).date().isoformat()
+
+    make_project(memories_dir, "xyz789", "Q2 rollout plan", status="on-hold", due_date=due_date)
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_project_alerts(state)
+
+    bot_mock.send_message.assert_called_once()
+    text = bot_mock.send_message.call_args[1]["text"]
+    assert "Project deadline approaching" in text
+    assert "Q2 rollout plan" in text
+
+
+@pytest.mark.asyncio
+async def test_project_alert_dedup(tmp_path):
+    """Alert does not fire twice for same project+horizon."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({
+        "chat_id": 123456789,
+        "muted": False,
+        "sent_project_alerts": ["project:xyz789:7d"]
+    }))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\n"
+        "notifications:\n  enabled: true\n"
+        "goals:\n  deadline_horizons: [7, 1]\n"
+    )
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    due_date = (now + timedelta(days=7)).date().isoformat()
+
+    make_project(memories_dir, "xyz789", "Q2 rollout plan", due_date=due_date)
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_project_alerts(state)
+
+    bot_mock.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_project_alert_skips_completed(tmp_path):
+    """No alert for completed projects."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_project_alerts": []}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\n"
+        "notifications:\n  enabled: true\n"
+        "goals:\n  deadline_horizons: [7, 1]\n"
+    )
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    due_date = (now + timedelta(days=7)).date().isoformat()
+
+    make_project(memories_dir, "xyz789", "Q2 rollout plan", status="completed", due_date=due_date)
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_project_alerts(state)
+
+    bot_mock.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_project_alert_skips_candidates(tmp_path):
+    """project-candidate-*.md files are skipped."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_project_alerts": []}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\n"
+        "notifications:\n  enabled: true\n"
+        "goals:\n  deadline_horizons: [7, 1]\n"
+    )
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    due_date = (now + timedelta(days=7)).date().isoformat()
+
+    # Create a candidate file
+    p = memories_dir / "project-candidate-abc123.md"
+    fm = {
+        "type": "project_candidate",
+        "source_title": "Q2 rollout plan",
+        "due_date": due_date,
+        "status": "pending_confirmation",
+    }
+    frontmatter = yaml.dump(fm, sort_keys=False)
+    p.write_text(f"---\n{frontmatter}---\n\n## Notes\nCandidate.\n")
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_project_alerts(state)
+
+    bot_mock.send_message.assert_not_called()

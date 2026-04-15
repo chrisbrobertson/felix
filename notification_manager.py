@@ -47,6 +47,8 @@ def _load_state() -> dict:
         "last_briefing_date": None,
         "sent_commitment_alerts": [],
         "sent_pre_meeting": [],
+        "sent_goal_alerts": [],
+        "sent_project_alerts": [],
     }
 
 
@@ -105,6 +107,11 @@ class NotificationManager:
         if CONFIG_PATH.exists():
             return yaml.safe_load(CONFIG_PATH.read_text()) or {}
         return {}
+
+    @property
+    def _config(self) -> dict:
+        """Cached config property for internal use."""
+        return self._load_config()
 
     def _notification_config(self) -> dict:
         return self._load_config().get("notifications", {})
@@ -280,7 +287,7 @@ class NotificationManager:
             calendar_events.sort(key=lambda x: x[0])
             lines.append(f"\nCalendar ({len(calendar_events)} events):")
             for start_time, fm in calendar_events:
-                title = fm.get("source_title") or fm.get("title") or "(no title)"
+                title = fm.get("title") or "(no title)"
                 time_str = start_time.strftime("%I:%M %p").lstrip("0")
                 participants = fm.get("participants") or []
                 participant_str = ", ".join(participants[:3]) if participants else ""
@@ -478,6 +485,126 @@ class NotificationManager:
         state["sent_commitment_alerts"] = list(sent_alerts)
         _save_state(state)
 
+    async def _check_goal_alerts(self, state: dict):
+        """Fire 7-day and 1-day deadline alerts for active goals."""
+        config = self._notification_config()
+        if not config.get("enabled", True):
+            return
+
+        sent_alerts = set(state.get("sent_goal_alerts", []))
+        horizons = self._config.get("goals", {}).get("deadline_horizons", [7, 1])
+
+        now = self._get_local_now()
+        today = now.date()
+
+        for path in MEMORIES_DIR.glob("goal-*.md"):
+            try:
+                text = path.read_text(encoding="utf-8")
+                fm = _parse_frontmatter(text)
+
+                if fm.get("status") != "active":
+                    continue
+
+                due_raw = fm.get("due_date")
+                if not due_raw:
+                    continue
+
+                try:
+                    due = datetime.fromisoformat(str(due_raw)).date()
+                except Exception:
+                    continue
+
+                # Stable ID from filename: extract the 6-char hex suffix
+                goal_id = path.stem.rsplit("-", 1)[-1]
+
+                days_until = (due - today).days
+
+                # Find the smallest horizon that matches and hasn't fired yet
+                for horizon in sorted(horizons):
+                    alert_key = f"goal:{goal_id}:{horizon}d"
+                    if alert_key in sent_alerts:
+                        continue
+
+                    if 0 <= days_until <= horizon:
+                        # Haven't fired yet, within horizon - fire and stop
+                        msg = (
+                            f"⏰ Goal deadline approaching: \"{fm.get('source_title', path.stem)}\" "
+                            f"— due in {days_until} day{'s' if days_until != 1 else ''} ({due})"
+                        )
+                        await self.send_message(msg)
+                        sent_alerts.add(alert_key)
+                        log.info("Sent %d-day goal alert for %s", horizon, goal_id)
+                        break  # Only fire one alert per goal per check
+            except Exception:
+                log.exception("Error checking goal alerts for %s", path.name)
+
+        state["sent_goal_alerts"] = list(sent_alerts)
+
+    async def _check_project_alerts(self, state: dict):
+        """Fire 7-day and 1-day deadline alerts for active and on-hold projects."""
+        config = self._notification_config()
+        if not config.get("enabled", True):
+            return
+
+        sent_alerts = set(state.get("sent_project_alerts", []))
+        horizons = self._config.get("goals", {}).get("deadline_horizons", [7, 1])
+
+        now = self._get_local_now()
+        today = now.date()
+
+        for path in MEMORIES_DIR.glob("project-*.md"):
+            # Skip candidates
+            if "project-candidate-" in path.name:
+                continue
+
+            try:
+                text = path.read_text(encoding="utf-8")
+                fm = _parse_frontmatter(text)
+
+                # Skip candidates that might slip through
+                if fm.get("type") != "project":
+                    continue
+
+                # Status filter: active or on-hold
+                status = fm.get("status")
+                if status not in ("active", "on-hold"):
+                    continue
+
+                due_raw = fm.get("due_date")
+                if not due_raw:
+                    continue
+
+                try:
+                    due = datetime.fromisoformat(str(due_raw)).date()
+                except Exception:
+                    continue
+
+                # Stable ID from filename: extract the 6-char hex suffix
+                project_id = path.stem.rsplit("-", 1)[-1]
+
+                days_until = (due - today).days
+
+                # Find the smallest horizon that matches and hasn't fired yet
+                for horizon in sorted(horizons):
+                    alert_key = f"project:{project_id}:{horizon}d"
+                    if alert_key in sent_alerts:
+                        continue
+
+                    if 0 <= days_until <= horizon:
+                        # Haven't fired yet, within horizon - fire and stop
+                        msg = (
+                            f"⏰ Project deadline approaching: \"{fm.get('source_title', path.stem)}\" "
+                            f"— due in {days_until} day{'s' if days_until != 1 else ''} ({due})"
+                        )
+                        await self.send_message(msg)
+                        sent_alerts.add(alert_key)
+                        log.info("Sent %d-day project alert for %s", horizon, project_id)
+                        break  # Only fire one alert per project per check
+            except Exception:
+                log.exception("Error checking project alerts for %s", path.name)
+
+        state["sent_project_alerts"] = list(sent_alerts)
+
     async def _check_pre_meeting_alerts(self, state: dict):
         """Check for pre-meeting context pushes."""
         config = self._notification_config()
@@ -534,7 +661,7 @@ class NotificationManager:
 
     def _assemble_pre_meeting_context(self, event_fm: dict, start_time: datetime) -> str:
         """Assemble pre-meeting context from event and related files."""
-        title = event_fm.get("source_title") or event_fm.get("title") or "(no title)"
+        title = event_fm.get("title") or "(no title)"
         time_str = start_time.strftime("%I:%M %p").lstrip("0")
         location = event_fm.get("location", "")
         location_str = f", {location}" if location else ""
@@ -630,6 +757,9 @@ class NotificationManager:
         # Run checks
         await self._check_daily_briefing(state)
         await self._check_commitment_alerts(state)
+        await self._check_goal_alerts(state)
+        await self._check_project_alerts(state)
+        _save_state(state)
         await self._check_pre_meeting_alerts(state)
 
     async def run_loop(self, stop_event: asyncio.Event):
