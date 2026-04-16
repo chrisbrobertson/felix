@@ -214,6 +214,46 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "add_feature",
+            "description": (
+                "File a new feature request. Use when the user asks to log a feature idea, "
+                "request, or improvement. Do not use for bug reports — use add_bug instead."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": "Clear description of the feature request",
+                    }
+                },
+                "required": ["description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_bug",
+            "description": (
+                "File a new bug report. Use when the user describes unexpected behavior, "
+                "an error, or something broken. Do not use for feature requests — use add_feature instead."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": "Clear description of the bug — what happened vs what was expected",
+                    }
+                },
+                "required": ["description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "add_project",
             "description": "Create a new project for the user. Use when the user describes work they're undertaking — building something, coordinating an effort, pursuing a task over time.",
             "parameters": {
@@ -380,6 +420,56 @@ async def _call(name: str, arguments: dict, handler):
             return f"Project created: {arguments['title']} [{arguments['category']}]{due_str}"
         except ValueError as e:
             return f"Error: {e}"
+    if name in ("add_feature", "add_bug"):
+        import hashlib, os, re, yaml
+        from datetime import datetime
+        from pathlib import Path
+        description = arguments.get("description", "").strip()
+        if not description:
+            return "Error: description is required."
+        kind = "bug" if name == "add_bug" else "feature"
+        tags = [t[1:].lower() for t in re.findall(r'#\w+', description)]
+        clean_desc = re.sub(r'#\w+', '', description).strip()
+        title = " ".join(clean_desc.split()[:8])
+        slug = re.sub(r'[^a-z0-9]+', '-', title.lower())[:40].strip('-')
+        id_hash = hashlib.sha1(f"{description}{datetime.now().isoformat()}".encode()).hexdigest()[:6]
+        filename = f"feature-request-{slug}-{id_hash}.md"
+        fm = {
+            "title": clean_desc[:100],
+            "type": "feature_request",
+            "kind": kind,
+            "status": "new",
+            "priority": "medium",
+            "created": datetime.now().isoformat(),
+            "tags": tags,
+            "short_id": id_hash,
+        }
+        if kind == "bug":
+            body = (
+                f"## Bug\n\n{clean_desc}\n\n"
+                f"## Expected\n\n\n\n"
+                f"## Actual\n\n\n\n"
+                f"## Steps to reproduce\n\n\n\n"
+                f"## Notes\n\nCaptured via add_bug tool at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n"
+            )
+        else:
+            body = (
+                f"## Request\n\n{clean_desc}\n\n"
+                f"## Context\n\nCaptured via add_feature tool at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n\n"
+                f"## Notes\n\n"
+            )
+        memories_dir = Path(os.environ.get(
+            "SECOND_BRAIN_DIR",
+            Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
+        )) / "memories"
+        memories_dir.mkdir(parents=True, exist_ok=True)
+        content = f"---\n{yaml.dump(fm, sort_keys=False, allow_unicode=True)}---\n\n{body}"
+        target = memories_dir / filename
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(content)
+        os.rename(tmp, target)
+        label = "Bug" if kind == "bug" else "Feature"
+        return f"{label} captured: '{clean_desc[:60]}' (ID: {id_hash})"
     raise ValueError(f"unknown tool {name!r}")
 
 

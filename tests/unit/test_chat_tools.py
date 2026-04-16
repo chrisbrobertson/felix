@@ -118,6 +118,48 @@ async def test_dispatch_logs_success(mock_handler, caplog):
     assert any("dispatch list_projects" in m and "chars" in m for m in info_messages)
 
 
+async def test_add_feature_writes_file(mock_handler, tmp_path, monkeypatch):
+    """add_feature creates a feature_request file with kind:feature."""
+    import os
+    monkeypatch.setenv("SECOND_BRAIN_DIR", str(tmp_path))
+    memories_dir = tmp_path / "memories"
+    result = await chat_tools.dispatch(
+        "add_feature", {"description": "add dark mode support"}, mock_handler
+    )
+    assert "Feature captured" in result
+    files = list(memories_dir.glob("feature-request-*.md"))
+    assert len(files) == 1
+    content = files[0].read_text()
+    assert "kind: feature" in content
+    assert "add dark mode support" in content
+    assert "status: new" in content
+
+
+async def test_add_bug_writes_file(mock_handler, tmp_path, monkeypatch):
+    """add_bug creates a feature_request file with kind:bug."""
+    monkeypatch.setenv("SECOND_BRAIN_DIR", str(tmp_path))
+    memories_dir = tmp_path / "memories"
+    result = await chat_tools.dispatch(
+        "add_bug", {"description": "calendar alerts fire twice"}, mock_handler
+    )
+    assert "Bug captured" in result
+    files = list(memories_dir.glob("feature-request-*.md"))
+    assert len(files) == 1
+    content = files[0].read_text()
+    assert "kind: bug" in content
+    assert "calendar alerts fire twice" in content
+    assert "## Bug" in content
+
+
+async def test_add_feature_empty_description(mock_handler, tmp_path, monkeypatch):
+    """add_feature with empty description returns error without writing a file."""
+    monkeypatch.setenv("SECOND_BRAIN_DIR", str(tmp_path))
+    result = await chat_tools.dispatch("add_feature", {"description": ""}, mock_handler)
+    assert "Error" in result
+    memories_dir = tmp_path / "memories"
+    assert not memories_dir.exists() or not list(memories_dir.glob("*.md"))
+
+
 def test_all_tool_names_in_dispatcher():
     """Every tool name in TOOLS is handled by dispatch (checked via no 'unknown tool' return)."""
     # We don't run dispatch here (async) — just verify the names are in the known set
@@ -125,7 +167,7 @@ def test_all_tool_names_in_dispatcher():
         "list_projects", "list_commitments", "list_events", "list_meetings",
         "list_contacts", "list_comms", "list_readings", "search_memories", "get_memory",
         "list_commands", "deliver_pending_replies", "discard_pending_replies",
-        "add_goal", "add_project",
+        "add_goal", "add_project", "add_feature", "add_bug",
     }
     for tool in chat_tools.TOOLS:
         name = tool["function"]["name"]
