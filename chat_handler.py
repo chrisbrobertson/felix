@@ -572,7 +572,7 @@ class TelegramChatHandler:
 
         return "\n".join(lines) if lines else ""
 
-    def _load_context(self, query: str) -> str:
+    def _load_context(self, query: str, history: list = None) -> str:
         """Load memory files into context with relevance sorting and hard char budget."""
         parts = []
         budget = MAX_CONTEXT_CHARS
@@ -594,10 +594,21 @@ class TelegramChatHandler:
 
         memory_files = list((BRAIN_DIR / "memories").glob("*.md"))
 
+        # Augment short queries with recent user messages for better memory scoring
+        score_query = query
+        if history:
+            recent_tokens = {w for w in re.findall(r'\b\w{3,}\b', query.lower())}
+            if len(recent_tokens) < 3:
+                recent_text = " ".join(
+                    turn["content"] for turn in history[-4:]
+                    if turn.get("role") == "user"
+                )
+                score_query = query + " " + recent_text
+
         # Score using cached headers — O(cache_size) not O(files * file_size)
         scored = sorted(
             memory_files,
-            key=lambda p: (self._score_relevance(p, query), p.stat().st_mtime),
+            key=lambda p: (self._score_relevance(p, score_query), p.stat().st_mtime),
             reverse=True
         )
 
@@ -5206,23 +5217,29 @@ class TelegramChatHandler:
 
         async with lock:
           try:
-            memory_context = self._load_context(query)
-            log.info(f"Context loaded: {len(memory_context)} chars")
-
             history = self._chat_history.get(chat_id, [])
+
+            memory_context = self._load_context(query, history)
+            log.info(f"Context loaded: {len(memory_context)} chars")
 
             from chat_tools import TOOLS, dispatch as _tool_dispatch
 
             async def tool_dispatch(name: str, args: dict) -> str:
                 return await _tool_dispatch(name, args, self)
 
-            # Only expose pending-reply tools when this chat has a non-empty queue.
-            # This prevents the LLM from calling deliver/discard on an ambiguous "yes".
+            # Only expose pending-reply tools when: (a) this chat has a non-empty queue, AND
+            # (b) the last assistant message was the reconnect notification — prevents
+            # "yes" from being misattributed to deliver_pending_replies mid-conversation.
             pending_state = self._load_pending()
             has_pending = bool(pending_state.get(str(chat_id), {}).get("pending"))
+            last_was_notification = (
+                bool(history)
+                and history[-1].get("role") == "assistant"
+                and "\U0001f4ec Network is back" in history[-1].get("content", "")
+            )
             active_tools = [
                 t for t in TOOLS
-                if has_pending
+                if (has_pending and last_was_notification)
                 or t["function"]["name"] not in ("deliver_pending_replies", "discard_pending_replies")
             ]
 

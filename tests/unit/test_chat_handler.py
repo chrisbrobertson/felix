@@ -2625,7 +2625,8 @@ async def test_pending_tools_absent_when_queue_empty(handler, brain_dir):
 
 
 async def test_pending_tools_present_when_queue_nonempty(handler, brain_dir):
-    """deliver/discard tools ARE passed to the LLM when queue has entries for this chat."""
+    """deliver/discard tools ARE passed to the LLM when queue has entries for this chat
+    AND the last assistant message was the reconnect notification."""
     handler.executor = MagicMock()
     captured_tools = []
 
@@ -2638,6 +2639,12 @@ async def test_pending_tools_present_when_queue_nonempty(handler, brain_dir):
     # Pre-populate queue for this chat_id
     chat_id = 12345
     handler._save_pending({str(chat_id): {"pending": [{"query": "q", "response": "r", "queued_at": "2026-04-13T12:00:00"}], "summary_sent": False}})
+
+    # Pre-populate history with the notification message
+    handler._chat_history[chat_id] = [
+        {"role": "user", "content": "what is the weather"},
+        {"role": "assistant", "content": "📬 Network is back. I have 1 response queued — say \"yes\" to deliver or \"no\" to discard."}
+    ]
 
     mock_update = MagicMock()
     mock_update.effective_user.id = chat_id
@@ -2677,6 +2684,105 @@ async def test_pending_tools_scoped_per_chat_id(handler, brain_dir):
     tool_names = [t["function"]["name"] for t in captured_tools]
     assert "deliver_pending_replies" not in tool_names
     assert "discard_pending_replies" not in tool_names
+
+
+async def test_load_context_short_query_uses_history(handler, brain_dir):
+    """Short queries (< 3 tokens ≥ 3 chars) should augment scoring with recent user history."""
+    # Create memory file with "commitments" keyword
+    m = brain_dir / "memories"
+    write_memory(m, "work-abc123", ["work", "commitments", "tasks"], "Work Tasks",
+                 body="Details about weekly commitments")
+
+    # Simulate history with a previous query about commitments
+    history = [
+        {"role": "user", "content": "what commitments do I have this week"},
+        {"role": "assistant", "content": "You have 3 commitments..."}
+    ]
+
+    # Patch _score_relevance to capture what it's called with
+    with patch.object(handler, '_score_relevance', wraps=handler._score_relevance) as mock_score:
+        ctx = handler._load_context("ok", history)
+
+        # Verify _score_relevance was called
+        assert mock_score.call_count > 0
+
+        # Check that at least one call had "commitments" in the score_query
+        # (second argument to _score_relevance)
+        score_queries = [call.args[1] for call in mock_score.call_args_list]
+        assert any("commitments" in sq.lower() for sq in score_queries), \
+            f"Expected 'commitments' in augmented query, got: {score_queries}"
+
+
+async def test_pending_tools_hidden_when_not_last_notification(handler, brain_dir):
+    """deliver/discard tools should NOT be exposed when queue is non-empty but
+    last assistant message was NOT the reconnect notification."""
+    handler.executor = MagicMock()
+    captured_tools = []
+
+    async def capture_tools(**kwargs):
+        captured_tools.extend(kwargs.get("tools", []))
+        return "answer"
+
+    handler.executor.run_with_tools = capture_tools
+
+    # Pre-populate queue for this chat_id
+    chat_id = 12345
+    handler._save_pending({str(chat_id): {"pending": [{"query": "q", "response": "r", "queued_at": "2026-04-13T12:00:00"}], "summary_sent": False}})
+
+    # Pre-populate history where last message is NOT the notification
+    handler._chat_history[chat_id] = [
+        {"role": "user", "content": "yes"},
+        {"role": "assistant", "content": "No problem!"}
+    ]
+
+    mock_update = MagicMock()
+    mock_update.effective_user.id = chat_id
+    mock_update.effective_chat.id = chat_id
+    mock_update.message = AsyncMock()
+    mock_update.message.text = "yes"
+
+    await handler.handle_message(mock_update, MagicMock())
+
+    tool_names = [t["function"]["name"] for t in captured_tools]
+    assert "deliver_pending_replies" not in tool_names, \
+        "deliver_pending_replies should not be exposed when last message was not the notification"
+    assert "discard_pending_replies" not in tool_names
+
+
+async def test_pending_tools_shown_when_last_is_notification(handler, brain_dir):
+    """deliver/discard tools SHOULD be exposed when queue is non-empty AND
+    last assistant message contains the reconnect notification."""
+    handler.executor = MagicMock()
+    captured_tools = []
+
+    async def capture_tools(**kwargs):
+        captured_tools.extend(kwargs.get("tools", []))
+        return "answer"
+
+    handler.executor.run_with_tools = capture_tools
+
+    # Pre-populate queue for this chat_id
+    chat_id = 12345
+    handler._save_pending({str(chat_id): {"pending": [{"query": "q", "response": "r", "queued_at": "2026-04-13T12:00:00"}], "summary_sent": False}})
+
+    # Pre-populate history where last message IS the notification
+    handler._chat_history[chat_id] = [
+        {"role": "user", "content": "what time is it"},
+        {"role": "assistant", "content": "📬 Network is back. I have 1 response queued."}
+    ]
+
+    mock_update = MagicMock()
+    mock_update.effective_user.id = chat_id
+    mock_update.effective_chat.id = chat_id
+    mock_update.message = AsyncMock()
+    mock_update.message.text = "yes"
+
+    await handler.handle_message(mock_update, MagicMock())
+
+    tool_names = [t["function"]["name"] for t in captured_tools]
+    assert "deliver_pending_replies" in tool_names, \
+        "deliver_pending_replies should be exposed when last message was the notification"
+    assert "discard_pending_replies" in tool_names
 
 
 # ── /comms forget subcommand (Fix 3: bug c1a5ce) ─────────────────────────────
