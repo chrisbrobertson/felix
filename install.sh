@@ -428,6 +428,7 @@ DAEMON_FILES=(
     code_scanner.py
     goals_tracker.py
     project_inference_scanner.py
+    goal_project_agent.py
     report_scheduler.py
     skill_creator.py
     skill_executor.py
