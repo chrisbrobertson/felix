@@ -5,8 +5,19 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from litellm.exceptions import RateLimitError as _RateLimitError, AuthenticationError as _AuthError
 
 import skill_executor as se
+
+
+def _rate_err(msg="rate limited"):
+    """Construct a retryable litellm RateLimitError."""
+    return _RateLimitError(message=msg, llm_provider="test", model="test-model")
+
+
+def _auth_err(msg="invalid key"):
+    """Construct a non-retryable litellm AuthenticationError."""
+    return _AuthError(message=msg, llm_provider="test", model="test-model")
 
 SKILL_CONTENT = """\
 ---
@@ -153,21 +164,21 @@ async def test_watcher_does_not_modify_skill_file(executor_watcher, skills_dir, 
 # --- Error handling ---
 
 async def test_run_returns_none_on_api_error(executor_full, caplog):
-    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=Exception("timeout"))):
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=_rate_err("timeout"))):
         with caplog.at_level(logging.ERROR, logger="skill-executor"):
             result = await executor_full.run({"url": "u", "title": "t", "content": "c"})
     assert result is None
 
 
 async def test_run_writes_error_log_on_failure(executor_full, caplog):
-    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=Exception("API down"))):
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=_rate_err("API down"))):
         with caplog.at_level(logging.ERROR, logger="skill-executor"):
             await executor_full.run({"url": "u", "title": "t", "content": "c"})
     assert "API down" in caplog.text
 
 
 async def test_error_score_logged_as_zero(executor_full, skills_dir, caplog):
-    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=Exception("fail"))):
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=_rate_err("fail"))):
         with caplog.at_level(logging.ERROR, logger="skill-executor"):
             await executor_full.run({"url": "u", "title": "t", "content": "c"})
     skill_text = (skills_dir / "summarize-webpage.md").read_text()
@@ -186,7 +197,7 @@ async def test_run_falls_back_on_error(skills_dir):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            raise Exception("rate limit")
+            raise _rate_err("rate limit")
         mock = MagicMock()
         mock.choices[0].message.content = "fallback result"
         return mock
@@ -209,7 +220,7 @@ async def test_run_happy_path_does_not_call_fallback(executor_full):
 
 
 async def test_run_both_models_fail_writes_error_log(executor_full, caplog):
-    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=Exception("all down"))):
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=_rate_err("all down"))):
         with caplog.at_level(logging.ERROR, logger="skill-executor"):
             result = await executor_full.run({"url": "u", "title": "t", "content": "c"})
     assert result is None
@@ -223,7 +234,7 @@ async def test_run_no_fallback_when_field_missing(skills_dir, caplog):
     with patch.object(se, "SKILLS_DIR", skills_dir):
         executor = se.SkillExecutor("summarize-webpage", role="full")
 
-    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=Exception("fail"))) as mock_ac:
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=_rate_err("fail"))) as mock_ac:
         with caplog.at_level(logging.ERROR, logger="skill-executor"):
             result = await executor.run({"url": "u", "title": "t", "content": "c"})
 
@@ -241,7 +252,7 @@ async def test_run_execution_log_records_fallback_model_when_used(skills_dir, tm
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            raise Exception("primary down")
+            raise _rate_err("primary down")
         mock = MagicMock()
         mock.choices[0].message.content = "fallback"
         return mock
@@ -378,3 +389,80 @@ async def test_run_defaults_max_tokens_to_1000(skills_dir):
     assert call_kwargs["max_tokens"] == 1000, (
         f"Expected default max_tokens=1000, got {call_kwargs['max_tokens']}"
     )
+
+
+# --- Transient vs permanent error filtering (fix 5f86d4) ---
+
+async def test_run_auth_error_propagates_not_retried(executor_full):
+    """Non-retryable errors (e.g. auth) must propagate immediately — not swallowed."""
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=_auth_err())):
+        with pytest.raises(_AuthError):
+            await executor_full.run({"url": "u", "title": "t", "content": "c"})
+
+
+async def test_run_transient_error_falls_back_to_next_model(skills_dir):
+    """A transient error on the preferred model causes run() to try the fallback model."""
+    with patch.object(se, "SKILLS_DIR", skills_dir):
+        executor = se.SkillExecutor("summarize-webpage", role="full")
+
+    call_count = 0
+    def side_effect(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise _rate_err()
+        mock = MagicMock()
+        mock.choices[0].message.content = "from fallback"
+        return mock
+
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=side_effect)), \
+         patch.object(se, "BRAIN_DIR", skills_dir.parent):
+        result = await executor.run({"url": "u", "title": "t", "content": "c"})
+
+    assert result == "from fallback"
+    assert call_count == 2
+
+
+async def test_run_with_tools_auth_error_propagates(skills_dir):
+    """Non-retryable errors in run_with_tools() also propagate — not swallowed."""
+    with patch.object(se, "SKILLS_DIR", skills_dir):
+        executor = se.SkillExecutor("summarize-webpage", role="full")
+
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=_auth_err())):
+        with pytest.raises(_AuthError):
+            await executor.run_with_tools(
+                inputs={"query": "test"},
+                tools=[],
+                tool_dispatch=AsyncMock(),
+            )
+
+
+async def test_run_with_tools_transient_error_falls_back(skills_dir):
+    """A transient error on the preferred model causes run_with_tools() to try the fallback."""
+    with patch.object(se, "SKILLS_DIR", skills_dir):
+        executor = se.SkillExecutor("summarize-webpage", role="full")
+
+    call_count = 0
+    msg = MagicMock()
+    msg.content = "tools fallback result"
+    msg.tool_calls = []
+
+    def side_effect(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise _rate_err()
+        resp = MagicMock()
+        resp.choices[0].message = msg
+        return resp
+
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=side_effect)), \
+         patch.object(se, "BRAIN_DIR", skills_dir.parent):
+        result = await executor.run_with_tools(
+            inputs={"query": "test"},
+            tools=[],
+            tool_dispatch=AsyncMock(),
+        )
+
+    assert result == "tools fallback result"
+    assert call_count == 2

@@ -180,7 +180,11 @@ async def test_run_with_tools_fallback_on_error(tmp_skills_dir, mock_tool_dispat
     response = MagicMock()
     response.choices = [choice]
 
-    mock_acompletion = AsyncMock(side_effect=[RuntimeError("preferred failed"), response])
+    from litellm.exceptions import RateLimitError as _RL
+    mock_acompletion = AsyncMock(side_effect=[
+        _RL(message="preferred failed", llm_provider="test", model="test"),
+        response,
+    ])
 
     with patch("skill_executor.SKILLS_DIR", tmp_skills_dir), \
          patch("skill_executor.acompletion", mock_acompletion):
@@ -199,7 +203,8 @@ async def test_run_with_tools_all_models_fail(tmp_skills_dir, mock_tool_dispatch
     """Both models raise — returns None, error logged via log.error."""
     from skill_executor import SkillExecutor
 
-    mock_acompletion = AsyncMock(side_effect=RuntimeError("all failed"))
+    from litellm.exceptions import RateLimitError as _RL
+    mock_acompletion = AsyncMock(side_effect=_RL(message="all failed", llm_provider="test", model="test"))
 
     with patch("skill_executor.SKILLS_DIR", tmp_skills_dir), \
          patch("skill_executor.acompletion", mock_acompletion):

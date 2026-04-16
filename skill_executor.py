@@ -7,7 +7,24 @@ from pathlib import Path
 from typing import Optional
 
 from litellm import acompletion
+from litellm.exceptions import (
+    APIConnectionError as LiteLLMConnectionError,
+    RateLimitError as LiteLLMRateLimitError,
+    ServiceUnavailableError as LiteLLMServiceUnavailableError,
+    InternalServerError as LiteLLMInternalServerError,
+    Timeout as LiteLLMTimeout,
+)
 from llm_routes import resolve
+
+# Exceptions that indicate a transient failure — safe to retry on the fallback model.
+# Auth errors, bad request, and quota exhaustion are permanent and propagate up.
+_RETRYABLE_ERRORS = (
+    LiteLLMConnectionError,
+    LiteLLMRateLimitError,
+    LiteLLMServiceUnavailableError,
+    LiteLLMInternalServerError,
+    LiteLLMTimeout,
+)
 
 log = logging.getLogger("skill-executor")
 
@@ -68,7 +85,7 @@ class SkillExecutor:
                     log.warning(f"{self.skill_name} succeeded on fallback {resolve(model)} "
                                 f"(preferred {resolve(preferred)} failed: {last_err})")
                 return result
-            except Exception as e:
+            except _RETRYABLE_ERRORS as e:
                 last_err = e
                 log.warning(f"{self.skill_name} failed on {resolve(model)}: {e}")
                 continue
@@ -217,7 +234,7 @@ class SkillExecutor:
                     f"Try asking a more specific question, or ask for a single list at a time.)"
                 )
 
-            except Exception as e:
+            except _RETRYABLE_ERRORS as e:
                 last_err = e
                 log.warning(f"{self.skill_name} (tools) failed on {resolve(model)}: {e}")
                 continue
