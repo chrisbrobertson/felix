@@ -121,6 +121,23 @@ Do not commit:
 - `com.chrisrobertson.secondbrain.plist` with real API keys filled in
 - `~/.second-brain-seen-urls` or any runtime state files
 
+## Versioning and Changelog
+
+`VERSION` at the repo root is the single source of truth for the release number — it's displayed by `install.sh`, logged at daemon startup, and reported by the `/version` Telegram command. `CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) with semver.
+
+**Every shipping commit must** append a bullet to the `[Unreleased]` section of `CHANGELOG.md` under the appropriate subsection (`Added`, `Changed`, `Fixed`, `Removed`). Most individual commits do **not** need a `VERSION` bump — batch several related patches together and bump once before `./install.sh`.
+
+**When you do bump `VERSION`, also close out `[Unreleased]`:** rename the section header to `## [x.y.z] — YYYY-MM-DD` and add a new empty `## [Unreleased]` above it. Both edits go in the same "Bump version to x.y.z" commit.
+
+**Semver rules:**
+- **Patch** (`1.3.0 → 1.3.1`) — bug fixes, behaviour-affecting cleanup, deploy-script fixes.
+- **Minor** (`1.3.1 → 1.4.0`) — new async loop, new Telegram command, new config option, new skill file, new user-visible capability.
+- **Major** (`1.x → 2.0.0`) — breaking change to `config.yaml` schema, the install flow, the Telegram command contract, or the on-disk memory format.
+
+**Does not warrant a CHANGELOG entry or bump:** test-only changes, pure refactors with no behaviour change, edits under `specs/`, status flips on iCloud feature-request files, README prose that doesn't describe new behaviour.
+
+**Rule of thumb:** never run `./install.sh` on a code change without first appending to `CHANGELOG.md [Unreleased]`. The daemon should never report a `VERSION` whose shipped code doesn't match what the changelog says landed at that version.
+
 ## Runtime File Locations
 
 All live data lives outside the repo, in iCloud Drive:
