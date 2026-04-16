@@ -416,6 +416,7 @@ DAEMON_FILES=(
     daemon.py
     browser_watcher.py
     calendar_scanner.py
+    content_fetcher.py
     chat_handler.py
     chat_tools.py
     commitment_tracker.py
