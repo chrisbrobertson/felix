@@ -90,15 +90,18 @@ class CalendarDataSource:
         """Factory: return best available source, or None if nothing works."""
         src = CalendarCacheSource.create()
         if src:
+            log.info("Calendar data source: Calendar Cache (SQLite)")
             return src
         log.debug("Calendar Cache unavailable — trying EventKit")
         src = EventKitSource.create()
         if src:
+            log.info("Calendar data source: EventKit")
             return src
         log.warning(
-            "EventKit unavailable — falling back to AppleScript. "
+            "Calendar Cache and EventKit unavailable — falling back to AppleScript. "
             "Grant Calendar access in System Settings → Privacy & Security → Calendars."
         )
+        log.info("Calendar data source: AppleScript")
         return AppleScriptSource()
 
     def get_events(self, start_date, end_date, skip_calendars):
@@ -388,9 +391,12 @@ class AppleScriptSource(CalendarDataSource):
                 return ""
             if proc.returncode != 0:
                 if "-1743" in stderr:
-                    log.warning("Calendar.app Automation permission denied (error -1743)")
+                    log.warning(
+                        "Calendar.app Automation permission denied (error -1743). "
+                        "Grant Automation access: System Settings → Privacy & Security → Automation."
+                    )
                 else:
-                    log.debug("osascript error: %s", stderr.strip())
+                    log.warning("osascript exited %d: %s", proc.returncode, stderr.strip()[:200])
                 return ""
             return stdout.strip()
         except Exception as e:
@@ -470,7 +476,7 @@ output
                 "title": title or "Untitled Event",
                 "start_time": start_time,
                 "end_time": end_time,
-                "modified_time": datetime.now(),  # Unknown in AppleScript
+                "modified_time": start_time,  # AppleScript has no modified_time; use start_time as stable proxy
                 "location": location,
                 "notes": "",  # Notes not available in simple AppleScript
                 "all_day": False,  # Detect via time if needed
@@ -728,11 +734,15 @@ class CalendarScanner:
 
         deduplicated = list(dedup.values())
         if not deduplicated:
-            log.debug("No calendar events to process")
+            log.info("Calendar scan: 0 events in -%d/+%d day window", lookback_days, forward_days)
+            state["last_scan_time"] = datetime.now().isoformat()
+            self._save_state(state)
+            return
         else:
             raw_count = len(events)
             merged_count = raw_count - len(deduplicated)
-            msg = f"Processing {min(len(deduplicated), max_events)} calendar event(s)"
+            capped = min(len(deduplicated), max_events)
+            msg = f"Calendar scan: {capped} event(s) in window"
             if merged_count:
                 msg += f" ({merged_count} cross-calendar duplicate(s) merged)"
             log.info(msg)
@@ -772,8 +782,11 @@ class CalendarScanner:
         state["last_scan_time"] = datetime.now().isoformat()
         self._save_state(state)
 
+        skipped_count = len(deduplicated[:max_events]) - processed_count
         if processed_count:
-            log.info("Calendar scan complete — %d event(s) updated", processed_count)
+            log.info("Calendar scan complete — %d updated, %d unchanged", processed_count, skipped_count)
+        else:
+            log.info("Calendar scan complete — 0 updated, %d event(s) already current", skipped_count)
 
     def _memory_path(self, event: dict) -> Path:
         """Generate memory file path for event.
