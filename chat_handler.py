@@ -3777,7 +3777,7 @@ class TelegramChatHandler:
         return None
 
     def _resolve_feature_index(self, args, update: Update):
-        """Convert 1-based index or #N issue-number to a value from _last_feature_set, or None."""
+        """Convert 1-based index, #N issue-number, or short_id hash to a feature, or None."""
         if not args:
             return None
         arg = str(args[0])
@@ -3791,6 +3791,12 @@ class TelegramChatHandler:
             n = int(arg)
             idx = n - 1
         except (ValueError, TypeError):
+            # Not an integer — try matching by short_id hash in feature files
+            memories_dir = BRAIN_DIR / "memories"
+            for f in sorted(memories_dir.glob("feature-request-*.md")):
+                fm = self._parse_frontmatter(f)
+                if fm.get("short_id") == arg:
+                    return f
             return None
         if 0 <= idx < len(self._last_feature_set):
             return self._last_feature_set[idx]

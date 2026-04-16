@@ -3728,3 +3728,44 @@ async def test_cmd_defer_sets_defer_until_and_hides_from_default_list(handler, b
     await handler.cmd_actions(update2, context2)
     reply2 = update2.message.reply_text.call_args[0][0]
     assert "No pending agent actions" in reply2 or "0" in reply2
+
+
+# ── _resolve_feature_index hash fallback (fix fcfc1f) ─────────────────────────
+
+def test_resolve_feature_by_hash(handler, brain_dir):
+    """_resolve_feature_index accepts short_id hash (not just numeric index)."""
+    memories_dir = brain_dir / "memories"
+    memories_dir.mkdir(exist_ok=True)
+
+    feature_file = memories_dir / "feature-request-dark-mode-abcdef.md"
+    feature_file.write_text(
+        "---\ntitle: dark mode\ntype: feature_request\nkind: feature\nstatus: new\n"
+        "short_id: abcdef\n---\n\n## Request\nadd dark mode\n"
+    )
+
+    result = handler._resolve_feature_index(["abcdef"], MagicMock())
+    assert result == feature_file
+
+
+def test_resolve_feature_by_hash_not_found(handler, brain_dir):
+    """_resolve_feature_index returns None when hash matches nothing."""
+    memories_dir = brain_dir / "memories"
+    memories_dir.mkdir(exist_ok=True)
+    result = handler._resolve_feature_index(["xxxxxx"], MagicMock())
+    assert result is None
+
+
+def test_resolve_feature_by_numeric_index_still_works(handler, brain_dir):
+    """Numeric index lookup still works after hash-fallback addition."""
+    memories_dir = brain_dir / "memories"
+    memories_dir.mkdir(exist_ok=True)
+
+    feature_file = memories_dir / "feature-request-dark-mode-abcdef.md"
+    feature_file.write_text(
+        "---\ntitle: dark mode\ntype: feature_request\nkind: feature\nstatus: new\n"
+        "short_id: abcdef\n---\n\n## Request\nadd dark mode\n"
+    )
+    handler._last_feature_set = [feature_file]
+
+    result = handler._resolve_feature_index(["1"], MagicMock())
+    assert result == feature_file
