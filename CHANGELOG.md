@@ -6,6 +6,24 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-04-16
+
+### Added
+- `add_bug` and `add_feature` Telegram tools — agent can now file bugs and feature requests directly from chat (previously only `add_project` existed)
+- `chat.md` system prompt now explicitly reminds the agent it always has function-calling tools, preventing "I have no tools" refusals
+
+### Fixed
+- Chat handler: context scoring now augments short queries (< 3 tokens) with recent conversation turns, so follow-up messages ("yes", "which one?") retrieve the right memories
+- Chat handler: `deliver_pending_replies` tool now only appears when the last history entry is the "📬 Network is back" notification — prevents spurious fires on unrelated "yes" replies
+- Chat handler: `/close` accepts a 6-char `short_id` hash in addition to a numeric index, matching the ID shown in `/feature` and `/bug` listings
+- Chat handler: `timedelta` alias was shadowing `datetime` in `_rewrite_features_index_snapshot`, causing `AttributeError: type object 'timedelta' has no attribute 'now'`
+- Notification manager: pre-meeting 10-min alert dedup now keyed on `file.stem` (the full canonical name) rather than a glob-matched `event_id` that never matched, so the alert fires exactly once per event instead of on every scan cycle
+- Skill executor: fallback model loop now catches only transient errors (`RateLimitError`, `APIConnectionError`, `ServiceUnavailableError`, `InternalServerError`, `Timeout`); auth errors and schema errors propagate immediately instead of being silently swallowed
+- Install: `content_fetcher.py` was missing from `DAEMON_FILES` — watcher nodes crashed with `ModuleNotFoundError: No module named 'content_fetcher'` on startup
+- Install: `VERSION` file now deployed to `~/secondbrain/` alongside daemon modules
+- Email scanner: `get_threads_since()` and `get_threads_updated_since()` now run via `asyncio.run_in_executor` — eliminates `OSError: [Errno 11] Resource deadlock avoided` caused by blocking `subprocess.communicate()` on the event loop thread on macOS
+- Daemon: `LITELLM_LOG=ERROR` set before any scanner module imports litellm — eliminates spurious INFO-level completion lines appearing in `error.log` (litellm installs a `StreamHandler(stderr, DEBUG)` at import time that bypassed our log-level filters)
+
 ## [1.3.0] — 2026-04-16
 
 First tagged release. Establishes semver infrastructure (VERSION file,
