@@ -812,7 +812,8 @@ async def test_pre_meeting_deduplication(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
     state_file = tmp_path / "notification-state.json"
-    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_pre_meeting": ["evt123"]}))
+    # Key is the full filename stem (f.stem) not just event_id
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_pre_meeting": ["calendar-event-evt123"]}))
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -835,6 +836,49 @@ async def test_pre_meeting_deduplication(tmp_path):
                     await mgr._check_pre_meeting_alerts(state)
 
     bot_mock.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pre_meeting_dedup_survives_prune(tmp_path):
+    """Regression: alert must not re-fire after _prune_sent_alerts runs.
+
+    Bug e55d54: the old code stored event_id ('evt123') but pruned with a
+    glob pattern that never matched, so the entry was dropped from state on
+    every prune cycle and the alert re-fired every 60 seconds.
+    Fix: store f.stem as the key so prune can look up the file directly.
+    """
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  enabled: true\n")
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_pre_meeting": []}))
+
+    now = datetime(2026, 4, 11, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    event_time = now + timedelta(minutes=10)
+    make_calendar_event(memories_dir, "evt123", "Team Standup", event_time.isoformat())
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    # First cycle: alert fires
+                    state = nm._load_state()
+                    await mgr._check_pre_meeting_alerts(state)
+                    assert bot_mock.send_message.call_count == 1
+
+                    # Prune: event is still in future, so entry should be KEPT
+                    mgr._prune_sent_alerts(state)
+                    assert "calendar-event-evt123" in state["sent_pre_meeting"]
+
+                    # Second cycle: alert must NOT re-fire
+                    await mgr._check_pre_meeting_alerts(state)
+                    assert bot_mock.send_message.call_count == 1  # still 1, not 2
 
 
 def test_pre_meeting_includes_contacts(tmp_path):
@@ -918,7 +962,7 @@ def test_pre_meeting_missing_contact_graceful(tmp_path):
 
 
 def test_pre_meeting_sent_alerts_pruned(tmp_path):
-    """Entries for past events removed from state."""
+    """Entries for past events removed from state; future events kept."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
@@ -929,11 +973,17 @@ def test_pre_meeting_sent_alerts_pruned(tmp_path):
 
     now = datetime(2026, 4, 11, 10, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
     past_time = now - timedelta(hours=1)
+    future_time = now + timedelta(hours=1)
 
     state_file = tmp_path / "notification-state.json"
-    state_file.write_text(json.dumps({"sent_pre_meeting": ["evt123"]}))
+    # Keys are full filename stems (f.stem), not bare event_ids
+    state_file.write_text(json.dumps({"sent_pre_meeting": [
+        "calendar-event-evt-past",
+        "calendar-event-evt-future",
+    ]}))
 
-    make_calendar_event(memories_dir, "evt123", "Past Event", past_time.isoformat())
+    make_calendar_event(memories_dir, "evt-past", "Past Event", past_time.isoformat())
+    make_calendar_event(memories_dir, "evt-future", "Future Event", future_time.isoformat())
 
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
@@ -943,9 +993,10 @@ def test_pre_meeting_sent_alerts_pruned(tmp_path):
                     state = nm._load_state()
                     mgr._prune_sent_alerts(state)
                     nm._save_state(state)
+                reloaded = nm._load_state()
 
-    reloaded = nm._load_state()
-    assert "evt123" not in reloaded["sent_pre_meeting"]
+    assert "calendar-event-evt-past" not in reloaded["sent_pre_meeting"]
+    assert "calendar-event-evt-future" in reloaded["sent_pre_meeting"]
 
 
 # ── Message Chunking ──────────────────────────────────────────────────────────

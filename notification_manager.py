@@ -191,15 +191,16 @@ class NotificationManager:
 
         state["sent_commitment_alerts"] = pruned_commitments
 
-        # Prune pre-meeting alerts: remove if start_time has passed
+        # Prune pre-meeting alerts: remove if start_time has passed.
+        # event_id is the full filename stem (e.g. "calendar-event-macstudio-…-abc123")
+        # so we can look up the file directly without a wildcard glob.
         pruned_meetings = []
         for event_id in state.get("sent_pre_meeting", []):
-            # Find the calendar event file
-            event_files = list(MEMORIES_DIR.glob(f"calendar-event-*-{event_id}.md"))
-            if not event_files:
+            event_file = MEMORIES_DIR / (event_id + ".md")
+            if not event_file.exists():
                 continue  # File deleted — discard
 
-            fm = _parse_frontmatter(event_files[0].read_text())
+            fm = _parse_frontmatter(event_file.read_text())
             start_time_str = fm.get("start_time")
             if not start_time_str:
                 continue  # No start time — discard
@@ -702,8 +703,9 @@ class NotificationManager:
             if not (window_start <= start_time <= window_end):
                 continue  # Outside window
 
-            # Extract event ID from filename or use stable hash
-            event_id = fm.get("event_id") or f.name.replace("calendar-event-", "").replace(".md", "")
+            # Use the full filename stem as the dedup key so _prune_sent_alerts
+            # can look up the file directly (no wildcard glob needed).
+            event_id = f.stem  # e.g. "calendar-event-macstudio-2026-04-16-dentist-def456"
 
             if event_id in sent_meetings:
                 continue  # Already sent
