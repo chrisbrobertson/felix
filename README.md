@@ -756,7 +756,17 @@ After pulling or editing source files, re-run the installer to push changes to t
 ./install.sh
 ```
 
+The installer displays the current version in its header and footer. After a successful deploy, it prints the git tag command to mark the release:
+
+```
+git tag v1.3.0 && git push --tags
+```
+
 The installer is idempotent — it skips unchanged files and only copies what has changed. The daemon is reloaded automatically at the end.
+
+### Versioning
+
+This project uses [Semantic Versioning](https://semver.org/). The current version is in the `VERSION` file at the repo root. The daemon reports it at startup (`Starting second-brain daemon v1.3.0`) and via the `/version` Telegram command. `CHANGELOG.md` tracks what changed in each release.
 
 **Note for multi-machine setups:** After upgrading, restart the daemon on every machine. The code scanner will automatically migrate legacy files on first start:
 - `project-{name}.md` → `project-{hostname}-{name}.md` (v1.1.0)

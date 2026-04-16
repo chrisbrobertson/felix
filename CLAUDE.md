@@ -27,9 +27,12 @@ commitment_tracker.py          # Extracts commitments from meeting/email memorie
 contact_tracker.py             # Aggregates participants across memories, /contacts cmd
 goals_tracker.py               # GoalManager CRUD class for goal and project memories
 project_inference_scanner.py  # Scans comms memories, infers projects, writes candidates
+goal_project_agent.py          # 14th loop — checks active goals/projects, proposes actions via Telegram
 github_client.py               # Async GitHub Issues API client (optional GH backing for /feature and /bug)
 llm_routes.py                  # resolve(alias) → concrete model ID; centralises LiteLLM route aliases
 utils.py                       # Shared helpers
+VERSION                        # Semver version string (single source of truth)
+CHANGELOG.md                   # Version history — update with every version bump
 skills/                        # Skill .md files (committed; deployed to iCloud skills/ dir)
 tests/
 ├── unit/                      # Per-module unit tests (mocked LLM + filesystem)
@@ -77,6 +80,25 @@ Agent(
 ```
 
 Research-only agents (Explore, Plan, docs reads) do not need a worktree — only agents that write files or run tests.
+
+## Versioning
+
+This project uses [Semantic Versioning](https://semver.org/). The `VERSION` file at the repo root is the single source of truth — `daemon.py` reads it at startup, `/version` reports it via Telegram, and `install.sh` displays it in the header.
+
+**When to bump:**
+- **PATCH** (`1.3.x`) — bug fixes, logging improvements, performance tweaks, docs-only changes
+- **MINOR** (`1.x.0`) — new features, new Telegram commands, new async loops, new scanners
+- **MAJOR** (`x.0.0`) — breaking changes to memory file formats, config schema, or deployment model that require manual migration
+
+**Release workflow** (do this whenever a meaningful set of changes is complete):
+
+1. Edit `VERSION` — increment the appropriate component
+2. Update `CHANGELOG.md` — add a new `## [X.Y.Z] — YYYY-MM-DD` section describing what changed
+3. Commit both files: `git commit -m "Bump version to X.Y.Z"`
+4. Tag: `git tag vX.Y.Z && git push --tags`
+5. Deploy: `./install.sh`
+
+Do not create a version bump commit for every individual change. Group related changes into a release. A release commit should only touch `VERSION` and `CHANGELOG.md` — the actual code changes are in the preceding commits.
 
 ## Committing and Deploying
 
