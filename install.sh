@@ -440,6 +440,7 @@ DAEMON_FILES=(
     utils.py
     zoom_scanner.py
     github_client.py
+    VERSION
 )
 
 deployed=0
