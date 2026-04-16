@@ -381,6 +381,64 @@ class NotificationManager:
                 owner = fm.get("owner", "")
                 lines.append(f"• {desc} — from {owner}")
 
+        # Agent-proposed actions (pending, last 24h)
+        pending_actions = []
+        cutoff_24h = now - timedelta(hours=24)
+        for f in sorted(MEMORIES_DIR.glob("action-*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
+            try:
+                fm = _parse_frontmatter(f.read_text(encoding="utf-8"))
+                if fm.get("type") != "agent_action" or fm.get("status") != "pending":
+                    continue
+                proposed_at_str = fm.get("proposed_at", "")
+                if proposed_at_str:
+                    proposed_at = datetime.fromisoformat(str(proposed_at_str))
+                    # Make tz-aware if needed
+                    if now.tzinfo is not None and proposed_at.tzinfo is None:
+                        proposed_at = proposed_at.replace(tzinfo=now.tzinfo)
+                    elif now.tzinfo is None and proposed_at.tzinfo is not None:
+                        proposed_at = proposed_at.replace(tzinfo=None)
+                    if proposed_at >= cutoff_24h:
+                        pending_actions.append(fm)
+            except Exception:
+                pass
+
+        if pending_actions:
+            lines.append(f"\nAgent proposals ({len(pending_actions)}):")
+            for fm in pending_actions[:10]:
+                lines.append(f"• [{fm['action_type']}] {str(fm.get('rationale',''))[:80]}")
+            lines.append("  → /actions to review, /run N to approve")
+
+        # Goal/project agent updates (recent reports)
+        goal_agent_state_file = DEPLOY_DIR / "goal-agent-state.json"
+        if goal_agent_state_file.exists():
+            try:
+                agent_state = json.loads(goal_agent_state_file.read_text())
+                updates = []
+                for state_key in ["goals", "projects"]:
+                    for item_name, item_state in agent_state.get(state_key, {}).items():
+                        last_checked_str = item_state.get("last_checked")
+                        last_report = item_state.get("last_report", "")
+                        if not last_checked_str or not last_report:
+                            continue
+                        try:
+                            last_checked = datetime.fromisoformat(last_checked_str)
+                            # Make tz-aware
+                            if now.tzinfo is not None and last_checked.tzinfo is None:
+                                last_checked = last_checked.replace(tzinfo=now.tzinfo)
+                            elif now.tzinfo is None and last_checked.tzinfo is not None:
+                                last_checked = last_checked.replace(tzinfo=None)
+                            if last_checked >= cutoff_24h:
+                                updates.append((item_name, last_report))
+                        except Exception:
+                            continue
+
+                if updates:
+                    lines.append(f"\nGoal/project updates ({len(updates)}):")
+                    for item_name, report in updates[:5]:
+                        lines.append(f"• {item_name}: {report[:80]}")
+            except Exception:
+                pass
+
         # New memories since yesterday
         new_count = 0
         yesterday_midnight = datetime.combine(yesterday, datetime.min.time())

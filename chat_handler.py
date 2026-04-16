@@ -5,7 +5,7 @@ import os
 import re
 import socket
 import yaml
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -82,6 +82,13 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("confirm",  "Confirm candidate N (/confirm N [category])"),
         ("reject",   "Reject candidate N"),
         ("edit",     "Edit a candidate field (/edit N field=value)"),
+    ],
+    "Agent actions": [
+        ("actions", "List pending agent-proposed actions (filter: approved, all)"),
+        ("action",  "Show full detail for action N"),
+        ("run",     "Approve and execute action N"),
+        ("drop",    "Reject action N"),
+        ("defer",   "Snooze action N for N hours (default 24)"),
     ],
     "Notifications": [
         ("briefing", "Trigger today's briefing now"),
@@ -272,6 +279,12 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("confirm", self.cmd_confirm))
         self.app.add_handler(CommandHandler("reject", self.cmd_reject))
         self.app.add_handler(CommandHandler("edit", self.cmd_edit))
+        # Agent actions
+        self.app.add_handler(CommandHandler("actions", self.cmd_actions))
+        self.app.add_handler(CommandHandler("action", self.cmd_action))
+        self.app.add_handler(CommandHandler("run", self.cmd_run))
+        self.app.add_handler(CommandHandler("drop", self.cmd_drop))
+        self.app.add_handler(CommandHandler("defer", self.cmd_defer))
         # System
         self.app.add_handler(CommandHandler("backfill", self.cmd_backfill))
         self.app.add_handler(CommandHandler("remember", self.cmd_remember))
@@ -300,6 +313,8 @@ class TelegramChatHandler:
         self._last_meeting_set: list = []
         # Last /comms result set — used by /comm <N>.
         self._last_comms_set: list = []
+        # Last /actions result set — used by /action <N>, /run <N>, /drop <N>, /defer <N>.
+        self._last_action_set: list = []
         # Last /features result set
         self._last_feature_set: list = []
         # Last /skill-drafts result set
@@ -403,7 +418,7 @@ class TelegramChatHandler:
         """Format an ISO datetime string per display.date_format and display.timezone config."""
         if not iso_str:
             return ""
-        from datetime import datetime
+        from datetime import datetime, timedelta
         display = self._get_display_config()
         fmt = display.get("date_format", "MM/DD/YYYY, HH:MM")
         tz_name = display.get("timezone", "")
@@ -449,7 +464,7 @@ class TelegramChatHandler:
         """Return a human-friendly duration string like '1h 30m'."""
         if not start_str or not end_str:
             return ""
-        from datetime import datetime
+        from datetime import datetime, timedelta
         s = e = None
         for pattern in (
             "%Y-%m-%dT%H:%M:%S%z",
@@ -1327,7 +1342,7 @@ class TelegramChatHandler:
             _record_false_positive,
         )
         import json
-        from datetime import datetime
+        from datetime import datetime, timedelta
 
         fm = self._parse_frontmatter(path)
         title = fm.get("source_title") or "commitment"
@@ -1401,7 +1416,7 @@ class TelegramChatHandler:
         text = update.message.text.strip()
         from commitment_tracker import CommitmentTracker, CORRECTIONS_FILE, _record_missed
         import json
-        from datetime import datetime
+        from datetime import datetime, timedelta
 
         # Parse structured reply
         parsed = {}
@@ -1509,6 +1524,320 @@ class TelegramChatHandler:
         lines.append("")
         lines.append("Use /wrong N to flag false positives. Use /missed to add skipped commitments.")
         await update.message.reply_text("\n".join(lines))
+
+    # ── Agent actions commands ────────────────────────────────────────────────
+
+    def _load_action_set(self, filter_status: Optional[str] = None) -> list:
+        """Load action-*.md files and filter by status. Returns list of (path, fm) tuples."""
+        actions = []
+        now = datetime.now()
+        memories_dir = BRAIN_DIR / "memories"
+
+        for path in memories_dir.glob("action-*.md"):
+            try:
+                fm = self._parse_frontmatter(path)
+                if fm.get("type") != "agent_action":
+                    continue
+
+                status = fm.get("status")
+                defer_until_str = fm.get("defer_until")
+
+                # Default filter: pending and not deferred
+                if filter_status is None:
+                    if status != "pending":
+                        continue
+                    if defer_until_str:
+                        try:
+                            defer_until = datetime.fromisoformat(defer_until_str)
+                            if defer_until > now:
+                                continue  # Still deferred
+                        except Exception:
+                            pass
+                elif filter_status == "approved":
+                    if status != "approved":
+                        continue
+                elif filter_status == "all":
+                    pass  # Include all
+                else:
+                    if status != filter_status:
+                        continue
+
+                actions.append((path, fm))
+            except Exception:
+                continue
+
+        # Sort by proposed_at descending
+        actions.sort(key=lambda x: x[1].get("proposed_at", ""), reverse=True)
+        self._last_action_set = actions
+        return actions
+
+    async def cmd_actions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List pending agent-proposed actions."""
+        if not self._check_auth(update):
+            return
+
+        filter_arg = context.args[0].lower() if context.args else None
+        actions = self._load_action_set(filter_status=filter_arg)
+
+        if not actions:
+            msg = "No pending agent actions."
+            if filter_arg:
+                msg += f" (filter: {filter_arg})"
+            msg += " Use /actions all to see all."
+            await update.message.reply_text(msg)
+            return
+
+        lines = [f"Agent-proposed actions ({len(actions)}):"]
+        for i, (path, fm) in enumerate(actions, 1):
+            action_type = fm.get("action_type", "")
+            target = fm.get("target") or fm.get("source_goal", "")
+            rationale = fm.get("rationale", "")[:60]
+            lines.append(f"{i}. [{action_type}] {target} — {rationale}")
+
+        lines.append("")
+        lines.append("Use /action N for details, /run N to approve and execute.")
+        await update.message.reply_text("\n".join(lines))
+
+    async def cmd_action(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show full detail for action N."""
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /action N")
+            return
+
+        try:
+            idx = int(context.args[0]) - 1
+        except ValueError:
+            await update.message.reply_text("Usage: /action N (where N is a number)")
+            return
+
+        if not self._last_action_set:
+            await update.message.reply_text("No action list loaded. Use /actions first.")
+            return
+
+        if idx < 0 or idx >= len(self._last_action_set):
+            await update.message.reply_text(f"Index {idx+1} out of range. Use /actions to see the list.")
+            return
+
+        path, fm = self._last_action_set[idx]
+        action_type = fm.get("action_type", "")
+        target = fm.get("target") or "none"
+        args = fm.get("args") or {}
+        confidence = fm.get("confidence", 0)
+        rationale = fm.get("rationale", "")
+        evidence = fm.get("evidence") or []
+        proposed_at = fm.get("proposed_at", "")
+        source_goal = fm.get("source_goal", "")
+        defer_until = fm.get("defer_until")
+
+        lines = [
+            f"Action {idx+1}:",
+            f"Type: {action_type}",
+            f"Target: {target}",
+            f"Args: {args}",
+            f"Confidence: {confidence:.2f}",
+            f"Rationale: {rationale}",
+            f"Evidence: {', '.join(evidence) if evidence else 'none'}",
+            f"Proposed: {proposed_at}",
+            f"Source: {source_goal}",
+        ]
+        if defer_until:
+            lines.append(f"Deferred until: {defer_until}")
+
+        lines.append("")
+        lines.append("Use /run N to approve and execute, /drop N to reject, /defer N [hours] to snooze.")
+        await update.message.reply_text("\n".join(lines))
+
+    async def cmd_run(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Approve and execute action N."""
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /run N")
+            return
+
+        try:
+            idx = int(context.args[0]) - 1
+        except ValueError:
+            await update.message.reply_text("Usage: /run N (where N is a number)")
+            return
+
+        if not self._last_action_set:
+            await update.message.reply_text("No action list loaded. Use /actions first.")
+            return
+
+        if idx < 0 or idx >= len(self._last_action_set):
+            await update.message.reply_text(f"Index {idx+1} out of range. Use /actions to see the list.")
+            return
+
+        path, fm = self._last_action_set[idx]
+
+        # Re-read to get fresh status
+        try:
+            fresh_fm = self._parse_frontmatter(path)
+            fresh_text = path.read_text(encoding="utf-8")
+        except Exception as e:
+            await update.message.reply_text(f"Error reading action file: {e}")
+            return
+
+        if fresh_fm.get("status") != "pending":
+            await update.message.reply_text(f"Action {idx+1} is no longer pending (status: {fresh_fm.get('status')})")
+            return
+
+        # Execute
+        from goal_project_agent import GoalProjectAgent
+        agent = GoalProjectAgent(role="full")
+        try:
+            msg = agent._execute_action(path, fresh_fm)
+            # Mark as executed
+            fresh_fm["status"] = "executed"
+            fresh_fm["executed_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            parts = fresh_text.split("---", 2)
+            new_fm = yaml.dump(fresh_fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
+            new_content = f"---\n{new_fm}---{parts[2] if len(parts) >= 3 else ''}"
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(new_content, encoding="utf-8")
+            os.rename(str(tmp), str(path))
+            await update.message.reply_text(f"\u2713 Action {idx+1} executed: {msg}")
+        except Exception as e:
+            # Check if it's a precondition failure — mark as superseded
+            error_str = str(e)
+            if "not found" in error_str.lower() or "already" in error_str.lower():
+                fresh_fm["status"] = "superseded"
+                fresh_fm["superseded_reason"] = error_str
+                fresh_fm["superseded_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                parts = fresh_text.split("---", 2)
+                new_fm = yaml.dump(fresh_fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
+                new_content = f"---\n{new_fm}---{parts[2] if len(parts) >= 3 else ''}"
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(new_content, encoding="utf-8")
+                os.rename(str(tmp), str(path))
+                await update.message.reply_text(f"Action {idx+1} superseded: {error_str}")
+            else:
+                await update.message.reply_text(f"Error executing action {idx+1}: {e}")
+
+    async def cmd_drop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Reject action N."""
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /drop N")
+            return
+
+        try:
+            idx = int(context.args[0]) - 1
+        except ValueError:
+            await update.message.reply_text("Usage: /drop N (where N is a number)")
+            return
+
+        if not self._last_action_set:
+            await update.message.reply_text("No action list loaded. Use /actions first.")
+            return
+
+        if idx < 0 or idx >= len(self._last_action_set):
+            await update.message.reply_text(f"Index {idx+1} out of range. Use /actions to see the list.")
+            return
+
+        path, fm = self._last_action_set[idx]
+
+        # Re-read to get fresh state
+        try:
+            fresh_fm = self._parse_frontmatter(path)
+            fresh_text = path.read_text(encoding="utf-8")
+        except Exception as e:
+            await update.message.reply_text(f"Error reading action file: {e}")
+            return
+
+        # Update status to rejected
+        fresh_fm["status"] = "rejected"
+        fresh_fm["rejected_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+        # Append to rejected actions file
+        rejected_file = DEPLOY_DIR / "rejected-actions.json"
+        if rejected_file.exists():
+            try:
+                rejected_data = json.loads(rejected_file.read_text())
+            except Exception:
+                rejected_data = {"rejected": []}
+        else:
+            rejected_data = {"rejected": []}
+
+        rejected_data["rejected"].append({
+            "action_id": fresh_fm.get("action_id"),
+            "action_type": fresh_fm.get("action_type"),
+            "rationale": fresh_fm.get("rationale"),
+            "rejected_at": fresh_fm["rejected_at"],
+        })
+
+        # Atomic write of rejected file
+        tmp_rej = rejected_file.with_suffix(".tmp")
+        tmp_rej.write_text(json.dumps(rejected_data, indent=2))
+        os.rename(str(tmp_rej), str(rejected_file))
+
+        # Write updated action file
+        parts = fresh_text.split("---", 2)
+        new_fm = yaml.dump(fresh_fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
+        new_content = f"---\n{new_fm}---{parts[2] if len(parts) >= 3 else ''}"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(new_content, encoding="utf-8")
+        os.rename(str(tmp), str(path))
+
+        await update.message.reply_text(f"\u2717 Action {idx+1} rejected.")
+
+    async def cmd_defer(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Snooze action N for N hours (default 24)."""
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /defer N [hours]")
+            return
+
+        try:
+            idx = int(context.args[0]) - 1
+        except ValueError:
+            await update.message.reply_text("Usage: /defer N [hours] (where N is a number)")
+            return
+
+        hours = 24
+        if len(context.args) > 1:
+            try:
+                hours = int(context.args[1])
+            except ValueError:
+                await update.message.reply_text("Hours must be a number")
+                return
+
+        if not self._last_action_set:
+            await update.message.reply_text("No action list loaded. Use /actions first.")
+            return
+
+        if idx < 0 or idx >= len(self._last_action_set):
+            await update.message.reply_text(f"Index {idx+1} out of range. Use /actions to see the list.")
+            return
+
+        path, fm = self._last_action_set[idx]
+
+        # Re-read
+        try:
+            fresh_fm = self._parse_frontmatter(path)
+            fresh_text = path.read_text(encoding="utf-8")
+        except Exception as e:
+            await update.message.reply_text(f"Error reading action file: {e}")
+            return
+
+        # Set defer_until
+        defer_until = datetime.now() + timedelta(hours=hours)
+        fresh_fm["defer_until"] = defer_until.strftime("%Y-%m-%dT%H:%M:%S")
+
+        # Write back
+        parts = fresh_text.split("---", 2)
+        new_fm = yaml.dump(fresh_fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
+        new_content = f"---\n{new_fm}---{parts[2] if len(parts) >= 3 else ''}"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(new_content, encoding="utf-8")
+        os.rename(str(tmp), str(path))
+
+        await update.message.reply_text(f"Action {idx+1} snoozed for {hours}h (until {defer_until.strftime('%Y-%m-%d %H:%M')})")
 
     # ── Goals commands ────────────────────────────────────────────────────────
 
@@ -1681,7 +2010,7 @@ class TelegramChatHandler:
                 return
 
             # Format the list
-            from datetime import datetime
+            from datetime import datetime, timedelta
             lines = []
             header = f"{status.capitalize() if status else 'All'} goals ({len(goals)} total):"
             lines.append(header)
@@ -1911,7 +2240,7 @@ class TelegramChatHandler:
                 return
 
             # Format the list
-            from datetime import datetime
+            from datetime import datetime, timedelta
             lines = []
             header = f"{status.capitalize() if status else 'All'} projects ({len(projects)} total):"
             lines.append(header)
@@ -2592,7 +2921,7 @@ class TelegramChatHandler:
             # Write code file directly
             try:
                 import socket as _socket
-                from datetime import datetime
+                from datetime import datetime, timedelta
 
                 hostname = _socket.gethostname().split(".")[0]
                 name = extracted.get("name", "")
@@ -3479,7 +3808,7 @@ class TelegramChatHandler:
     def _append_feature_note(self, path: Path, note: str):
         """Append a timestamped note to the ## Notes section."""
         import os
-        from datetime import datetime
+        from datetime import datetime, timedelta
         text = _safe_read_text(path)
         if text is None:
             return False
@@ -3565,7 +3894,7 @@ class TelegramChatHandler:
         except Exception as e:
             log.warning(f"features-index snapshot refresh failed: {e}")
             return
-        from datetime import datetime as _dt
+        from datetime import datetime, timedelta as _dt
         fm = {
             "type": "feature_request_index",
             "title": "Feature and bug backlog",
@@ -3856,7 +4185,7 @@ class TelegramChatHandler:
 
         if self.github.enabled:
             await self._gh_ensure_labels()
-            from datetime import datetime
+            from datetime import datetime, timedelta
             body = (
                 f"## Request\n\n{clean_desc}\n\n"
                 f"## Context\n\nCaptured via /feature command at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n\n"
@@ -3875,7 +4204,7 @@ class TelegramChatHandler:
 
         # --- local fallback ---
         import hashlib, os
-        from datetime import datetime
+        from datetime import datetime, timedelta
         memories_dir = BRAIN_DIR / "memories"
         memories_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3917,7 +4246,7 @@ class TelegramChatHandler:
 
         if self.github.enabled:
             await self._gh_ensure_labels()
-            from datetime import datetime
+            from datetime import datetime, timedelta
             body = (
                 f"## Bug\n\n{clean_desc}\n\n"
                 f"## Expected\n\n\n\n"
@@ -3938,7 +4267,7 @@ class TelegramChatHandler:
 
         # --- local fallback ---
         import hashlib, os
-        from datetime import datetime
+        from datetime import datetime, timedelta
         memories_dir = BRAIN_DIR / "memories"
         memories_dir.mkdir(parents=True, exist_ok=True)
         slug = re.sub(r'[^a-z0-9]+', '-', title.lower())[:40].strip('-')

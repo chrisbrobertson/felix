@@ -42,7 +42,7 @@ def handler(brain_dir, tmp_path):
     mock_builder.build.return_value = mock_app
 
     deploy_dir = tmp_path / "deploy"
-    deploy_dir.mkdir()
+    deploy_dir.mkdir(exist_ok=True)
 
     with patch.object(ch, "BRAIN_DIR", brain_dir), \
          patch.object(ch, "DEPLOY_DIR", deploy_dir), \
@@ -3446,3 +3446,179 @@ async def test_cmd_complete_invalid_index_shows_commitments_help(handler, brain_
     reply = update.message.reply_text.call_args[0][0]
     assert "Commitments commands:" in reply
     assert "/complete" in reply
+
+# ── Agent Actions Commands ───────────────────────────────────────────────────
+
+def write_action(memories_dir: Path, action_id: str, action_type: str, target: str, status: str = "pending", rationale: str = "Test rationale", defer_until: str = None):
+    """Write an action-*.md file for testing."""
+    path = memories_dir / f"action-test-{action_id}.md"
+    fm = {
+        "type": "agent_action",
+        "action_id": action_id,
+        "action_type": action_type,
+        "status": status,
+        "target": target,
+        "args": {"text": "Test action"},
+        "confidence": 0.85,
+        "rationale": rationale,
+        "evidence": ["email-test.md"],
+        "proposed_at": "2026-04-16T10:00:00",
+        "source_goal": "goal-test-abc123.md",
+    }
+    if defer_until:
+        fm["defer_until"] = defer_until
+    content = f"---\n{yaml.dump(fm, sort_keys=False)}---\n\n## Rationale\n{rationale}\n"
+    path.write_text(content)
+    return path
+
+
+@pytest.mark.asyncio
+async def test_cmd_actions_lists_pending(handler, brain_dir):
+    """Default /actions filter shows pending, non-deferred actions."""
+    m = brain_dir / "memories"
+    write_action(m, "abc123", "add_milestone", "project-test.md", status="pending")
+    write_action(m, "def456", "update_status", "goal-test.md", status="pending")
+    write_action(m, "ghi789", "add_note", "project-test.md", status="executed")  # Should not appear
+
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_actions(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Agent-proposed actions (2)" in reply
+    assert "[add_milestone]" in reply
+    assert "[update_status]" in reply
+    assert "executed" not in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_cmd_actions_filter_approved(handler, brain_dir):
+    """Filter: approved shows only approved actions."""
+    m = brain_dir / "memories"
+    write_action(m, "abc123", "add_milestone", "project-test.md", status="pending")
+    write_action(m, "def456", "update_status", "goal-test.md", status="approved")
+
+    update, context = _make_update(12345, args=["approved"])
+    await handler.cmd_actions(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Agent-proposed actions (1)" in reply
+    assert "[update_status]" in reply
+    assert "[add_milestone]" not in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_action_detail_shows_rationale_evidence(handler, brain_dir):
+    """Detail view shows full rationale and evidence."""
+    m = brain_dir / "memories"
+    write_action(m, "abc123", "add_milestone", "project-test.md", rationale="Detailed rationale here")
+
+    # Load the action set first
+    await handler.cmd_actions(_make_update(12345, args=[])[0], _make_update(12345, args=[])[1])
+
+    update, context = _make_update(12345, args=["1"])
+    await handler.cmd_action(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Action 1:" in reply
+    assert "Type: add_milestone" in reply
+    assert "Rationale: Detailed rationale here" in reply
+    assert "Evidence: email-test.md" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_run_approves_and_executes(handler, brain_dir):
+    """Successful /run marks action as executed."""
+    m = brain_dir / "memories"
+    project_path = write_memory(m, "test-project", ["work"], "Test Project", source_url="project:test")
+    project_path.rename(m / "project-work-test-abc123.md")
+    action_path = write_action(m, "abc123", "add_note", "project-work-test-abc123.md")
+
+    # Load action set
+    await handler.cmd_actions(_make_update(12345, args=[])[0], _make_update(12345, args=[])[1])
+
+    # Mock GoalProjectAgent._execute_action
+    with patch("goal_project_agent.GoalProjectAgent._execute_action", return_value="Success"):
+        update, context = _make_update(12345, args=["1"])
+        await handler.cmd_run(update, context)
+        reply = update.message.reply_text.call_args[0][0]
+        assert "Action 1 executed" in reply or "Success" in reply
+
+        # Check action file updated
+        fresh_fm = handler._parse_frontmatter(action_path)
+        assert fresh_fm.get("status") == "executed"
+        assert fresh_fm.get("executed_at") is not None
+
+
+@pytest.mark.asyncio
+async def test_cmd_run_superseded_on_precondition_fail(handler, brain_dir):
+    """Precondition failure marks action as superseded."""
+    m = brain_dir / "memories"
+    action_path = write_action(m, "abc123", "add_milestone", "nonexistent.md")
+
+    # Load action set
+    await handler.cmd_actions(_make_update(12345, args=[])[0], _make_update(12345, args=[])[1])
+
+    # Mock _execute_action to raise error
+    with patch("goal_project_agent.GoalProjectAgent._execute_action", side_effect=ValueError("Target not found")):
+        update, context = _make_update(12345, args=["1"])
+        await handler.cmd_run(update, context)
+        reply = update.message.reply_text.call_args[0][0]
+        assert "superseded" in reply.lower() or "not found" in reply.lower()
+
+        # Check action file status
+        fresh_fm = handler._parse_frontmatter(action_path)
+        assert fresh_fm.get("status") == "superseded"
+
+
+@pytest.mark.asyncio
+async def test_cmd_drop_marks_rejected_and_logs(handler, brain_dir, tmp_path):
+    """Drop marks action as rejected and logs to rejected-actions.json."""
+    m = brain_dir / "memories"
+    action_path = write_action(m, "abc123", "add_milestone", "project-test.md")
+
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir(exist_ok=True)
+
+    # Load action set
+    await handler.cmd_actions(_make_update(12345, args=[])[0], _make_update(12345, args=[])[1])
+
+    with patch.object(ch, "DEPLOY_DIR", deploy_dir):
+        update, context = _make_update(12345, args=["1"])
+        await handler.cmd_drop(update, context)
+        reply = update.message.reply_text.call_args[0][0]
+        assert "rejected" in reply.lower()
+
+        # Check action file status
+        fresh_fm = handler._parse_frontmatter(action_path)
+        assert fresh_fm.get("status") == "rejected"
+        assert fresh_fm.get("rejected_at") is not None
+
+        # Check rejected-actions.json
+        rejected_file = deploy_dir / "rejected-actions.json"
+        assert rejected_file.exists()
+        rejected_data = json.loads(rejected_file.read_text())
+        assert len(rejected_data["rejected"]) == 1
+        assert rejected_data["rejected"][0]["action_id"] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_cmd_defer_sets_defer_until_and_hides_from_default_list(handler, brain_dir):
+    """Defer sets defer_until and hides from default /actions."""
+    m = brain_dir / "memories"
+    action_path = write_action(m, "abc123", "add_milestone", "project-test.md")
+
+    # Load action set
+    await handler.cmd_actions(_make_update(12345, args=[])[0], _make_update(12345, args=[])[1])
+
+    # Defer for 48 hours
+    update, context = _make_update(12345, args=["1", "48"])
+    await handler.cmd_defer(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "snoozed" in reply.lower() or "48" in reply
+
+    # Check defer_until set
+    fresh_fm = handler._parse_frontmatter(action_path)
+    assert fresh_fm.get("defer_until") is not None
+
+    # Check default /actions no longer shows it
+    update2, context2 = _make_update(12345, args=[])
+    await handler.cmd_actions(update2, context2)
+    reply2 = update2.message.reply_text.call_args[0][0]
+    assert "No pending agent actions" in reply2 or "0" in reply2

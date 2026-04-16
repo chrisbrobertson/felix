@@ -116,7 +116,7 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 `GITHUB_PAT` + `GITHUB_REPO` (optional) enable GitHub-Issues backing for `/feature` and `/bug`. Both must be set; if either is missing, the local-file fallback is used.
 
-## Architecture: Thirteen Async Loops
+## Architecture: Fourteen Async Loops
 
 1. **Browser Watcher** (every 5 min) — reads Chrome/Firefox SQLite DBs, filters by dwell time and skip-domain list, fetches page content, runs `summarize-webpage` skill, writes memory file.
 
@@ -144,11 +144,13 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 13. **Project Inference Scanner** (every 15 min, `full` role only) — scans `email_thread`, `meeting_transcript`, and `slack_thread` memory files for new/updated content (mtime-based), calls LLM to infer what projects the user is working on (confidence ≥ 0.7), writes `project-candidate-{slug}-{id}.md` files with `status: pending_confirmation`. Users review via `/review` and confirm/reject via `/confirm` and `/reject`. Deduplication against existing project files (title similarity ≥ 0.8) and `rejected-candidates.json`. State persisted in `DEPLOY_DIR/project-inference-state.json`.
 
+14. **Goal/Project Agent** (every 6 hours, `full` role only) — checks all active goals/projects for new related memories (via `inferred_from`, tag overlap, title Jaccard, participant overlap), calls LLM to generate reports and proposed actions, writes `action-{source-slug}-{action-id}.md` files with `status: pending`, sends urgent pings via Telegram (with 24h cooldown). Auto-supersedes actions when preconditions no longer hold. Exposes `/actions [filter]`, `/action <N>`, `/run <N>`, `/drop <N>`, `/defer <N> [hours]` Telegram commands. Integrates into daily briefing (shows pending actions and recent goal/project updates). State persisted in `DEPLOY_DIR/goal-agent-state.json` and `rejected-actions.json`.
+
 **Zoom Scanner** also exposes `/meetings [N]` and `/meeting <N>` Telegram commands for browsing meeting transcripts.
 
 ## Two Deployment Roles
 
-- **`full`** — all thirteen loops. Runs on always-on machine (Mac Studio/Mini). Needs `ANTHROPIC_API_KEY` + `GEMINI_API_KEY`.
+- **`full`** — all fourteen loops. Runs on always-on machine (Mac Studio/Mini). Needs `ANTHROPIC_API_KEY` + `GEMINI_API_KEY`.
 - **`watcher`** — five capture loops (browser watcher + code/email/calendar/slack scanners). Runs on MacBook. Needs only `GEMINI_API_KEY`. Full-node imports (`python-telegram-bot`, etc.) must be deferred inside the `role == "full"` block to avoid crashing on watcher nodes that don't have those packages installed.
 
 ## LLM Routing
@@ -192,6 +194,8 @@ All runtime state lives in `~/secondbrain/` — separate from the repo and from 
 ├── contact-tracker-state.json      # processed file mtimes and interaction timestamps
 ├── slack-scanner-state.json        # processed Slack thread timestamps
 ├── project-inference-state.json    # mtime state for project inference scanner
+├── goal-agent-state.json           # last_checked, last_report_hash, last_urgent_ping for goal/project agent
+├── rejected-actions.json           # rejected action proposals to prevent re-proposal
 ├── commitment-corrections.jsonl    # /wrong and /missed feedback log
 ├── commitment-accuracy.json        # extraction precision stats per source type
 ├── rejected-candidates.json        # rejected candidate sources to prevent re-proposal

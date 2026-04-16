@@ -106,6 +106,7 @@ async def main():
         from skill_creator import SkillCreator
         from report_scheduler import ReportScheduler
         from project_inference_scanner import ProjectInferenceScanner
+        from goal_project_agent import GoalProjectAgent
 
         # Instantiate tier-2 scanners and services
         optimizer = SkillOptimizer(config)
@@ -114,6 +115,7 @@ async def main():
         commitment_tracker = CommitmentTracker(role=role)
         contact_tracker = ContactTracker(role=role)
         project_inference_scanner = ProjectInferenceScanner(role=role)
+        goal_agent = GoalProjectAgent(role=role)
 
         # Build scanners dict for backfill command (tier-1 scanners already instantiated)
         scanners_dict = {
@@ -133,6 +135,7 @@ async def main():
         DEPLOY_DIR = deploy_dir  # set at top of main() for _configure_logging
         notification_mgr = NotificationManager(bot=chat.app.bot, deploy_dir=DEPLOY_DIR)
         chat.notification_manager = notification_mgr
+        goal_agent.notification_callback = notification_mgr.send_message
 
         # Skill creator — wired into browser_watcher and chat_handler
         skill_creator = SkillCreator(config)
@@ -161,6 +164,7 @@ async def main():
             notification_mgr.run_loop,
             report_scheduler.run_loop,
             project_inference_scanner.run_loop,
+            goal_agent.run_loop,
         ]
 
     stop_event = asyncio.Event()
