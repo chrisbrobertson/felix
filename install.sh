@@ -20,8 +20,9 @@ info() { printf "${BLUE}  →${NC}  %s\n" "$1"; }
 die()  { printf "\n${RED}  ✗  %s${NC}\n\n" "$1" >&2; exit 1; }
 
 # ── Header ────────────────────────────────────────────────────────────────────
+VERSION=$(cat "$REPO_DIR/VERSION" 2>/dev/null || echo "unknown")
 echo ""
-echo "  Second Brain — Installer"
+echo "  Second Brain — Installer  (v$VERSION)"
 echo "  ════════════════════════"
 echo ""
 
@@ -672,7 +673,7 @@ info "Calendar scanner will request Automation permission for Calendar.app on fi
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Setup complete"
+echo "  Setup complete — v$VERSION"
 echo ""
 echo "  Logs     tail -f $DEPLOY_DIR/logs/out.log"
 echo "  Stop     launchctl unload \"$PLIST_DEST\""
@@ -688,5 +689,7 @@ else
     echo "  Message your Telegram bot to query your memories."
     echo "  After one hour, check index.md for a synthesis."
 fi
+echo "  Tag this release:"
+echo "    git -C \"$REPO_DIR\" tag v$VERSION && git -C \"$REPO_DIR\" push --tags"
 echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""

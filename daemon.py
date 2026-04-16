@@ -71,11 +71,14 @@ async def main():
     deploy_dir = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
     _configure_logging(deploy_dir)
 
+    VERSION_FILE = Path(__file__).parent / "VERSION"
+    version = VERSION_FILE.read_text().strip() if VERSION_FILE.exists() else "unknown"
+
     config = yaml.safe_load(CONFIG_PATH.read_text())
     # Env var takes precedence over config.yaml — config is shared via iCloud,
     # role is per-machine. Set SECOND_BRAIN_ROLE in each machine's launchd plist.
     role = os.environ.get("SECOND_BRAIN_ROLE") or config.get("daemon", {}).get("role", "full")
-    log.info(f"Starting second-brain daemon — role: {role}")
+    log.info(f"Starting second-brain daemon v{version} — role: {role}")
 
     # Tier 1: local-source scanners — run on both watcher and full roles
     watcher = BrowserWatcher(role=role)

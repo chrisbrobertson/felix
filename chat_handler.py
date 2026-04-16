@@ -145,6 +145,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("backfill", "Reprocess historical data: /backfill <type> [days] [host]. Types: readings, email, zoom, calendar, slack, projects"),
         ("remember", "Fetch a URL and save a reading memory: /remember <url>"),
         ("note", "Fetch a URL and save detailed study notes: /note <url>"),
+        ("version", "Show the running daemon version"),
     ],
 }
 
@@ -220,6 +221,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("communication", self.cmd_comm))
         self.app.add_handler(CommandHandler("help", self.cmd_help))
         self.app.add_handler(CommandHandler("commands", self.cmd_help))
+        self.app.add_handler(CommandHandler("version", self.cmd_version))
         self.app.add_handler(CommandHandler("settings", self.cmd_settings))
         self.app.add_handler(CommandHandler("reset", self.cmd_reset))
         self.app.add_handler(CommandHandler("deliver", self.cmd_deliver))
@@ -3308,6 +3310,13 @@ class TelegramChatHandler:
             lines.append("")
         text = "\n".join(lines).rstrip()
         await self._send_reply(update, text)
+
+    async def cmd_version(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        version_file = Path(__file__).parent / "VERSION"
+        version = version_file.read_text().strip() if version_file.exists() else "unknown"
+        await update.message.reply_text(f"second-brain v{version}")
 
     # ── /code command ─────────────────────────────────────────────────────────
 
