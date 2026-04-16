@@ -3894,7 +3894,7 @@ class TelegramChatHandler:
         except Exception as e:
             log.warning(f"features-index snapshot refresh failed: {e}")
             return
-        from datetime import datetime, timedelta as _dt
+        from datetime import datetime as _dt, timedelta
         fm = {
             "type": "feature_request_index",
             "title": "Feature and bug backlog",
