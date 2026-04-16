@@ -534,10 +534,18 @@ class EmailScanner:
             return
 
         high_water = state.get("high_water_rowid", 0)
+        loop = asyncio.get_running_loop()
         if high_water > 0 and not full_rescan:
-            threads, new_max_rowid = source.get_threads_updated_since(since, high_water, excluded)
+            # Run in executor: get_threads_updated_since calls osascript via
+            # subprocess.Popen + communicate(), which is blocking. Running it
+            # on the event loop thread triggers EDEADLK on macOS.
+            threads, new_max_rowid = await loop.run_in_executor(
+                None, source.get_threads_updated_since, since, high_water, excluded
+            )
         else:
-            threads, new_max_rowid = source.get_threads_since(since, excluded)
+            threads, new_max_rowid = await loop.run_in_executor(
+                None, source.get_threads_since, since, excluded
+            )
 
         if not threads:
             log.debug("No new email threads to process")

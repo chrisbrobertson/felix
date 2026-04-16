@@ -6,6 +6,12 @@ import signal
 import yaml
 from pathlib import Path
 
+# Suppress LiteLLM's default StreamHandler(stderr, DEBUG) — must be set before
+# any module that imports litellm (calendar_scanner, email_scanner, etc.).
+# Without this, every LiteLLM completion() call writes an INFO line directly to
+# stderr, which launchd routes to error.log even though it isn't an error.
+os.environ.setdefault("LITELLM_LOG", "ERROR")
+
 from browser_watcher import BrowserWatcher
 from code_scanner import CodeScanner
 from email_scanner import EmailScanner
