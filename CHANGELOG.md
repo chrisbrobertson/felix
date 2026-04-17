@@ -9,6 +9,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 - Chat history now persisted to `chat-history.json` — conversation context survives daemon restarts instead of being lost on every deploy or crash
 - Chat skill prompt now explicitly instructs the LLM to use conversation history for resolving follow-ups and pronouns
+- Zoom AI Companion: HTTP 400 errors no longer permanently disable the integration for the session — only 403 (missing scopes) triggers permanent disable; 400 and other transient errors log the response body and retry next cycle
 
 ### Added
 - **Skill utility scoring** — `skill_optimizer.py` now computes a recency-weighted `utility_score` (half-life decay, default 14 days) and `score_trend` (improving/declining/stable) alongside the existing `success_rate`; optimizer gates prefer `utility_score` when available; declining skills with `utility_score < 0.80` bypass `min_runs` and cadence gates for immediate rewrite; `/skill_health` Telegram command now shows real scores and trend arrows (▲ ▼ ◆) instead of `?`

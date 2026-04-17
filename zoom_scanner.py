@@ -182,10 +182,10 @@ class ZoomScanner:
     # ── AI Companion ──────────────────────────────────────────────────────────────
 
     async def _list_meeting_summaries(self, client: httpx.AsyncClient, since: datetime) -> Optional[list]:
-        """Returns list of summary metadata dicts, or None on 403/error."""
+        """Returns list of summary metadata dicts, None on 403 (permanent), or [] on transient error."""
         token = await self._get_token()
         if not token:
-            return None
+            return []
 
         results = []
         from_date = since.strftime("%Y-%m-%d")
@@ -212,6 +212,11 @@ class ZoomScanner:
                     continue
                 if resp.status_code == 404:
                     break
+                if resp.status_code == 400:
+                    body = resp.text[:200]
+                    log.warning("Zoom AI Companion API returned 400 — %s (from=%s to=%s)",
+                                body, from_date, to_date)
+                    return []
                 resp.raise_for_status()
                 data = resp.json()
                 results.extend(data.get("summaries", []))
@@ -222,10 +227,10 @@ class ZoomScanner:
                 if e.response.status_code == 403:
                     return None
                 log.warning("Zoom API HTTP error %s: /meetings/meeting_summaries", e.response.status_code)
-                return None
+                return []
             except Exception as e:
                 log.warning("Zoom API request failed (/meetings/meeting_summaries): %s", e)
-                return None
+                return []
 
         return results
 
@@ -1068,7 +1073,7 @@ class ZoomScanner:
             if ai_companion_enabled and not self._ai_companion_disabled:
                 summaries = await self._list_meeting_summaries(client, since)
                 if summaries is None:
-                    # 403 — graceful degradation
+                    # None means 403 — permanently disable for this session
                     if not self._ai_companion_403_logged:
                         log.warning(
                             "AI Companion API returned 403 — missing scopes or feature disabled. "
