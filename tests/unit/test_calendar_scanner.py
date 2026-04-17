@@ -847,8 +847,9 @@ def test_state_file_pruned_at_5000(tmp_path):
 # ── AppleScript fallback ──────────────────────────────────────────────────────
 
 def test_applescript_fallback_triggered(tmp_path):
-    """Missing Calendar Cache → AppleScript path taken."""
-    with patch.object(Path, 'home', return_value=tmp_path):
+    """Missing Calendar Cache and no EventKit → AppleScript path taken."""
+    with patch.object(Path, 'home', return_value=tmp_path), \
+         patch.object(cs.EventKitSource, 'create', return_value=None):
         source = cs.CalendarDataSource.detect()
         assert isinstance(source, AppleScriptSource)
 
