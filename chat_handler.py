@@ -171,6 +171,7 @@ def _safe_read_text(path: Path) -> Optional[str]:
 
 class TelegramChatHandler:
     PENDING_FILE = DEPLOY_DIR / "pending-replies.json"
+    HISTORY_FILE = DEPLOY_DIR / "chat-history.json"
 
     def __init__(self, scanners: dict = None):
         try:
@@ -322,7 +323,7 @@ class TelegramChatHandler:
         # Last /skill-drafts result set
         self._last_skill_draft_set: list = []
         # Conversation history per chat_id — {role, content} pairs, last N turns
-        self._chat_history: dict = {}       # chat_id → list of {role, content}
+        self._chat_history: dict = self._load_history()  # chat_id → list of {role, content}
         self._chat_history_locks: dict = {} # chat_id → asyncio.Lock
         self.HISTORY_WINDOW_TURNS = 6       # keep last 6 user+assistant pairs (12 messages)
         # Last /review result set — used by /review <N>, /confirm <N>, /reject <N>, /edit <N>.
@@ -690,6 +691,28 @@ class TelegramChatHandler:
 
         return True
 
+    def _load_history(self) -> dict:
+        """Load persisted chat history from disk. Returns {int(chat_id): [...]}."""
+        if self.HISTORY_FILE.exists():
+            try:
+                raw = json.loads(self.HISTORY_FILE.read_text())
+                # Keys are strings in JSON; convert to int for chat_id lookup
+                return {int(k): v for k, v in raw.items()}
+            except Exception:
+                log.warning("Failed to load chat history — starting fresh")
+        return {}
+
+    def _save_history(self):
+        """Persist chat history to disk (atomic write)."""
+        tmp = self.HISTORY_FILE.with_suffix(".tmp")
+        try:
+            # Convert int keys to strings for JSON
+            data = {str(k): v for k, v in self._chat_history.items()}
+            tmp.write_text(json.dumps(data, indent=2))
+            os.rename(str(tmp), str(self.HISTORY_FILE))
+        except Exception as e:
+            log.warning("Failed to save chat history: %s", e)
+
     def _load_pending(self) -> dict:
         if self.PENDING_FILE.exists():
             try:
@@ -765,6 +788,7 @@ class TelegramChatHandler:
                     max_msgs = self.HISTORY_WINDOW_TURNS * 2
                     if len(turns) > max_msgs:
                         self._chat_history[int(chat_id_str)] = turns[-max_msgs:]
+                    self._save_history()
 
                     entry["summary_sent"] = True
                     state[chat_id_str] = entry
@@ -5009,6 +5033,8 @@ class TelegramChatHandler:
         max_msgs = self.HISTORY_WINDOW_TURNS * 2
         if len(turns) > max_msgs:
             self._chat_history[chat_id] = turns[-max_msgs:]
+        if delivered_count:
+            self._save_history()
 
         if remaining:
             entry["pending"] = remaining
@@ -5290,6 +5316,7 @@ class TelegramChatHandler:
                 max_msgs = self.HISTORY_WINDOW_TURNS * 2
                 if len(turns) > max_msgs:
                     self._chat_history[chat_id] = turns[-max_msgs:]
+                self._save_history()
                 try:
                     await update.message.set_reaction("✅")
                 except Exception:

@@ -46,13 +46,13 @@ def handler(brain_dir, tmp_path):
 
     with patch.object(ch, "BRAIN_DIR", brain_dir), \
          patch.object(ch, "DEPLOY_DIR", deploy_dir), \
+         patch.object(ch.TelegramChatHandler, "PENDING_FILE", deploy_dir / "pending-replies.json"), \
+         patch.object(ch.TelegramChatHandler, "HISTORY_FILE", deploy_dir / "chat-history.json"), \
          patch("chat_handler.ApplicationBuilder", return_value=mock_builder), \
          patch("chat_handler.SkillExecutor"), \
          patch.dict(os.environ, {"GITHUB_PAT": "", "GITHUB_REPO": ""}, clear=False):
         h = ch.TelegramChatHandler()
         h.allowed_user_id = 12345
-        # Explicitly set PENDING_FILE to use tmp_path
-        h.PENDING_FILE = deploy_dir / "pending-replies.json"
         yield h
 
 
@@ -2320,6 +2320,49 @@ async def test_handle_message_does_not_append_history_on_send_failure(handler):
         # Queue should be called
         assert mock_queue.called
         mock_queue.assert_called_once_with(12345, "test query", "response")
+
+
+@pytest.mark.asyncio
+async def test_handle_message_persists_history_to_disk(handler):
+    """handle_message should write chat history to disk after successful delivery."""
+    mock_update, mock_context = _make_update(12345)
+    mock_update.effective_chat.id = 12345
+    mock_update.message.text = "hello"
+
+    with patch.object(handler.executor, "run_with_tools", new=AsyncMock(return_value="world")), \
+         patch.object(handler, "_send_reply", return_value=True):
+        await handler.handle_message(mock_update, mock_context)
+
+    assert handler.HISTORY_FILE.exists()
+    data = json.loads(handler.HISTORY_FILE.read_text())
+    assert "12345" in data
+    assert data["12345"][-2]["content"] == "hello"
+    assert data["12345"][-1]["content"] == "world"
+
+
+def test_load_history_restores_from_disk(handler):
+    """_load_history should restore previously saved history."""
+    handler.HISTORY_FILE.write_text(json.dumps({
+        "12345": [
+            {"role": "user", "content": "prior question"},
+            {"role": "assistant", "content": "prior answer"},
+        ]
+    }))
+    restored = handler._load_history()
+    assert 12345 in restored
+    assert len(restored[12345]) == 2
+    assert restored[12345][0]["content"] == "prior question"
+
+
+def test_load_history_returns_empty_on_missing_file(handler):
+    """_load_history should return empty dict when no file exists."""
+    assert handler._load_history() == {}
+
+
+def test_load_history_returns_empty_on_corrupt_file(handler):
+    """_load_history should return empty dict when file is corrupt."""
+    handler.HISTORY_FILE.write_text("not json")
+    assert handler._load_history() == {}
 
 
 def test_queue_pending_reply_writes_state_file(handler):
