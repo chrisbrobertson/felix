@@ -43,6 +43,7 @@ class SkillOptimizer:
         self.max_skill_backups = self.config.get("max_skill_backups", 5)
         self.judge_model = self.config.get("judge_model", "judge")
         self.dry_run = self.config.get("dry_run", False)
+        self.half_life_days = self.config.get("half_life_days", 14)
 
         # FR-15 through FR-20: Real-time reflection
         self.realtime_judge = self.config.get("realtime_judge", False)
@@ -407,28 +408,79 @@ Respond with JSON only:
 
         return score, reasoning
 
-    async def _update_frontmatter_stats(self, text: str) -> str:
-        """Recalculate success_rate and total_runs from execution history."""
-        history_section = self._extract_section(text, "## Execution History")
-        if not history_section:
-            return text
+    # ── Utility scoring (feat-skill-utility-scoring) ──────────────────────────
 
-        scores = []
+    def _parse_history_rows(self, history_section: str) -> list[dict]:
+        """Extract [{date, score}] from execution history table (non-pending rows only)."""
+        rows = []
         for line in history_section.splitlines():
             if not line.strip().startswith("|") or "| date |" in line or "|---" in line:
                 continue
             parts = [p.strip() for p in line.split("|")]
             if len(parts) < 5:
                 continue
+            date_str = parts[1]
             score_str = parts[4]
-            if score_str == "pending":
+            if score_str == "pending" or not score_str:
                 continue
             try:
                 score = float(score_str)
                 if score > 0:
-                    scores.append(score)
+                    rows.append({"date": date_str, "score": score})
             except ValueError:
                 continue
+        return rows
+
+    def _compute_utility_score(
+        self, rows: list[dict], half_life_days: float = 14.0
+    ) -> Optional[float]:
+        """Recency-weighted mean using half-life decay. Returns None if < 3 numeric scores."""
+        if len(rows) < 3:
+            return None
+        today = datetime.now().date()
+        total_weight = 0.0
+        weighted_sum = 0.0
+        for row in rows:
+            try:
+                row_date = datetime.strptime(row["date"][:10], "%Y-%m-%d").date()
+                days_old = max(0, (today - row_date).days)
+            except (ValueError, KeyError):
+                days_old = 0
+            weight = 1.0 / (1.0 + days_old / half_life_days)
+            weighted_sum += row["score"] * weight
+            total_weight += weight
+        if total_weight == 0:
+            return None
+        return round(weighted_sum / total_weight, 2)
+
+    def _compute_trend(self, rows: list[dict]) -> str:
+        """Compare recent (last 10) vs previous (11-20) windows of numeric scores."""
+        if len(rows) < 5:
+            return "insufficient-data"
+        # rows are ordered oldest-first from history table; reverse for recency
+        recent_rows = rows[-10:]
+        previous_rows = rows[-20:-10] if len(rows) >= 11 else []
+        if len(recent_rows) < 5 or len(previous_rows) < 5:
+            return "insufficient-data"
+        recent_mean = sum(r["score"] for r in recent_rows) / len(recent_rows)
+        previous_mean = sum(r["score"] for r in previous_rows) / len(previous_rows)
+        diff = recent_mean - previous_mean
+        if diff > 0.05:
+            return "improving"
+        if diff < -0.05:
+            return "declining"
+        return "stable"
+
+    # ── Frontmatter stats ─────────────────────────────────────────────────────
+
+    async def _update_frontmatter_stats(self, text: str) -> str:
+        """Recalculate success_rate, utility_score, and score_trend from execution history."""
+        history_section = self._extract_section(text, "## Execution History")
+        if not history_section:
+            return text
+
+        rows = self._parse_history_rows(history_section)
+        scores = [r["score"] for r in rows]
 
         # Update frontmatter
         parts = text.split("---", 2)
@@ -436,8 +488,22 @@ Respond with JSON only:
             return text
 
         fm = yaml.safe_load(parts[1])
+
+        # Backwards-compat: keep success_rate (simple mean)
         fm["total_runs"] = len(scores)
         fm["success_rate"] = round(sum(scores) / len(scores), 2) if scores else None
+
+        # Recency-weighted utility score and trend (new)
+        half_life = fm.get("half_life_days", self.half_life_days)
+        utility = self._compute_utility_score(rows, half_life_days=half_life)
+        trend = self._compute_trend(rows)
+        if utility is not None:
+            fm["utility_score"] = utility
+            fm["utility_score_updated"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            fm["score_trend"] = trend
+        elif "utility_score" not in fm:
+            # Leave existing utility_score alone if rows < 3 but field already present
+            fm["score_trend"] = trend
 
         parts[1] = yaml.dump(fm, sort_keys=False)
         return "---".join(parts)
@@ -491,7 +557,8 @@ Respond with JSON only:
             return False
 
         fm = yaml.safe_load(parts[1])
-        current_rate = fm.get("success_rate")
+        # Prefer utility_score for regression comparison; fall back to success_rate
+        current_rate = fm.get("utility_score") or fm.get("success_rate")
         prev_rate = fm.get("prev_version_avg_score")
 
         if current_rate is None or prev_rate is None:
@@ -527,7 +594,7 @@ Respond with JSON only:
             text = skill_path.read_text()
             version = self._get_version(text)
             rollback_entry = f"\n### v{version} → v{version-1} rollback ({datetime.now().strftime('%Y-%m-%d')})\n"
-            rollback_entry += f"**Reason:** success_rate dropped from {prev_rate:.2f} to {current_rate:.2f} (regression_tolerance={self.regression_tolerance})\n"
+            rollback_entry += f"**Reason:** score dropped from {prev_rate:.2f} to {current_rate:.2f} (regression_tolerance={self.regression_tolerance})\n"
             rollback_entry += f"**Action:** Restored from {skill_path.name}.1\n"
 
             text = self._append_to_evolution_log(text, rollback_entry)
@@ -551,20 +618,31 @@ Respond with JSON only:
 
         fm = yaml.safe_load(parts[1])
         success_rate = fm.get("success_rate")
+        utility_score = fm.get("utility_score")
+        score_trend = fm.get("score_trend", "")
         total_runs = fm.get("total_runs", 0)
         last_optimized = fm.get("last_optimized")
+
+        # Use utility_score for thresholds; fall back to success_rate if not yet computed
+        effective_score = utility_score if utility_score is not None else success_rate
+
+        # Priority gate: declining skills bypass min_runs and cadence checks
+        if score_trend == "declining" and utility_score is not None and utility_score < 0.80:
+            return True, f"declining skill prioritised (utility_score={utility_score:.2f})"
 
         # Gate 1: Minimum runs
         if total_runs < self.min_runs:
             return False, f"total_runs={total_runs} < min_runs={self.min_runs}"
 
-        # Gate 2: Not excellent
-        if success_rate is not None and success_rate >= self.skip_above_threshold:
-            return False, f"success_rate={success_rate:.2f} >= skip_above_threshold={self.skip_above_threshold}"
+        # Gate 2: Not excellent (skip if performing well)
+        if effective_score is not None and effective_score >= self.skip_above_threshold:
+            score_label = "utility_score" if utility_score is not None else "success_rate"
+            return False, f"{score_label}={effective_score:.2f} >= skip_above_threshold={self.skip_above_threshold}"
 
-        # Gate 3: Underperforming
-        if success_rate is not None and success_rate >= self.underperformance_threshold:
-            return False, f"success_rate={success_rate:.2f} >= underperformance_threshold={self.underperformance_threshold}"
+        # Gate 3: Underperforming (only optimise if below threshold)
+        if effective_score is not None and effective_score >= self.underperformance_threshold:
+            score_label = "utility_score" if utility_score is not None else "success_rate"
+            return False, f"{score_label}={effective_score:.2f} >= underperformance_threshold={self.underperformance_threshold}"
 
         # Gate 4: Enough runs since last optimization
         if last_optimized:
@@ -585,7 +663,9 @@ Respond with JSON only:
                 if runs_since < self.min_runs:
                     return False, f"runs_since_last_optimized={runs_since} < min_runs={self.min_runs}"
 
-        return True, f"success_rate={success_rate:.2f} < {self.underperformance_threshold}"
+        score_label = "utility_score" if utility_score is not None else "success_rate"
+        score_val = effective_score if effective_score is not None else "unknown"
+        return True, f"{score_label}={score_val} < {self.underperformance_threshold}"
 
     async def _optimize_skill(self, skill_path: Path, stop_event: asyncio.Event):
         """FR-5, FR-6, FR-7: Critique, rewrite, and update skill with auto-exemplars."""

@@ -7,6 +7,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Skill utility scoring** — `skill_optimizer.py` now computes a recency-weighted `utility_score` (half-life decay, default 14 days) and `score_trend` (improving/declining/stable) alongside the existing `success_rate`; optimizer gates prefer `utility_score` when available; declining skills with `utility_score < 0.80` bypass `min_runs` and cadence gates for immediate rewrite; `/skill_health` Telegram command now shows real scores and trend arrows (▲ ▼ ◆) instead of `?`
+
 - **Zoom AI Companion integration** — `zoom_scanner.py` now polls `GET /v2/meetings/meeting_summaries` each cycle; when a meeting has both a VTT and an AI Companion summary the AI Companion overview replaces the LLM summary call (cost savings) and a `## Action Items` section is added; meetings with AI Companion but no cloud recording get their own memory file for the first time
 - **Zoom local recording scanner** — scans `~/Documents/Zoom/` for meeting folders matching `YYYY-MM-DD HH.MM.SS <Topic>` that contain `closed_caption.vtt`; runs on watcher role; opt-in via `local_recordings_enabled: true` in config
 - `summary_source: ai_companion | llm` frontmatter field on all meeting memory files for traceability

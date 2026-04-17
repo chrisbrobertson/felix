@@ -794,3 +794,173 @@ Updated instructions after optimization.
         # Check instructions updated
         assert executor._skill["instructions"] == "Updated instructions after optimization."
         assert executor._skill["meta"]["version"] == 2
+
+
+# ── Utility scoring (feat-skill-utility-scoring) ──────────────────────────────
+
+def _make_rows(scores_with_ages):
+    """Build history rows list from [(score, days_ago)] pairs, newest first."""
+    today = datetime.now().date()
+    rows = []
+    for score, days_ago in reversed(scores_with_ages):  # oldest first
+        d = (today - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+        rows.append({"date": d, "score": score})
+    return rows
+
+
+def test_compute_utility_score_basic(optimizer):
+    """5 same-day scores → weighted mean equals simple mean."""
+    rows = _make_rows([(3.0, 0), (4.0, 0), (5.0, 0), (4.0, 0), (3.0, 0)])
+    result = optimizer._compute_utility_score(rows)
+    assert result == round(sum(r["score"] for r in rows) / len(rows), 2)
+
+
+def test_compute_utility_score_fewer_than_3_returns_none(optimizer):
+    rows = _make_rows([(4.0, 0), (3.0, 1)])
+    assert optimizer._compute_utility_score(rows) is None
+
+
+def test_compute_utility_score_recent_weighed_more(optimizer):
+    """Recent high scores pull the weighted average above the simple mean."""
+    # Old low scores and recent high scores
+    rows = _make_rows([(1.0, 30), (1.0, 29), (1.0, 28), (5.0, 1), (5.0, 0)])
+    simple_mean = sum(r["score"] for r in rows) / len(rows)  # 2.6
+    weighted = optimizer._compute_utility_score(rows, half_life_days=14.0)
+    assert weighted > simple_mean
+
+
+def test_compute_utility_score_half_life_config(optimizer):
+    """Shorter half-life weights recent scores more aggressively."""
+    rows = _make_rows([(1.0, 30), (1.0, 29), (1.0, 28), (5.0, 1), (5.0, 0)])
+    short_hl = optimizer._compute_utility_score(rows, half_life_days=3.0)
+    long_hl = optimizer._compute_utility_score(rows, half_life_days=60.0)
+    # Shorter half-life → recent 5s dominate more → higher score
+    assert short_hl > long_hl
+
+
+def test_compute_utility_score_skips_non_numeric(optimizer):
+    """_parse_history_rows should exclude pending rows; _compute_utility_score gets clean data."""
+    section = (
+        "| date | slug | model | score | notes |\n"
+        "|------|------|-------|-------|-------|\n"
+        "| 2026-04-01 | s1 | m | 3.0 | ok |\n"
+        "| 2026-04-02 | s2 | m | pending |  |\n"
+        "| 2026-04-03 | s3 | m | 4.0 | ok |\n"
+        "| 2026-04-04 | s4 | m | 5.0 | ok |\n"
+    )
+    rows = optimizer._parse_history_rows(section)
+    assert len(rows) == 3
+    assert all(r["score"] != "pending" for r in rows)
+    result = optimizer._compute_utility_score(rows)
+    assert result is not None
+
+
+def test_compute_trend_improving(optimizer):
+    """Recent window mean > previous + 0.05 → improving."""
+    # 10 recent rows at 4.5, 10 previous rows at 2.0
+    rows = (
+        _make_rows([(2.0, d) for d in range(50, 40, -1)])   # 10 older rows
+        + _make_rows([(4.5, d) for d in range(10, 0, -1)])  # 10 recent rows
+    )
+    assert optimizer._compute_trend(rows) == "improving"
+
+
+def test_compute_trend_declining(optimizer):
+    """Recent window mean < previous - 0.05 → declining."""
+    rows = (
+        _make_rows([(4.5, d) for d in range(50, 40, -1)])  # 10 older rows
+        + _make_rows([(2.0, d) for d in range(10, 0, -1)]) # 10 recent rows
+    )
+    assert optimizer._compute_trend(rows) == "declining"
+
+
+def test_compute_trend_stable(optimizer):
+    """Windows within 0.05 of each other → stable."""
+    rows = (
+        _make_rows([(3.0, d) for d in range(50, 40, -1)])
+        + _make_rows([(3.02, d) for d in range(10, 0, -1)])
+    )
+    assert optimizer._compute_trend(rows) == "stable"
+
+
+def test_compute_trend_insufficient_data(optimizer):
+    """Fewer than 5 rows in either window → insufficient-data."""
+    rows = _make_rows([(3.0, d) for d in range(8, 0, -1)])  # only 8 rows total
+    assert optimizer._compute_trend(rows) == "insufficient-data"
+
+
+@pytest.mark.asyncio
+async def test_update_frontmatter_writes_utility_score(optimizer, skills_dir):
+    """After _update_frontmatter_stats, YAML has utility_score, utility_score_updated, score_trend."""
+    today = datetime.now().date()
+    rows_content = ""
+    for i in range(12):
+        d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        rows_content += f"| {d} | slug{i} | model | 3.5 | ok |\n"
+
+    skill_content = (
+        "---\nname: test\nsuccess_rate: null\ntotal_runs: 0\n---\n\n"
+        "## Instructions\n\nDo stuff.\n\n"
+        "## Execution History\n\n"
+        "| date | input_slug | model | score | notes |\n"
+        "|------|-----------|-------|-------|-------|\n"
+        + rows_content
+    )
+    updated = await optimizer._update_frontmatter_stats(skill_content)
+    fm = yaml.safe_load(updated.split("---", 2)[1])
+    assert "utility_score" in fm
+    assert "utility_score_updated" in fm
+    assert fm["score_trend"] in ("improving", "declining", "stable", "insufficient-data")
+    assert fm["success_rate"] is not None  # backwards compat preserved
+
+
+@pytest.mark.asyncio
+async def test_gates_use_utility_score_over_success_rate(optimizer, skills_dir):
+    """utility_score below threshold → optimise even when success_rate is above."""
+    today = datetime.now().date()
+    # Build 10 rows so min_runs passes
+    rows_content = ""
+    for i in range(10):
+        d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        rows_content += f"| {d} | s{i} | m | 0.5 | ok |\n"
+
+    skill_content = (
+        "---\nname: my-skill\nversion: 1\n"
+        "success_rate: 0.95\n"      # above skip_above_threshold
+        "utility_score: 0.55\n"    # below underperformance_threshold (0.70)
+        "score_trend: stable\n"
+        "total_runs: 10\n---\n\n"
+        "## Instructions\n\nDo stuff.\n\n"
+        "## Execution History\n\n"
+        "| date | input_slug | model | score | notes |\n"
+        "|------|-----------|-------|-------|-------|\n"
+        + rows_content
+    )
+    skill_path = skills_dir / "my-skill.md"
+    skill_path.write_text(skill_content)
+
+    should_optimize, reason = await optimizer._check_optimization_gates(skill_path)
+    assert should_optimize is True
+    assert "utility_score" in reason
+
+
+@pytest.mark.asyncio
+async def test_declining_skill_priority_bypasses_min_runs(optimizer, skills_dir):
+    """Declining skill with utility_score<0.80 bypasses min_runs gate."""
+    skill_content = (
+        "---\nname: weak-skill\nversion: 1\n"
+        "success_rate: 0.65\n"
+        "utility_score: 0.60\n"
+        "score_trend: declining\n"
+        "total_runs: 3\n---\n\n"   # only 3 runs — would normally be blocked
+        "## Instructions\n\nDo stuff.\n\n"
+        "## Execution History\n\n"
+        "| date | input_slug | model | score | notes |\n"
+        "|------|-----------|-------|-------|-------|\n"
+    )
+    skill_path = skills_dir / "weak-skill.md"
+    skill_path.write_text(skill_content)
+
+    should_optimize, reason = await optimizer._check_optimization_gates(skill_path)
+    assert should_optimize is True
+    assert "declining" in reason
