@@ -6,6 +6,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `specs/feat-zoom-ai-companion.md` — spec for integrating Zoom AI Companion meeting summaries: polls `GET /v2/meetings/meeting_summaries` alongside cloud recordings, uses AI Companion summary instead of LLM when available, expands coverage to meetings with AI Companion but no cloud recording
+- `specs/feat-zoom-transcript-scanner.md` updated (v1.2.0) — adds FR-11 through FR-19 for local recording support: scans `~/Documents/Zoom/` for meeting folders with `closed_caption.vtt`, reuses existing VTT parser, opt-in via config
+
 ## [1.3.1] — 2026-04-16
 
 ### Added

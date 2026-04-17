@@ -2,7 +2,7 @@
 specmas: 3.0
 kind: feature
 id: feat-zoom-transcript-scanner
-version: 1.1.0
+version: 1.2.0
 created: 2026-04-11
 status: draft
 complexity: moderate
@@ -11,6 +11,7 @@ parent_system: second-brain
 related_specs:
   - second-brain-spec-v1.0
   - feat-commitment-tracker
+  - feat-zoom-ai-companion
 ---
 
 # Zoom Transcript Scanner
@@ -51,6 +52,8 @@ transcripts, parses speaker-attributed segments, and writes one memory file per 
 - Live meeting detection or real-time transcription
 - Zoom Chat messages
 - Meeting scheduling or creation (read-only)
+- Speech-to-text from local audio files (local recordings without `closed_caption.vtt` are skipped)
+- AI Companion meeting summaries (see `feat-zoom-ai-companion`)
 
 ### Success Metrics
 
@@ -364,12 +367,213 @@ Retry-After: 30
 
 ### FR-9: Watcher Role Exclusion
 
-Zoom scanner runs only on the `full` daemon role.
+Zoom scanner runs only on the `full` daemon role for **cloud recordings**.
+Local recording scanning (FR-11 through FR-19) runs on all roles including `watcher`,
+since local recordings exist on the machine that made the recording.
 
 **Validation criteria:**
-- `watcher` role daemon does not import or instantiate `ZoomScanner`
-- `zoom_scanner.py` not deployed on watcher nodes (installer skips if role=watcher)
+- `watcher` role daemon does not import or instantiate `ZoomScanner` for cloud path
+- `zoom_scanner.py` not deployed on watcher nodes unless `local_recordings_enabled: true`
 - Missing `ZOOM_*` env vars on a `full` node: log WARNING once at startup, skip loop
+
+---
+
+### FR-11: Local Recording Directory Scan
+
+Scan a configurable local directory for Zoom meeting folders and process any VTT
+transcripts found within them.
+
+**Default directory:** `~/Documents/Zoom/` (Zoom's standard macOS recording output path).
+
+**Folder discovery:**
+- Walk the directory looking for subdirectories whose names match the pattern:
+  `YYYY-MM-DD HH.MM.SS <Meeting Topic>`
+  Example: `2026-04-15 14.30.22 Weekly Standup`
+- Ignore folders that do not match this pattern (version directories, tmp, etc.)
+- Runs on both `full` and `watcher` roles
+
+**Validation criteria:**
+- Folders matching the date-prefix pattern are discovered
+- Non-matching subdirectories silently ignored
+- Directory missing or inaccessible: log WARNING once, skip local scan
+
+---
+
+### FR-12: VTT Detection and Skipping
+
+For each local recording folder, check for a `closed_caption.vtt` file. Skip folders
+that do not have one.
+
+**Background:** Local Zoom recordings include a `closed_caption.vtt` **only** when
+"Save Closed Caption as a VTT file" is enabled in Zoom account/user settings AND live
+captions were active during the meeting. Cloud recordings always include a transcript.
+
+**Validation criteria:**
+- Folder with `closed_caption.vtt` → queued for processing
+- Folder without `closed_caption.vtt` → skipped, logged at DEBUG (not WARNING)
+- Future phase: optional Whisper-based audio transcription for meetings without VTT
+  (out of scope for v1 — adds a heavy dependency)
+
+---
+
+### FR-13: Metadata Extraction from Folder Name
+
+Parse the Zoom folder name to extract meeting date and topic without an API call.
+
+**Folder name format:** `YYYY-MM-DD HH.MM.SS <Meeting Topic>`
+
+**Extraction:**
+```python
+# Example: "2026-04-15 14.30.22 Weekly Standup"
+date_str = "2026-04-15"
+time_str = "14.30.22"   # dots as separators (not colons, which are illegal in macOS filenames)
+topic    = "Weekly Standup"
+meeting_date = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H.%M.%S").isoformat()
+```
+
+**Validation criteria:**
+- `meeting_date` extracted as ISO 8601 string
+- `source_title` set to the meeting topic portion of the folder name
+- Folder name with no topic portion (only timestamp) uses the full folder name as `source_title`
+
+---
+
+### FR-14: VTT Parsing for Local Recordings
+
+Use the existing `_parse_vtt()` method unchanged — Zoom's `closed_caption.vtt` uses
+the same WebVTT standard as cloud transcript downloads.
+
+**No new code required.** The VTT format is identical:
+```
+WEBVTT
+
+1
+00:00:05.000 --> 00:00:10.500
+Sarah Chen: Good morning everyone.
+```
+
+**Duration:** derived from the last segment's start timestamp (already done by `_parse_vtt`
+via `duration_ms`). No audio file metadata parsing needed.
+
+**Validation criteria:**
+- `_parse_vtt()` produces correct segments from a local `closed_caption.vtt`
+- Duration correctly derived from last VTT timestamp
+
+---
+
+### FR-15: LLM Summary for Local Recordings
+
+Generate meeting summary and tags using the same `summarize-transcript` skill as the
+cloud recording path.
+
+**Watcher role note:** watcher nodes currently do not run LLM summarisation. For local
+recordings on a watcher node, two options exist:
+- **Option A (v1):** Run the `summarize` model call on the watcher node using the
+  existing `skill_executor.py`. The watcher already has `GEMINI_API_KEY` available.
+- **Option B:** Write a "pending summarisation" stub file that the full node picks up
+  and summarises on its next scan.
+
+Spec recommends **Option A** for simplicity. The watcher's LLM call for meeting
+summaries is a low-frequency, short-prompt operation (< 1000 tokens).
+
+**Validation criteria:**
+- Summary and tags generated for local recording VTT
+- LLM failure falls back to meeting topic as summary (same as cloud path)
+
+---
+
+### FR-16: Memory File Write for Local Recordings
+
+Write `meeting-{date}-{slug}-{hash}.md` for each processed local recording.
+
+**Differences from cloud recording files:**
+
+| Field | Cloud recording | Local recording |
+|---|---|---|
+| `source_url` | `zoom:{meeting_uuid}` | `local:{8-char-folder-hash}` |
+| `zoom_meeting_id` | Numeric ID from API | Absent (not available) |
+| `participants` | Emails from Participants API | Empty list `[]` |
+| `speakers` | Names from VTT | Names from VTT (same) |
+| `duration_minutes` | From Zoom API | Derived from last VTT timestamp |
+
+**`source_url` scheme:** `local:` prefix with an 8-char SHA1 of the full folder path,
+e.g. `local:a3f2c1b8`. This provides a stable, unique, human-readable dedup key
+without exposing the full local filesystem path in iCloud.
+
+**All other fields and write mechanics** (atomic rename, YAML frontmatter, transcript
+section truncation at 50 lines) are identical to the cloud path.
+
+**Validation criteria:**
+- `type: meeting_transcript` in frontmatter (downstream consumers pick it up)
+- `source_url` uses `local:` scheme
+- `participants: []` and speakers list populated from VTT
+- No temp files left after write
+
+---
+
+### FR-17: Deduplication for Local Recordings
+
+Prevent reprocessing already-handled local recording folders.
+
+**State file extension (`zoom-scanner-state.json`):**
+```json
+{
+  "processed_uuids": ["..."],
+  "processed_local": ["a3f2c1b8", "7d91e4f2"],
+  "last_poll": "..."
+}
+```
+
+`processed_local` stores the 8-char folder path hashes used in `source_url`. Capped at
+10,000 entries, trimmed from front.
+
+Backward compat: state files without `processed_local` key initialise it to `[]`.
+
+**Validation criteria:**
+- Folder already in `processed_local` skipped without re-reading the VTT
+- State saved after each individual meeting
+
+---
+
+### FR-18: Participant Handling for Local Recordings
+
+Participant email addresses are unavailable for local recordings (no Zoom API call).
+
+**Memory file behaviour:**
+- `participants: []` (empty list)
+- `speakers: [...]` populated from VTT speaker names as usual
+
+**Downstream impact:**
+- Commitment tracker uses `participants` with fallback to `speakers` — no breakage
+- Contact tracker will record interactions by speaker name only (no email dedup)
+- Project inference does not use participants/speakers — no impact
+
+**Future option:** a `local_speaker_emails` mapping in `config.yaml` (e.g.
+`"Sarah Chen": sarah@example.com`) to resolve local recording speakers to emails.
+Out of scope for v1.
+
+**Validation criteria:**
+- `participants` field present in frontmatter as empty list
+- `speakers` field populated from VTT
+
+---
+
+### FR-19: Duplicate Detection Between Local and Cloud Recordings
+
+The same meeting may be recorded both locally and in Zoom cloud. Both the cloud and
+local scanners would independently discover it and create separate memory files.
+
+**v1 behaviour:** Allow both memory files to exist. Downstream consumers (commitment
+tracker, project inference) will see both and may extract commitments twice. This is
+acceptable for v1 given the low overlap in practice.
+
+**Future dedup approach:** Match by (`meeting_date` ± 30 min) + (`source_title`
+fuzzy match ≥ 0.8). If a cloud recording file already exists for the same meeting,
+skip the local recording. Out of scope for v1.
+
+**Validation criteria:**
+- Scanner does not crash or error when both a cloud and local file exist for the same meeting
+- No attempt to merge or overwrite the cloud memory file with local data
 
 ---
 
@@ -379,6 +583,8 @@ Zoom scanner runs only on the `full` daemon role.
 zoom_scanner:
   interval_seconds: 300
   initial_lookback_days: 30
+  local_recordings_enabled: false          # opt-in; set true to scan ~/Documents/Zoom/
+  local_recordings_path: ~/Documents/Zoom  # override if recordings saved elsewhere
 ```
 
 `ZOOM_ACCOUNT_ID`, `ZOOM_CLIENT_ID`, `ZOOM_CLIENT_SECRET` are set as environment variables in the launchd plist — not in `config.yaml` (which syncs via iCloud).
@@ -432,6 +638,17 @@ zoom_scanner:
 | `test_cmd_meetings_sets_last_meeting_set` | `_last_meeting_set` populated after call |
 | `test_cmd_meeting_detail_view` | `/meeting 1` shows date, attendees, summary |
 | `test_cmd_meeting_invalid_index` | `/meeting 99` without prior list → error message |
+| `test_local_folder_discovered` | Folder matching `YYYY-MM-DD HH.MM.SS *` pattern is found |
+| `test_local_folder_without_vtt_skipped` | Folder without `closed_caption.vtt` → skipped at DEBUG level |
+| `test_local_vtt_parsed` | Local `closed_caption.vtt` parsed identically to cloud VTT |
+| `test_local_metadata_from_folder_name` | `meeting_date` and `source_title` extracted from folder name |
+| `test_local_duration_from_vtt` | Duration derived from last VTT timestamp when no API metadata |
+| `test_local_source_url_scheme` | `source_url` uses `local:` prefix with 8-char folder hash |
+| `test_local_participants_empty` | `participants: []`, `speakers` populated from VTT names |
+| `test_local_dedup` | Folder in `processed_local` skipped without re-reading VTT |
+| `test_local_state_backwards_compat` | State file without `processed_local` → initialised to `[]` |
+| `test_local_disabled_by_default` | `local_recordings_enabled: false` → directory not scanned |
+| `test_local_missing_directory_logs_warning` | Missing `local_recordings_path` → WARNING once, no crash |
 
 ---
 
@@ -447,6 +664,17 @@ zoom_scanner:
 ---
 
 ## Changelog
+
+### v1.2.0 — 2026-04-16
+
+Added local recording support (FR-11 through FR-19):
+- Scan `~/Documents/Zoom/` for meeting folders with `closed_caption.vtt`
+- Parse meeting date and topic from folder name
+- Reuse `_parse_vtt()` unchanged — same WebVTT format
+- `source_url: local:{hash}` scheme; `participants: []`
+- Dedup via `processed_local` set in state file
+- Off by default (`local_recordings_enabled: false`)
+- Runs on watcher role (local recordings exist on the recording machine)
 
 ### v1.1.0 — 2026-04-11
 
