@@ -7,6 +7,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Zoom AI Companion integration** — `zoom_scanner.py` now polls `GET /v2/meetings/meeting_summaries` each cycle; when a meeting has both a VTT and an AI Companion summary the AI Companion overview replaces the LLM summary call (cost savings) and a `## Action Items` section is added; meetings with AI Companion but no cloud recording get their own memory file for the first time
+- **Zoom local recording scanner** — scans `~/Documents/Zoom/` for meeting folders matching `YYYY-MM-DD HH.MM.SS <Topic>` that contain `closed_caption.vtt`; runs on watcher role; opt-in via `local_recordings_enabled: true` in config
+- `summary_source: ai_companion | llm` frontmatter field on all meeting memory files for traceability
+- `processed_summaries` and `processed_local` dedup sets added to `zoom-scanner-state.json` (backwards-compatible; missing keys initialise to `[]`)
 - `specs/feat-zoom-ai-companion.md` — spec for integrating Zoom AI Companion meeting summaries: polls `GET /v2/meetings/meeting_summaries` alongside cloud recordings, uses AI Companion summary instead of LLM when available, expands coverage to meetings with AI Companion but no cloud recording
 - `specs/feat-zoom-transcript-scanner.md` updated (v1.2.0) — adds FR-11 through FR-19 for local recording support: scans `~/Documents/Zoom/` for meeting folders with `closed_caption.vtt`, reuses existing VTT parser, opt-in via config
 
