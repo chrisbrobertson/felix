@@ -5,10 +5,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import content_fetcher as cf
 
 
-def _make_response(status: int, html: str):
+def _make_response(status: int, html: str, content_type: str = "text/html", content: bytes = None):
     r = MagicMock()
     r.status_code = status
     r.text = html
+    r.content = content if content is not None else html.encode("utf-8")
+    r.headers = {"content-type": content_type}
     return r
 
 

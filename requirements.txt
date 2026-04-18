@@ -6,3 +6,4 @@ beautifulsoup4>=4.12
 lxml>=5.0
 watchdog>=4.0
 pyobjc-framework-EventKit>=9.0
+pdfminer.six>=20221105
