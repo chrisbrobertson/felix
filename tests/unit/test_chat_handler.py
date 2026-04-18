@@ -4060,3 +4060,118 @@ def test_close_issue_title_not_found(handler, brain_dir):
 
     assert "No issue found" in result
     assert "nonexistent feature" in result
+
+
+# ── Document upload tests ─────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_document_upload_pdf_creates_memory(handler, brain_dir):
+    """PDF document upload creates a memory file."""
+    mock_update = MagicMock()
+    mock_update.effective_user.id = 12345
+    mock_update.message = AsyncMock()
+    mock_update.message.document = MagicMock()
+    mock_update.message.document.file_name = "paper.pdf"
+    mock_update.message.document.mime_type = "application/pdf"
+    mock_update.message.document.file_size = 1024
+    mock_update.message.document.file_id = "fake-file-id"
+
+    mock_context = MagicMock()
+    mock_file = AsyncMock()
+    mock_file.download_as_bytearray = AsyncMock(return_value=bytearray(b"fake pdf data"))
+    mock_context.bot.get_file = AsyncMock(return_value=mock_file)
+
+    with patch("content_fetcher._extract_pdf", return_value=("Research Paper", "Extracted text.")), \
+         patch.object(handler.executor, "run", new=AsyncMock(return_value="## Summary\nML paper.")), \
+         patch("memory_writer.MemoryWriter.write", return_value=MagicMock(name="2026-04-18-paper-abc.md")):
+        await handler._handle_document_upload(mock_update, mock_context)
+
+    calls = [str(c) for c in mock_update.message.reply_text.call_args_list]
+    assert any("Saved" in c or "📄" in c for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_document_upload_txt_creates_memory(handler, brain_dir):
+    """Plain text document upload creates a memory file."""
+    mock_update = MagicMock()
+    mock_update.effective_user.id = 12345
+    mock_update.message = AsyncMock()
+    mock_update.message.document = MagicMock()
+    mock_update.message.document.file_name = "notes.txt"
+    mock_update.message.document.mime_type = "text/plain"
+    mock_update.message.document.file_size = 512
+    mock_update.message.document.file_id = "fake-file-id"
+
+    mock_context = MagicMock()
+    mock_file = AsyncMock()
+    mock_file.download_as_bytearray = AsyncMock(return_value=bytearray(b"Some notes here."))
+    mock_context.bot.get_file = AsyncMock(return_value=mock_file)
+
+    with patch.object(handler.executor, "run", new=AsyncMock(return_value="## Summary\nNotes.")), \
+         patch("memory_writer.MemoryWriter.write", return_value=MagicMock(name="2026-04-18-notes-def.md")):
+        await handler._handle_document_upload(mock_update, mock_context)
+
+    calls = [str(c) for c in mock_update.message.reply_text.call_args_list]
+    assert any("Saved" in c or "📄" in c for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_document_upload_unsupported_type_rejected(handler, brain_dir):
+    """Unsupported MIME type is rejected with a user-friendly message."""
+    mock_update = MagicMock()
+    mock_update.effective_user.id = 12345
+    mock_update.message = AsyncMock()
+    mock_update.message.document = MagicMock()
+    mock_update.message.document.file_name = "doc.docx"
+    mock_update.message.document.mime_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    mock_update.message.document.file_size = 1024
+    mock_update.message.document.file_id = "fake-file-id"
+
+    mock_context = MagicMock()
+    await handler._handle_document_upload(mock_update, mock_context)
+
+    mock_update.message.reply_text.assert_called_once()
+    assert "Unsupported" in mock_update.message.reply_text.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_document_upload_too_large_rejected(handler, brain_dir):
+    """Files over 20MB are rejected before download."""
+    mock_update = MagicMock()
+    mock_update.effective_user.id = 12345
+    mock_update.message = AsyncMock()
+    mock_update.message.document = MagicMock()
+    mock_update.message.document.file_name = "large.pdf"
+    mock_update.message.document.mime_type = "application/pdf"
+    mock_update.message.document.file_size = 25 * 1024 * 1024
+    mock_update.message.document.file_id = "fake-file-id"
+
+    mock_context = MagicMock()
+    await handler._handle_document_upload(mock_update, mock_context)
+
+    mock_update.message.reply_text.assert_called_once()
+    assert "large" in mock_update.message.reply_text.call_args[0][0].lower()
+
+
+@pytest.mark.asyncio
+async def test_document_upload_empty_content_rejected(handler, brain_dir):
+    """Empty PDF extraction produces a user-friendly error."""
+    mock_update = MagicMock()
+    mock_update.effective_user.id = 12345
+    mock_update.message = AsyncMock()
+    mock_update.message.document = MagicMock()
+    mock_update.message.document.file_name = "empty.pdf"
+    mock_update.message.document.mime_type = "application/pdf"
+    mock_update.message.document.file_size = 1024
+    mock_update.message.document.file_id = "fake-file-id"
+
+    mock_context = MagicMock()
+    mock_file = AsyncMock()
+    mock_file.download_as_bytearray = AsyncMock(return_value=bytearray(b"fake pdf"))
+    mock_context.bot.get_file = AsyncMock(return_value=mock_file)
+
+    with patch("content_fetcher._extract_pdf", return_value=("", "")):
+        await handler._handle_document_upload(mock_update, mock_context)
+
+    calls = " ".join(str(c) for c in mock_update.message.reply_text.call_args_list)
+    assert "extract" in calls.lower()

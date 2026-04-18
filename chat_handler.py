@@ -3377,6 +3377,91 @@ class TelegramChatHandler:
             log.exception("cmd_note failed for %s", url)
             await update.message.reply_text(f"Note failed: {e}")
 
+    async def _handle_document_upload(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle a document file sent directly to the bot — creates a memory from it."""
+        if not self._check_auth(update):
+            return
+
+        doc = update.message.document
+        fname = doc.file_name or "upload"
+        mime = (doc.mime_type or "").lower()
+
+        SUPPORTED_MIMES = {"application/pdf", "text/plain", "text/markdown"}
+        SUPPORTED_EXTS = (".pdf", ".txt", ".md")
+        is_pdf = "pdf" in mime or fname.lower().endswith(".pdf")
+        is_text = "text" in mime or any(fname.lower().endswith(e) for e in (".txt", ".md"))
+
+        if not (is_pdf or is_text):
+            await update.message.reply_text(
+                "Unsupported file type. Send a PDF, .txt, or .md file to create a memory."
+            )
+            return
+
+        if doc.file_size and doc.file_size > 20 * 1024 * 1024:
+            await update.message.reply_text("File too large (max 20 MB).")
+            return
+
+        await update.message.reply_text(f"Processing {fname}…")
+
+        try:
+            tg_file = await context.bot.get_file(doc.file_id)
+            data = bytes(await tg_file.download_as_bytearray())
+        except Exception as e:
+            await update.message.reply_text(f"Download failed: {e}")
+            return
+
+        if is_pdf:
+            from content_fetcher import _extract_pdf
+            title, text = _extract_pdf(data, fname)
+        else:
+            from pathlib import Path as _Path
+            title = _Path(fname).stem.replace("-", " ").replace("_", " ").title()
+            text = data.decode("utf-8", errors="replace")[:8000]
+
+        if not text.strip():
+            await update.message.reply_text("Couldn't extract any text from that file.")
+            return
+
+        source_url = f"file://{fname}"
+
+        try:
+            from skill_router import detect_content_type, SKILL_REGISTRY
+
+            content_type = detect_content_type(url=source_url, content=text[:3000])
+            skill_name = SKILL_REGISTRY.get(content_type, "summarize-webpage")
+            executor = SkillExecutor(skill_name)
+            response = await executor.run(
+                {"content": text, "url": source_url, "title": title or fname}
+            )
+        except Exception as e:
+            log.exception("Document upload summarization failed for %s", fname)
+            await update.message.reply_text(f"Summarization failed: {e}")
+            return
+
+        if not response:
+            await update.message.reply_text("Summarization returned empty — check error.log.")
+            return
+
+        try:
+            from memory_writer import MemoryWriter
+
+            entry = {
+                "url": source_url,
+                "title": title or fname,
+                "visit_count": 1,
+                "browser": "telegram",
+                "content_type": content_type,
+            }
+            mem_path = await MemoryWriter().write(entry, response)
+            preview = response[:300].replace("\n", " ")
+            await self._send_reply(
+                update,
+                f"📄 Saved: {title or fname}\n→ {mem_path}\n\n{preview}…"
+            )
+        except Exception as e:
+            log.exception("Document upload memory write failed for %s", fname)
+            await update.message.reply_text(f"Failed to write memory: {e}")
+
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
@@ -5302,6 +5387,17 @@ class TelegramChatHandler:
             # Handle the structured reply
             await self._handle_addproject_reply(update, context)
             return
+
+        # Handle document uploads (PDF, txt, md)
+        # Check for document - in real Telegram messages, document is None for text messages
+        # In test mocks with AsyncMock, document might be auto-created, so check file_id specifically
+        doc = getattr(update.message, "document", None)
+        if doc is not None:
+            # Verify it's a real document object with file_id (not just a mock attribute)
+            file_id = getattr(doc, "file_id", None)
+            if file_id is not None and not callable(file_id):
+                await self._handle_document_upload(update, context)
+                return
 
         query = update.message.text
         chat_id = update.effective_chat.id
