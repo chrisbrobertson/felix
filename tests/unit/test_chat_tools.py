@@ -167,7 +167,7 @@ def test_all_tool_names_in_dispatcher():
         "list_projects", "list_commitments", "list_events", "list_meetings",
         "list_contacts", "list_comms", "list_readings", "search_memories", "get_memory",
         "list_commands", "deliver_pending_replies", "discard_pending_replies",
-        "add_goal", "add_project", "add_feature", "add_bug",
+        "add_goal", "add_project", "add_feature", "add_bug", "close_issue",
     }
     for tool in chat_tools.TOOLS:
         name = tool["function"]["name"]
@@ -381,3 +381,76 @@ async def test_add_goal_invalid_category_returns_error(tmp_path):
 
     assert "Error" in result
     assert "Invalid category" in result or "invalid_category" in result
+
+
+# --- close_issue tool tests ---
+
+def test_close_issue_tool_in_tools_list():
+    """close_issue is present in TOOLS with required fields."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "close_issue" in names
+
+    close_issue_tool = next(t for t in chat_tools.TOOLS if t["function"]["name"] == "close_issue")
+    assert close_issue_tool["function"]["description"]
+    params = close_issue_tool["function"]["parameters"]
+    assert "short_id" in params["properties"]
+    assert "title" in params["properties"]
+    assert "status" in params["properties"]
+    assert params["properties"]["status"]["enum"] == ["done", "wont_do", "in_progress"]
+
+
+@pytest.mark.asyncio
+async def test_close_issue_by_short_id(mock_handler, tmp_path):
+    """close_issue by short_id calls _close_issue_text correctly."""
+    mock_handler._close_issue_text = MagicMock(return_value="Closed [abc123] Bug title → done")
+
+    result = await chat_tools.dispatch(
+        "close_issue",
+        {"short_id": "abc123"},
+        mock_handler
+    )
+
+    assert result == "Closed [abc123] Bug title → done"
+    mock_handler._close_issue_text.assert_called_once_with(
+        short_id="abc123",
+        title=None,
+        status="done"
+    )
+
+
+@pytest.mark.asyncio
+async def test_close_issue_by_title(mock_handler, tmp_path):
+    """close_issue by title calls _close_issue_text correctly."""
+    mock_handler._close_issue_text = MagicMock(return_value="Closed [def456] Feature request → done")
+
+    result = await chat_tools.dispatch(
+        "close_issue",
+        {"title": "PDF bug"},
+        mock_handler
+    )
+
+    assert result == "Closed [def456] Feature request → done"
+    mock_handler._close_issue_text.assert_called_once_with(
+        short_id=None,
+        title="PDF bug",
+        status="done"
+    )
+
+
+@pytest.mark.asyncio
+async def test_close_issue_custom_status(mock_handler, tmp_path):
+    """close_issue with custom status passes it through."""
+    mock_handler._close_issue_text = MagicMock(return_value="Closed [ghi789] Issue → wont_do")
+
+    result = await chat_tools.dispatch(
+        "close_issue",
+        {"short_id": "ghi789", "status": "wont_do"},
+        mock_handler
+    )
+
+    assert "wont_do" in result
+    mock_handler._close_issue_text.assert_called_once_with(
+        short_id="ghi789",
+        title=None,
+        status="wont_do"
+    )

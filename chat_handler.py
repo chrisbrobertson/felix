@@ -1268,6 +1268,48 @@ class TelegramChatHandler:
         lines.append("\nUse /complete N or /dismiss N to update status.")
         return "\n".join(lines)
 
+    def _close_issue_text(self, short_id=None, title=None, status="done") -> str:
+        """Close or update a bug/feature request. Used by close_issue tool."""
+        memories = list((BRAIN_DIR / "memories").glob("feature-request-*.md"))
+        match = None
+
+        if short_id:
+            for f in memories:
+                fm = self._parse_frontmatter(f)
+                if fm.get("short_id") == short_id:
+                    match = f
+                    break
+            if not match:
+                return f"No issue found with ID '{short_id}'."
+
+        elif title:
+            hits = [
+                f for f in memories
+                if title.lower() in (self._parse_frontmatter(f).get("title") or "").lower()
+            ]
+            if not hits:
+                return f"No issue found matching '{title}'."
+            if len(hits) > 1:
+                lines = ["Multiple matches — be more specific:"]
+                for h in hits[:5]:
+                    fm = self._parse_frontmatter(h)
+                    lines.append(f"• [{fm.get('short_id')}] {(fm.get('title') or '')[:60]}")
+                return "\n".join(lines)
+            match = hits[0]
+        else:
+            return "Provide either short_id or title."
+
+        try:
+            text = match.read_text()
+            updated = re.sub(r'^status:\s*\S+', f'status: {status}', text, flags=re.MULTILINE)
+            tmp = match.with_suffix(".tmp")
+            tmp.write_text(updated)
+            os.rename(str(tmp), str(match))
+            fm = self._parse_frontmatter(match)
+            return f"Closed [{fm.get('short_id')}] {(fm.get('title') or '')[:60]} → {status}"
+        except Exception as e:
+            return f"Error updating issue: {e}"
+
     async def cmd_commitments(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return

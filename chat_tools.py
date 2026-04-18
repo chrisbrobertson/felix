@@ -277,6 +277,36 @@ TOOLS: list[dict] = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "close_issue",
+            "description": (
+                "Close, resolve, or update the status of a bug or feature request. "
+                "Use when the user says something like 'mark that bug as done', "
+                "'close feature 6d364b', or 'that issue is fixed'. "
+                "Provide either short_id (the 6-char hash) or a title substring."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "short_id": {
+                        "type": "string",
+                        "description": "6-character hash ID shown in /features or /bugs listings",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Partial title to search for when short_id is unknown",
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "New status to set (default: done)",
+                        "enum": ["done", "wont_do", "in_progress"],
+                    },
+                },
+            },
+        },
+    },
 ]
 
 
@@ -420,6 +450,12 @@ async def _call(name: str, arguments: dict, handler):
             return f"Project created: {arguments['title']} [{arguments['category']}]{due_str}"
         except ValueError as e:
             return f"Error: {e}"
+    if name == "close_issue":
+        return handler._close_issue_text(
+            short_id=arguments.get("short_id"),
+            title=arguments.get("title"),
+            status=arguments.get("status", "done"),
+        )
     if name in ("add_feature", "add_bug"):
         import hashlib, os, re, yaml
         from datetime import datetime
