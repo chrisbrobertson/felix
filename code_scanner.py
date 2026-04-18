@@ -6,7 +6,7 @@ import os
 import re
 import socket as _socket
 import subprocess
-import tempfile
+
 from datetime import datetime
 from pathlib import Path
 
@@ -24,7 +24,7 @@ def _hostname() -> str:
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
 MEMORIES_DIR = BRAIN_DIR / "memories"
 CONFIG_PATH = BRAIN_DIR / "config.yaml"
-DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", Path.home() / "secondbrain"))
+DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
 
 EXTENSION_MAP = {
     ".py": "python",

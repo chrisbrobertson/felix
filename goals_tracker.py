@@ -8,12 +8,8 @@ from pathlib import Path
 import yaml
 
 # ── Module-level constants ────────────────────────────────────────────────────
-MEMORIES_DIR = Path(
-    os.environ.get(
-        "SECOND_BRAIN_DIR",
-        Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
-    )
-) / "memories"
+BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
+MEMORIES_DIR = BRAIN_DIR / "memories"
 
 
 # ── Goal Manager Class ─────────────────────────────────────────────────────────

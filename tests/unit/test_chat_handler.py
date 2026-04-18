@@ -978,6 +978,12 @@ def test_registry_completeness(handler):
     unregistered = all_in_registry - all_registered
     assert not unregistered, f"Commands in COMMAND_REGISTRY but not registered: {unregistered}"
 
+    # Reverse check: every registered CommandHandler must have a COMMAND_REGISTRY entry
+    missing_from_registry = all_registered - all_in_registry
+    # Exclude 'start' — it's a standard Telegram /start, not a user-facing command
+    missing_from_registry.discard("start")
+    assert not missing_from_registry, f"Commands registered but missing from COMMAND_REGISTRY: {missing_from_registry}"
+
 
 # ── /projects and /project commands ──────────────────────────────────────────
 

@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import re
-import socket
+
 import yaml
 from datetime import datetime, timedelta
 from pathlib import Path
