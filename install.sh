@@ -440,6 +440,10 @@ DAEMON_FILES=(
     utils.py
     zoom_scanner.py
     github_client.py
+    dedup_checker.py
+    synthesis_scanner.py
+    watchlist_checker.py
+    llm_chat_importer.py
     VERSION
 )
 
