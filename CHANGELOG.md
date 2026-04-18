@@ -7,6 +7,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- `/complete` and `/dismiss` now accept multiple space-separated indices (`/complete 1 3 5`); per-item result reported in single reply; duplicate indices processed once
+- Agent now has `close_issue` tool — can close bugs and features via conversation using short_id or title substring; status can be set to `done`, `wont_do`, or `in_progress`
 - Chat history now persisted to `chat-history.json` — conversation context survives daemon restarts instead of being lost on every deploy or crash
 - Chat skill prompt now explicitly instructs the LLM to use conversation history for resolving follow-ups and pronouns
 - Zoom AI Companion: HTTP 400 errors no longer permanently disable the integration for the session — only 403 (missing scopes) triggers permanent disable; 400 and other transient errors log the response body and retry next cycle
