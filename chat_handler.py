@@ -184,6 +184,17 @@ def _safe_read_text(path: Path) -> Optional[str]:
         return None
 
 
+def _safe_error(e: Exception) -> str:
+    """Return a sanitized error string safe to send over Telegram.
+
+    Strips filesystem paths and caps length so internal details don't
+    leak through Telegram's servers to external logs.
+    """
+    msg = f"{type(e).__name__}: {str(e)[:100]}"
+    msg = re.sub(r'/\S+/\S+', '[path]', msg)
+    return msg
+
+
 class TelegramChatHandler:
     PENDING_FILE = DEPLOY_DIR / "pending-replies.json"
     HISTORY_FILE = DEPLOY_DIR / "chat-history.json"
@@ -656,7 +667,10 @@ class TelegramChatHandler:
             parts.append(text)
             budget -= len(text)
 
-        return "\n\n---\n\n".join(parts)
+        if not parts:
+            return ""
+        inner = "\n\n---\n\n".join(parts)
+        return f"<memory-context>\n{inner}\n</memory-context>"
 
     def _edit_skip_domains(self, action: str, domain: str):
         """Add or remove a domain from browser_watcher.skip_domains in config.yaml.
@@ -896,7 +910,7 @@ class TelegramChatHandler:
             state = json.loads(state_file.read_text())
             candidates = state.get("candidates", [])
         except Exception as e:
-            await update.message.reply_text(f"Error reading dedup state: {e}")
+            await update.message.reply_text(f"Error reading dedup state: {_safe_error(e)}")
             self._last_dupes_set = []
             return
 
@@ -987,7 +1001,7 @@ class TelegramChatHandler:
             )
         except Exception as e:
             log.error("Error merging duplicates: %s", e)
-            await update.message.reply_text(f"Error merging files: {e}")
+            await update.message.reply_text(f"Error merging files: {_safe_error(e)}")
 
     async def cmd_keep(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Dismiss duplicate pair N as intentionally distinct."""
@@ -1022,7 +1036,7 @@ class TelegramChatHandler:
             )
         except Exception as e:
             log.error("Error dismissing duplicate: %s", e)
-            await update.message.reply_text(f"Error dismissing pair: {e}")
+            await update.message.reply_text(f"Error dismissing pair: {_safe_error(e)}")
 
     # ── Watchlist commands ────────────────────────────────────────────────────
 
@@ -1104,7 +1118,7 @@ class TelegramChatHandler:
             )
         except Exception as e:
             log.exception("Failed to create watchlist")
-            await update.message.reply_text(f"Failed to create watchlist: {e}")
+            await update.message.reply_text(f"Failed to create watchlist: {_safe_error(e)}")
             try:
                 tmp_path.unlink(missing_ok=True)
             except Exception:
@@ -1197,7 +1211,7 @@ class TelegramChatHandler:
             await update.message.reply_text(f"Deactivated watchlist: {topic}")
         except Exception as e:
             log.exception("Failed to deactivate watchlist")
-            await update.message.reply_text(f"Failed to deactivate watchlist: {e}")
+            await update.message.reply_text(f"Failed to deactivate watchlist: {_safe_error(e)}")
 
     # ── Import commands ───────────────────────────────────────────────────────
 
@@ -1248,10 +1262,10 @@ class TelegramChatHandler:
                 "\n".join(f"• {f}" for f in written[:5]) + extra
             )
         except ValueError as e:
-            await update.message.reply_text(f"Import failed: {e}")
+            await update.message.reply_text(f"Import failed: {_safe_error(e)}")
         except Exception as e:
             log.exception("cmd_import_chats failed")
-            await update.message.reply_text(f"Import failed: {e}")
+            await update.message.reply_text(f"Import failed: {_safe_error(e)}")
 
     # ── Memory management helpers ─────────────────────────────────────────────
 
@@ -1575,7 +1589,7 @@ class TelegramChatHandler:
             )
         except Exception as e:
             log.exception("cmd_deepen failed")
-            await update.message.reply_text(f"Error: {e}")
+            await update.message.reply_text(f"Error: {_safe_error(e)}")
 
     # ── /forget command ───────────────────────────────────────────────────────
 
@@ -1930,7 +1944,7 @@ class TelegramChatHandler:
                 "This will help avoid similar false positives in future scans."
             )
         except Exception as e:
-            await update.message.reply_text(f"Error marking as wrong: {e}")
+            await update.message.reply_text(f"Error marking as wrong: {_safe_error(e)}")
 
     # ── /missed command (FR-12) ───────────────────────────────────────────────
 
@@ -2023,7 +2037,7 @@ class TelegramChatHandler:
                 f'\u2713 Created commitment: "{description}" ({owner})'
             )
         except Exception as e:
-            await update.message.reply_text(f"Error creating commitment: {e}")
+            await update.message.reply_text(f"Error creating commitment: {_safe_error(e)}")
         finally:
             context.user_data["awaiting_missed_reply"] = False
 
@@ -2218,7 +2232,7 @@ class TelegramChatHandler:
             fresh_fm = self._parse_frontmatter(path)
             fresh_text = path.read_text(encoding="utf-8")
         except Exception as e:
-            await update.message.reply_text(f"Error reading action file: {e}")
+            await update.message.reply_text(f"Error reading action file: {_safe_error(e)}")
             return
 
         if fresh_fm.get("status") != "pending":
@@ -2255,7 +2269,7 @@ class TelegramChatHandler:
                 os.rename(str(tmp), str(path))
                 await update.message.reply_text(f"Action {idx+1} superseded: {error_str}")
             else:
-                await update.message.reply_text(f"Error executing action {idx+1}: {e}")
+                await update.message.reply_text(f"Error executing action {idx+1}: {_safe_error(e)}")
 
     async def cmd_drop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Reject action N."""
@@ -2286,7 +2300,7 @@ class TelegramChatHandler:
             fresh_fm = self._parse_frontmatter(path)
             fresh_text = path.read_text(encoding="utf-8")
         except Exception as e:
-            await update.message.reply_text(f"Error reading action file: {e}")
+            await update.message.reply_text(f"Error reading action file: {_safe_error(e)}")
             return
 
         # Update status to rejected
@@ -2362,7 +2376,7 @@ class TelegramChatHandler:
             fresh_fm = self._parse_frontmatter(path)
             fresh_text = path.read_text(encoding="utf-8")
         except Exception as e:
-            await update.message.reply_text(f"Error reading action file: {e}")
+            await update.message.reply_text(f"Error reading action file: {_safe_error(e)}")
             return
 
         # Set defer_until
@@ -2516,10 +2530,10 @@ class TelegramChatHandler:
             due_str = f" — due {due_date}" if due_date else ""
             await update.message.reply_text(f"Goal created: {title} [{category}]{due_str}")
         except ValueError as e:
-            await update.message.reply_text(f"Error creating goal: {e}")
+            await update.message.reply_text(f"Error creating goal: {_safe_error(e)}")
         except Exception as e:
             log.exception("Error in _handle_addgoal_reply")
-            await update.message.reply_text(f"Error creating goal: {e}")
+            await update.message.reply_text(f"Error creating goal: {_safe_error(e)}")
         finally:
             context.user_data["awaiting_addgoal_reply"] = False
 
@@ -2579,7 +2593,7 @@ class TelegramChatHandler:
             await update.message.reply_text("\n".join(lines))
         except Exception as e:
             log.exception("Error in cmd_goals")
-            await update.message.reply_text(f"Error listing goals: {e}")
+            await update.message.reply_text(f"Error listing goals: {_safe_error(e)}")
 
     async def cmd_goal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -2633,7 +2647,7 @@ class TelegramChatHandler:
             await update.message.reply_text("\n".join(lines))
         except Exception as e:
             log.exception("Error in cmd_goal")
-            await update.message.reply_text(f"Error showing goal: {e}")
+            await update.message.reply_text(f"Error showing goal: {_safe_error(e)}")
 
     async def cmd_completegoal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -2653,10 +2667,10 @@ class TelegramChatHandler:
             self._goal_manager.update_goal_status(path, "completed")
             await update.message.reply_text(f"✓ Goal completed: \"{title}\"")
         except ValueError as e:
-            await update.message.reply_text(f"Error: {e}")
+            await update.message.reply_text(f"Error: {_safe_error(e)}")
         except Exception as e:
             log.exception("Error in cmd_completegoal")
-            await update.message.reply_text(f"Error completing goal: {e}")
+            await update.message.reply_text(f"Error completing goal: {_safe_error(e)}")
 
     async def cmd_abandongoal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -2676,10 +2690,10 @@ class TelegramChatHandler:
             self._goal_manager.update_goal_status(path, "abandoned")
             await update.message.reply_text(f"✗ Goal abandoned: \"{title}\"")
         except ValueError as e:
-            await update.message.reply_text(f"Error: {e}")
+            await update.message.reply_text(f"Error: {_safe_error(e)}")
         except Exception as e:
             log.exception("Error in cmd_abandongoal")
-            await update.message.reply_text(f"Error abandoning goal: {e}")
+            await update.message.reply_text(f"Error abandoning goal: {_safe_error(e)}")
 
     # ── Projects commands ─────────────────────────────────────────────────────
 
@@ -2746,10 +2760,10 @@ class TelegramChatHandler:
             goal_str = f" (linked to {linked_goal})" if linked_goal else ""
             await update.message.reply_text(f"Project created: {title} [{category}]{due_str}{goal_str}")
         except ValueError as e:
-            await update.message.reply_text(f"Error creating project: {e}")
+            await update.message.reply_text(f"Error creating project: {_safe_error(e)}")
         except Exception as e:
             log.exception("Error in _handle_addproject_reply")
-            await update.message.reply_text(f"Error creating project: {e}")
+            await update.message.reply_text(f"Error creating project: {_safe_error(e)}")
         finally:
             context.user_data["awaiting_addproject_reply"] = False
 
@@ -2806,7 +2820,7 @@ class TelegramChatHandler:
             await update.message.reply_text("\n".join(lines))
         except Exception as e:
             log.exception("Error in cmd_projects")
-            await update.message.reply_text(f"Error listing projects: {e}")
+            await update.message.reply_text(f"Error listing projects: {_safe_error(e)}")
 
     async def cmd_project(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -2866,7 +2880,7 @@ class TelegramChatHandler:
             await update.message.reply_text("\n".join(lines))
         except Exception as e:
             log.exception("Error in cmd_project")
-            await update.message.reply_text(f"Error showing project: {e}")
+            await update.message.reply_text(f"Error showing project: {_safe_error(e)}")
 
     async def cmd_completeproject(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -2886,10 +2900,10 @@ class TelegramChatHandler:
             self._goal_manager.update_project_status(path, "completed")
             await update.message.reply_text(f"✓ Project completed: \"{title}\"")
         except ValueError as e:
-            await update.message.reply_text(f"Error: {e}")
+            await update.message.reply_text(f"Error: {_safe_error(e)}")
         except Exception as e:
             log.exception("Error in cmd_completeproject")
-            await update.message.reply_text(f"Error completing project: {e}")
+            await update.message.reply_text(f"Error completing project: {_safe_error(e)}")
 
     async def cmd_abandonproject(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -2909,10 +2923,10 @@ class TelegramChatHandler:
             self._goal_manager.update_project_status(path, "abandoned")
             await update.message.reply_text(f"✗ Project abandoned: \"{title}\"")
         except ValueError as e:
-            await update.message.reply_text(f"Error: {e}")
+            await update.message.reply_text(f"Error: {_safe_error(e)}")
         except Exception as e:
             log.exception("Error in cmd_abandonproject")
-            await update.message.reply_text(f"Error abandoning project: {e}")
+            await update.message.reply_text(f"Error abandoning project: {_safe_error(e)}")
 
     async def cmd_holdproject(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -2932,10 +2946,10 @@ class TelegramChatHandler:
             self._goal_manager.update_project_status(path, "on-hold")
             await update.message.reply_text(f"⏸ Project on hold: \"{title}\"")
         except ValueError as e:
-            await update.message.reply_text(f"Error: {e}")
+            await update.message.reply_text(f"Error: {_safe_error(e)}")
         except Exception as e:
             log.exception("Error in cmd_holdproject")
-            await update.message.reply_text(f"Error putting project on hold: {e}")
+            await update.message.reply_text(f"Error putting project on hold: {_safe_error(e)}")
 
     async def cmd_addmilestone(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -2959,7 +2973,7 @@ class TelegramChatHandler:
             await update.message.reply_text(f"Milestone added to \"{title}\": {text}")
         except Exception as e:
             log.exception("Error in cmd_addmilestone")
-            await update.message.reply_text(f"Error adding milestone: {e}")
+            await update.message.reply_text(f"Error adding milestone: {_safe_error(e)}")
 
     async def cmd_milestone(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -2991,10 +3005,10 @@ class TelegramChatHandler:
             else:
                 await update.message.reply_text("Milestone toggled.")
         except ValueError as e:
-            await update.message.reply_text(f"Error: {e}")
+            await update.message.reply_text(f"Error: {_safe_error(e)}")
         except Exception as e:
             log.exception("Error in cmd_milestone")
-            await update.message.reply_text(f"Error toggling milestone: {e}")
+            await update.message.reply_text(f"Error toggling milestone: {_safe_error(e)}")
 
     async def cmd_linkgoal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -3022,10 +3036,10 @@ class TelegramChatHandler:
             self._goal_manager.link_goal_to_project(project_path, goal_path)
             await update.message.reply_text(f"Linked \"{project_title}\" to goal \"{goal_title}\"")
         except ValueError as e:
-            await update.message.reply_text(f"Error: {e}")
+            await update.message.reply_text(f"Error: {_safe_error(e)}")
         except Exception as e:
             log.exception("Error in cmd_linkgoal")
-            await update.message.reply_text(f"Error linking goal: {e}")
+            await update.message.reply_text(f"Error linking goal: {_safe_error(e)}")
 
     async def cmd_unlinkgoal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -3046,7 +3060,7 @@ class TelegramChatHandler:
             await update.message.reply_text(f"Unlinked \"{title}\" from its goal.")
         except Exception as e:
             log.exception("Error in cmd_unlinkgoal")
-            await update.message.reply_text(f"Error unlinking goal: {e}")
+            await update.message.reply_text(f"Error unlinking goal: {_safe_error(e)}")
 
     # ── /contacts command ─────────────────────────────────────────────────────
 
@@ -3413,7 +3427,7 @@ class TelegramChatHandler:
                 return
             fm = yaml.safe_load(parts[1]) or {}
         except Exception as e:
-            await update.message.reply_text(f"Error reading candidate: {e}")
+            await update.message.reply_text(f"Error reading candidate: {_safe_error(e)}")
             return
 
         candidate_type = fm.get("candidate_type", "")
@@ -3452,10 +3466,10 @@ class TelegramChatHandler:
                 title = extracted.get("title", source_title.replace(" (candidate)", ""))
                 await update.message.reply_text(f"Project confirmed: \"{title}\" [{category}]")
             except ValueError as e:
-                await update.message.reply_text(f"Error: {e}")
+                await update.message.reply_text(f"Error: {_safe_error(e)}")
             except Exception as e:
                 log.exception("Error confirming project candidate")
-                await update.message.reply_text(f"Error confirming candidate: {e}")
+                await update.message.reply_text(f"Error confirming candidate: {_safe_error(e)}")
 
         elif candidate_type == "code_repo":
             # Write code file directly
@@ -3504,7 +3518,7 @@ class TelegramChatHandler:
 
             except Exception as e:
                 log.exception("Error confirming code_repo candidate")
-                await update.message.reply_text(f"Error confirming repo: {e}")
+                await update.message.reply_text(f"Error confirming repo: {_safe_error(e)}")
 
         else:
             await update.message.reply_text(f"Unknown candidate type: {candidate_type}")
@@ -3533,7 +3547,7 @@ class TelegramChatHandler:
                 return
             fm = yaml.safe_load(parts[1]) or {}
         except Exception as e:
-            await update.message.reply_text(f"Error reading candidate: {e}")
+            await update.message.reply_text(f"Error reading candidate: {_safe_error(e)}")
             return
 
         candidate_type = fm.get("candidate_type", "")
@@ -3574,7 +3588,7 @@ class TelegramChatHandler:
             tmp_path.write_text(yaml.dump(rejected_data, sort_keys=False, allow_unicode=True))
             os.rename(str(tmp_path), str(rejected_json_path))
         except Exception as e:
-            await update.message.reply_text(f"Error saving rejected list: {e}")
+            await update.message.reply_text(f"Error saving rejected list: {_safe_error(e)}")
             return
 
         # Delete candidate
@@ -3582,7 +3596,7 @@ class TelegramChatHandler:
             path.unlink()
             await update.message.reply_text(f"Rejected: \"{source_title}\"")
         except Exception as e:
-            await update.message.reply_text(f"Error deleting candidate: {e}")
+            await update.message.reply_text(f"Error deleting candidate: {_safe_error(e)}")
 
     async def cmd_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Edit a candidate field: /edit N field=value"""
@@ -3619,7 +3633,7 @@ class TelegramChatHandler:
             fm = yaml.safe_load(parts[1]) or {}
             body = parts[2]
         except Exception as e:
-            await update.message.reply_text(f"Error reading candidate: {e}")
+            await update.message.reply_text(f"Error reading candidate: {_safe_error(e)}")
             return
 
         source_title = fm.get("source_title", "Untitled")
@@ -3647,7 +3661,7 @@ class TelegramChatHandler:
             await update.message.reply_text(f"Updated {key} → {value} on candidate \"{source_title}\"")
         except Exception as e:
             log.exception("Error editing candidate")
-            await update.message.reply_text(f"Error editing candidate: {e}")
+            await update.message.reply_text(f"Error editing candidate: {_safe_error(e)}")
 
     # ── /help command ─────────────────────────────────────────────────────────
 
@@ -3775,7 +3789,7 @@ class TelegramChatHandler:
             )
         except Exception as e:
             log.exception("cmd_remember failed for %s", url)
-            await update.message.reply_text(f"Remember failed: {e}")
+            await update.message.reply_text(f"Remember failed: {_safe_error(e)}")
 
     async def cmd_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Fetch a URL and save detailed study notes: /note <url>"""
@@ -3824,7 +3838,7 @@ class TelegramChatHandler:
             )
         except Exception as e:
             log.exception("cmd_note failed for %s", url)
-            await update.message.reply_text(f"Note failed: {e}")
+            await update.message.reply_text(f"Note failed: {_safe_error(e)}")
 
     async def _handle_document_upload(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle a document file sent directly to the bot — creates a memory from it."""
@@ -3856,7 +3870,7 @@ class TelegramChatHandler:
             tg_file = await context.bot.get_file(doc.file_id)
             data = bytes(await tg_file.download_as_bytearray())
         except Exception as e:
-            await update.message.reply_text(f"Download failed: {e}")
+            await update.message.reply_text(f"Download failed: {_safe_error(e)}")
             return
 
         if is_pdf:
@@ -3884,7 +3898,7 @@ class TelegramChatHandler:
             )
         except Exception as e:
             log.exception("Document upload summarization failed for %s", fname)
-            await update.message.reply_text(f"Summarization failed: {e}")
+            await update.message.reply_text(f"Summarization failed: {_safe_error(e)}")
             return
 
         if not response:
@@ -3909,7 +3923,7 @@ class TelegramChatHandler:
             )
         except Exception as e:
             log.exception("Document upload memory write failed for %s", fname)
-            await update.message.reply_text(f"Failed to write memory: {e}")
+            await update.message.reply_text(f"Failed to write memory: {_safe_error(e)}")
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -5703,7 +5717,7 @@ class TelegramChatHandler:
         try:
             config = yaml.safe_load(config_path.read_text())
         except Exception as e:
-            await update.message.reply_text(f"Could not read config: {e}")
+            await update.message.reply_text(f"Could not read config: {_safe_error(e)}")
             return
 
         display = config.setdefault("display", {})
@@ -5957,7 +5971,7 @@ class TelegramChatHandler:
           except Exception as e:
             log.error(f"Error processing message: {e}", exc_info=True)
             try:
-                await update.message.reply_text(f"Sorry — processing failed: {e}")
+                await update.message.reply_text(f"Sorry — processing failed: {_safe_error(e)}")
             except (TimedOut, NetworkError) as reply_err:
                 log.error("Couldn't send failure notice (network): %s", reply_err)
             except Exception:

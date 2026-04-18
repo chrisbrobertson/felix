@@ -167,6 +167,33 @@ def test_fetch_recent_urls_chrome_error_continues(watcher, tmp_path):
 
 # --- _fetch_content ---
 
+def _make_stream_ctx(status: int, html: str, content_type: str = "text/html"):
+    """Build a mock for `async with client.stream(...) as r:` returning given HTML."""
+    html_bytes = html.encode("utf-8") if isinstance(html, str) else html
+
+    mock_response = MagicMock()
+    mock_response.status_code = status
+    mock_response.headers = {"content-type": content_type}
+
+    async def _aiter_bytes():
+        yield html_bytes
+
+    mock_response.aiter_bytes = _aiter_bytes
+
+    mock_stream_ctx = AsyncMock()
+    mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
+    return mock_stream_ctx
+
+
+def _make_client_with_stream(stream_ctx):
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.stream = MagicMock(return_value=stream_ctx)
+    return mock_client
+
+
 async def test_fetch_content_strips_noise_tags(watcher):
     html = """<html><body>
         <nav>Navigation noise</nav>
@@ -178,14 +205,8 @@ async def test_fetch_content_strips_noise_tags(watcher):
         <article>Main article content about async Python.</article>
     </body></html>"""
 
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.text = html
-
-    mock_client = MagicMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.get = AsyncMock(return_value=mock_resp)
+    stream_ctx = _make_stream_ctx(200, html)
+    mock_client = _make_client_with_stream(stream_ctx)
 
     with patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
         content = await watcher._fetch_content("https://example.com")
@@ -203,14 +224,8 @@ async def test_fetch_content_truncates_to_8000_chars(watcher):
     big_body = "word " * 5000  # ~25KB
     html = f"<html><body><article>{big_body}</article></body></html>"
 
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.text = html
-
-    mock_client = MagicMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.get = AsyncMock(return_value=mock_resp)
+    stream_ctx = _make_stream_ctx(200, html)
+    mock_client = _make_client_with_stream(stream_ctx)
 
     with patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
         content = await watcher._fetch_content("https://example.com")

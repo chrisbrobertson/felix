@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 import yaml
 from datetime import datetime
@@ -139,7 +140,9 @@ class SkillExecutor:
             lines.insert(insert_at, row)
             text = "".join(lines)
 
-        self.skill_path.write_text(text)
+        tmp = self.skill_path.with_suffix(".tmp")
+        tmp.write_text(text)
+        os.rename(tmp, self.skill_path)
 
     async def run_with_tools(
         self,

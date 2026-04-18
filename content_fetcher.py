@@ -48,6 +48,9 @@ def _extract_pdf(data: bytes, url: str) -> tuple:
         return "", ""
 
 
+_MAX_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
 async def fetch_url_content(url: str) -> tuple:
     """Fetch a URL and return (title, cleaned_text).
 
@@ -56,18 +59,29 @@ async def fetch_url_content(url: str) -> tuple:
     """
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-            r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
-            if r.status_code != 200:
-                log.debug("fetch_url_content: HTTP %s for %s", r.status_code, url)
-                return "", ""
+            async with client.stream("GET", url, headers={"User-Agent": "Mozilla/5.0"}) as r:
+                if r.status_code != 200:
+                    log.debug("fetch_url_content: HTTP %s for %s", r.status_code, url)
+                    return "", ""
+
+                chunks = []
+                total = 0
+                async for chunk in r.aiter_bytes():
+                    total += len(chunk)
+                    if total > _MAX_RESPONSE_BYTES:
+                        log.warning("fetch_url_content: response too large for %s, truncating at 10MB", url)
+                        break
+                    chunks.append(chunk)
+                data = b"".join(chunks)
 
             content_type = r.headers.get("content-type", "").lower()
             is_pdf = "application/pdf" in content_type or url.lower().split("?")[0].endswith(".pdf")
 
             if is_pdf:
-                return _extract_pdf(r.content, url)
+                return _extract_pdf(data, url)
 
-            soup = BeautifulSoup(r.text, "lxml")
+            text_content = data.decode("utf-8", errors="replace")
+            soup = BeautifulSoup(text_content, "lxml")
             title = soup.title.string.strip() if soup.title and soup.title.string else ""
             for tag in soup(_NOISE_TAGS):
                 tag.decompose()

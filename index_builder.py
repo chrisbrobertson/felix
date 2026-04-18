@@ -91,9 +91,10 @@ class IndexBuilder:
             )
             synthesis = response.choices[0].message.content
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-            INDEX_PATH.write_text(
-                f"*Last updated: {timestamp} — {n} memories indexed*\n\n{synthesis}\n"
-            )
+            content = f"*Last updated: {timestamp} — {n} memories indexed*\n\n{synthesis}\n"
+            tmp = INDEX_PATH.with_suffix(".tmp")
+            tmp.write_text(content)
+            os.rename(tmp, INDEX_PATH)
             log.info(f"index.md rebuilt — {n} memories, {days_span} day span")
         except Exception as e:
             log.error(f"Index build failed: {e}")

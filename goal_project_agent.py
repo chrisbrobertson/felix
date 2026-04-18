@@ -48,6 +48,14 @@ def _slugify(text: str, max_len: int = 40) -> str:
     return s[:max_len].rstrip('-')
 
 
+def _validate_target_name(target_name: str) -> None:
+    """Raise ValueError if target_name looks like a path traversal attempt."""
+    if not target_name:
+        return
+    if ".." in target_name or "/" in target_name or "\\" in target_name:
+        raise ValueError(f"Invalid target path: {target_name!r}")
+
+
 def _title_similarity(title1: str, title2: str) -> float:
     """Compute title similarity as Jaccard index of normalized token sets."""
     tokens1 = set(re.findall(r'[a-z0-9]+', title1.lower()))
@@ -363,6 +371,22 @@ class GoalProjectAgent:
         source_slug = _slugify(item_fm.get("source_title", item_path.stem))
         action_type = action_dict.get("action_type", "")
         rationale = action_dict.get("rationale", "")
+
+        # Validate LLM-supplied target to prevent path traversal
+        target = action_dict.get("target")
+        if target:
+            try:
+                _validate_target_name(target)
+            except ValueError:
+                log.warning("Blocked path traversal in action target: %r — skipping write", target)
+                return
+            target_path = MEMORIES_DIR / target
+            if not target_path.resolve().is_relative_to(MEMORIES_DIR.resolve()):
+                log.warning("Blocked path escape in action target: %r — skipping write", target)
+                return
+            if not target_path.exists():
+                log.warning("Action target does not exist: %r — skipping write", target)
+                return
         action_id_src = f"{item_path.name}:{action_type}:{rationale}"
         action_id = hashlib.sha1(action_id_src.encode()).hexdigest()[:6]
 
@@ -414,6 +438,13 @@ class GoalProjectAgent:
         action_type = action_fm.get("action_type")
         target_name = action_fm.get("target")
         args = action_fm.get("args", {}) or {}
+
+        # Validate target before any path construction
+        if target_name:
+            _validate_target_name(target_name)
+            target_check = MEMORIES_DIR / target_name
+            if not target_check.resolve().is_relative_to(MEMORIES_DIR.resolve()):
+                raise ValueError(f"Target path escapes memories directory: {target_name!r}")
 
         if action_type == "add_milestone":
             if not target_name:
@@ -540,13 +571,23 @@ class GoalProjectAgent:
                 args = fm.get("args") or {}
 
                 # Check if source goal still exists
-                source_path = MEMORIES_DIR / source_goal if source_goal else None
+                source_path = None
+                if source_goal:
+                    try:
+                        _validate_target_name(source_goal)
+                        source_path = MEMORIES_DIR / source_goal
+                    except ValueError:
+                        log.warning("Invalid source_goal in action file %s: %r", action_path.name, source_goal)
                 if source_path and not source_path.exists():
                     self._mark_superseded(action_path, fm, "Source goal/project no longer exists")
                     continue
 
                 # add_milestone: check if milestone text already in target
                 if action_type == "add_milestone" and target_name:
+                    try:
+                        _validate_target_name(target_name)
+                    except ValueError:
+                        continue
                     target_path = MEMORIES_DIR / target_name
                     if target_path.exists():
                         target_text = target_path.read_text(encoding="utf-8")
@@ -557,6 +598,10 @@ class GoalProjectAgent:
 
                 # update_status: check if target already has proposed status
                 if action_type == "update_status" and target_name:
+                    try:
+                        _validate_target_name(target_name)
+                    except ValueError:
+                        continue
                     target_path = MEMORIES_DIR / target_name
                     if target_path.exists():
                         target_fm = _parse_frontmatter(target_path.read_text(encoding="utf-8"))

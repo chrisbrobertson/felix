@@ -55,7 +55,10 @@ class BrowserWatcher:
 
     def save_seen_urls(self):
         # Called on shutdown — persists seen set so restarts don't reprocess
-        SEEN_URLS_FILE.write_text("\n".join(self.seen_urls))
+        import os as _os
+        tmp = SEEN_URLS_FILE.with_suffix(".tmp")
+        tmp.write_text("\n".join(self.seen_urls))
+        _os.rename(tmp, SEEN_URLS_FILE)
         log.info(f"Persisted {len(self.seen_urls)} seen URLs")
 
     def _check_heuristics(self, output: str) -> Optional[str]:

@@ -6,6 +6,18 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.1] — 2026-04-18
+
+### Fixed
+- **Path traversal guard** — `goal_project_agent.py` now validates LLM-supplied `target` filenames before constructing paths: rejects `..`, `/`, `\`, confirms resolved path stays within `MEMORIES_DIR`, and checks target exists before writing or executing an action
+- **Atomic skill file write** — `skill_executor.py` now uses tmp→rename pattern when appending to the execution history table, preventing corruption of the iCloud-synced skill file on crash mid-write
+- **Atomic seen-urls write** — `browser_watcher.py` now uses tmp→rename for `save_seen_urls()`, preventing partial-write data loss on shutdown
+- **Atomic index.md write** — `index_builder.py` now uses tmp→rename when writing the rebuilt index, preventing a torn iCloud sync on crash
+- **Response size cap** — `content_fetcher.py` now streams HTTP responses and aborts after 10 MB, preventing out-of-memory on pathological responses; timeout still applies
+- **Error message sanitization** — `chat_handler.py` now passes all exception messages through `_safe_error()` before sending to Telegram; strips filesystem paths, caps at 100 chars
+- **Memory context isolation** — injected memory snippets in chat LLM prompts are now wrapped in `<memory-context>…</memory-context>` delimiters, making prompt-injection breakout harder
+- **Dependency floor** — `litellm>=1.35.0` → `litellm>=1.49.1` (fixes CVE-2024-6587 SSRF in litellm's proxy)
+
 ## [1.4.0] — 2026-04-17
 
 ### Fixed
