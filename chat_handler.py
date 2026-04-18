@@ -111,6 +111,9 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("watches",  "List active watchlists"),
         ("unwatch",  "Deactivate watchlist N"),
     ],
+    "Import": [
+        ("import_chats", "Import ChatGPT or Claude conversation export (attach ZIP or JSON file)"),
+    ],
     "Feature Requests": [
         ("feature",          "Capture a new feature request"),
         ("feature_new",      "Alias of /feature"),
@@ -214,6 +217,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("watch", self.cmd_watch))
         self.app.add_handler(CommandHandler("watches", self.cmd_watches))
         self.app.add_handler(CommandHandler("unwatch", self.cmd_unwatch))
+        self.app.add_handler(CommandHandler("import_chats", self.cmd_import_chats))
         self.app.add_handler(CommandHandler("readings", self.cmd_readings))
         self.app.add_handler(CommandHandler("search", self.cmd_search))
         self.app.add_handler(CommandHandler("reading", self.cmd_reading))
@@ -1194,6 +1198,60 @@ class TelegramChatHandler:
         except Exception as e:
             log.exception("Failed to deactivate watchlist")
             await update.message.reply_text(f"Failed to deactivate watchlist: {e}")
+
+    # ── Import commands ───────────────────────────────────────────────────────
+
+    async def cmd_import_chats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Import ChatGPT or Claude conversation export: /import_chats (with file attached)."""
+        if not self._check_auth(update):
+            return
+
+        if not update.message.document:
+            await update.message.reply_text(
+                "Usage: /import_chats (attach a ChatGPT or Claude export file)\n\n"
+                "Supported formats:\n"
+                "• ChatGPT: ZIP containing conversations.json (Settings → Data Controls → Export)\n"
+                "• Claude: ZIP or JSON export from claude.ai account settings\n\n"
+                "Send this command with a file attached."
+            )
+            return
+
+        try:
+            await update.message.reply_text("Downloading file...")
+            file = await context.bot.get_file(update.message.document.file_id)
+            file_bytes = bytes(await file.download_as_bytearray())
+            filename = update.message.document.file_name or "import.json"
+
+            await update.message.reply_text(f"Processing {filename}...")
+
+            from llm_chat_importer import import_file
+            written = import_file(file_bytes, filename, BRAIN_DIR / "memories")
+
+            if not written:
+                await update.message.reply_text(
+                    "No conversations found in the file. "
+                    "Make sure it's a valid ChatGPT or Claude export."
+                )
+                return
+
+            platform = "unknown"
+            if written[0].startswith("llm-chat-chatgpt-"):
+                platform = "ChatGPT"
+            elif written[0].startswith("llm-chat-claude-"):
+                platform = "Claude"
+
+            suffix = "s" if len(written) != 1 else ""
+            extra = f"\n... and {len(written) - 5} more" if len(written) > 5 else ""
+            await update.message.reply_text(
+                f"Imported {len(written)} conversation{suffix} from {platform}\n\n"
+                f"Files written:\n" +
+                "\n".join(f"• {f}" for f in written[:5]) + extra
+            )
+        except ValueError as e:
+            await update.message.reply_text(f"Import failed: {e}")
+        except Exception as e:
+            log.exception("cmd_import_chats failed")
+            await update.message.reply_text(f"Import failed: {e}")
 
     # ── Memory management helpers ─────────────────────────────────────────────
 
