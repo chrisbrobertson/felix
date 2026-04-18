@@ -25,12 +25,24 @@ def import_file(file_bytes: bytes, filename: str, memories_dir: Path) -> list[st
             is_zip = False
 
     if is_zip:
-        # Extract JSON from ZIP
+        # Extract JSON from ZIP — validate paths to prevent ZIP slip
+        MAX_UNCOMPRESSED = 50 * 1024 * 1024  # 50 MB
         with zipfile.ZipFile(BytesIO(file_bytes)) as zf:
-            # Look for conversations.json (ChatGPT) or any .json file (Claude)
-            json_files = [f for f in zf.namelist() if f.endswith('.json')]
+            # Filter out unsafe paths (ZIP slip prevention)
+            json_files = [
+                f for f in zf.namelist()
+                if f.endswith('.json')
+                and '..' not in f
+                and not f.startswith('/')
+                and not f.startswith('\\')
+            ]
             if not json_files:
                 raise ValueError("No JSON files found in ZIP")
+
+            # Zip bomb check: total uncompressed size
+            total_size = sum(zf.getinfo(f).file_size for f in json_files)
+            if total_size > MAX_UNCOMPRESSED:
+                raise ValueError(f"ZIP content exceeds {MAX_UNCOMPRESSED // (1024*1024)} MB limit")
 
             # Prefer conversations.json if it exists (ChatGPT format)
             json_file = 'conversations.json' if 'conversations.json' in json_files else json_files[0]

@@ -183,6 +183,10 @@ def run(memories_dir: Path, deploy_dir: Path, notify_fn: Optional[Callable] = No
 
         for filename, meta in group[1:]:
             try:
+                # Safety: only delete files within memories_dir
+                if not meta["path"].is_relative_to(memories_dir):
+                    log.error("Path escape attempt blocked: %s", meta["path"])
+                    continue
                 meta["path"].unlink()
                 auto_merged += 1
                 log.info("Auto-merged duplicate URL: deleted %s (kept %s)", filename, keeper_filename)
