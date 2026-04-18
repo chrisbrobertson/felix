@@ -49,6 +49,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("communications", "Alias of /comms"),
         ("message",        "Alias of /comm"),
         ("communication",  "Alias of /comm"),
+        ("insights",       "List recent synthesis insights across memories"),
     ],
     "Commitments": [
         ("commitments", "List active commitments"),
@@ -229,6 +230,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("comm", self.cmd_comm))
         self.app.add_handler(CommandHandler("message", self.cmd_comm))
         self.app.add_handler(CommandHandler("communication", self.cmd_comm))
+        self.app.add_handler(CommandHandler("insights", self.cmd_insights))
         self.app.add_handler(CommandHandler("help", self.cmd_help))
         self.app.add_handler(CommandHandler("commands", self.cmd_help))
         self.app.add_handler(CommandHandler("version", self.cmd_version))
@@ -4525,6 +4527,37 @@ class TelegramChatHandler:
                 "",
                 summary,
             ]
+        await update.message.reply_text("\n".join(lines))
+
+    async def cmd_insights(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List recent synthesis insights."""
+        if not self._check_auth(update):
+            return
+
+        memories_dir = BRAIN_DIR / "memories"
+        synthesis_files = []
+        for f in memories_dir.glob("*.md"):
+            try:
+                header = f.read_text(encoding="utf-8")[:500]
+                if "type: synthesis" in header or "type: 'synthesis'" in header:
+                    fm = self._parse_frontmatter(f)
+                    if fm.get("type") == "synthesis":
+                        synthesis_files.append((f, fm.get("created", "")))
+            except Exception:
+                continue
+
+        if not synthesis_files:
+            await update.message.reply_text("No synthesis insights yet.")
+            return
+
+        synthesis_files.sort(key=lambda x: x[1], reverse=True)
+        lines = ["Recent synthesis insights:\n"]
+        for i, (f, created) in enumerate(synthesis_files[:10], 1):
+            fm = self._parse_frontmatter(f)
+            title = fm.get("source_title", "(no title)")
+            date = created[:10] if created else "unknown"
+            lines.append(f"{i}. {title} — {date}")
+
         await update.message.reply_text("\n".join(lines))
 
     # ── Notification commands ─────────────────────────────────────────────────

@@ -59,8 +59,10 @@ class MemoryWriter:
             "hostname": __import__("socket").gethostname(),
             "depth": depth,
         }
-        if "content_type" in entry:
-            frontmatter["content_type"] = entry["content_type"]
+        # Add optional extra fields if present in entry
+        for field in ["content_type", "source_files", "type"]:
+            if field in entry:
+                frontmatter[field] = entry[field]
 
         content = f"---\n{yaml.dump(frontmatter, sort_keys=False)}---\n\n{body}\n"
 
