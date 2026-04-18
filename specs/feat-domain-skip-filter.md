@@ -4,7 +4,8 @@ kind: feature
 id: feat-domain-skip-filter
 version: 1.0.0
 created: 2026-04-11
-status: draft
+status: implemented
+shipped_version: "1.3.0"
 complexity: low
 maturity: 1
 parent_system: second-brain

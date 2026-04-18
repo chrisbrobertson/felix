@@ -4,7 +4,8 @@ kind: feature
 id: feat-communication-watchlists
 version: 1.0.0
 created: 2026-04-17
-status: draft
+status: implemented
+shipped_version: "1.4.0"
 complexity: moderate
 maturity: 1
 parent_system: second-brain
@@ -83,7 +84,8 @@ source_types:
   - email
   - slack
 mode: one_shot
-status: active
+status: implemented
+shipped_version: "1.4.0"
 created: 2026-04-17T10:00:00
 triggered_at: null
 ---

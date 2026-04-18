@@ -4,7 +4,8 @@ kind: feature
 id: feat-skill-utility-scoring
 version: 1.0.0
 created: 2026-04-12
-status: draft
+status: implemented
+shipped_version: "1.4.0"
 complexity: low
 maturity: 1
 parent_system: second-brain

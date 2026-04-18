@@ -4,7 +4,8 @@ kind: feature
 id: feat-feature-tracker
 version: 1.0.0
 created: 2026-04-12
-status: draft
+status: implemented
+shipped_version: "1.3.1"
 complexity: low
 maturity: 1
 parent_system: second-brain
@@ -71,7 +72,8 @@ The Feature Request Tracker allows the user to capture feature ideas instantly w
 ---
 title: Add configurable reports
 type: feature_request
-status: new
+status: implemented
+shipped_version: "1.3.1"
 priority: medium
 created: '2026-04-12T10:30:00'
 updated: '2026-04-12T10:30:00'

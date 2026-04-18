@@ -4,7 +4,8 @@ kind: feature
 id: feat-goals-projects
 version: 1.0.0
 created: 2026-04-15
-status: draft
+status: implemented
+shipped_version: "1.3.0"
 complexity: high
 maturity: 1
 parent_system: second-brain
@@ -102,7 +103,8 @@ summary: Run a 5K race by the end of June 2026
 tags: [health, fitness]
 created: '2026-04-15T09:00:00'
 due_date: '2026-06-30'
-status: active           # active | completed | abandoned
+status: implemented
+shipped_version: "1.3.0"
 priority: medium         # low | medium | high | critical
 linked_projects: []      # list of project filenames
 notes: ''
@@ -149,7 +151,8 @@ summary: Coordinate Q2 launch across eng, design, and marketing
 tags: [q2, launch]
 created: '2026-04-15T09:00:00'
 due_date: '2026-07-01'
-status: active           # active | completed | abandoned | on-hold
+status: implemented
+shipped_version: "1.3.0"
 priority: high
 linked_goal: goal-q2-targets-ab12cd.md  # null if not linked
 milestones:
@@ -469,7 +472,8 @@ extracted_fields:
   languages: [python]
   head_sha: abc123
 candidate_type: code_repo   # distinguishes from project candidates
-status: pending_confirmation
+status: implemented
+shipped_version: "1.3.0"
 created: '2026-04-15T09:00:00'
 ---
 ```
@@ -511,7 +515,8 @@ extracted_fields:
   due_date: '2026-07-01'
   participants: [alice@acme.com, bob@acme.com]
 candidate_type: project    # or "code_repo" for FR-10 candidates
-status: pending_confirmation
+status: implemented
+shipped_version: "1.3.0"
 created: '2026-04-15T09:00:00'
 ---
 ```

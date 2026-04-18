@@ -4,7 +4,8 @@ kind: feature
 id: feat-commitment-tracker
 version: 1.1.0
 created: 2026-04-11
-status: draft
+status: implemented
+shipped_version: "1.3.0"
 complexity: moderate
 maturity: 1
 parent_system: second-brain
@@ -199,7 +200,8 @@ recipient: Chris
 due_date: '2026-04-18'
 due_date_confidence: explicit
 confidence: 0.85
-status: active
+status: implemented
+shipped_version: "1.3.0"
 source_memory: zoom:meeting-uuid-abc123
 extracted_text: "Can you commit to having the revised numbers by Friday?"
 ---

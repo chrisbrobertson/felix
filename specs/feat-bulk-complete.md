@@ -4,7 +4,8 @@ kind: bug
 id: feat-bulk-complete
 version: 1.0.0
 created: 2026-04-17
-status: draft
+status: implemented
+shipped_version: "1.4.0"
 complexity: small
 maturity: 1
 parent_system: second-brain
