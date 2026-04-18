@@ -6,6 +6,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-04-17
+
 ### Fixed
 - `/complete` and `/dismiss` now accept multiple space-separated indices (`/complete 1 3 5`); per-item result reported in single reply; duplicate indices processed once
 - Agent now has `close_issue` tool — can close bugs and features via conversation using short_id or title substring; status can be set to `done`, `wont_do`, or `in_progress`
