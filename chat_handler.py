@@ -100,6 +100,11 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("unskip",   "Remove a domain from the ignore list"),
         ("skiplist", "Show currently skipped domains"),
     ],
+    "Deduplication": [
+        ("dupes",    "List candidate duplicate memories"),
+        ("merge",    "Merge duplicate pair N into one memory"),
+        ("keep",     "Dismiss duplicate pair N as intentionally distinct"),
+    ],
     "Feature Requests": [
         ("feature",          "Capture a new feature request"),
         ("feature_new",      "Alias of /feature"),
@@ -197,6 +202,9 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("skip", self.cmd_skip))
         self.app.add_handler(CommandHandler("unskip", self.cmd_unskip))
         self.app.add_handler(CommandHandler("skiplist", self.cmd_skiplist))
+        self.app.add_handler(CommandHandler("dupes", self.cmd_dupes))
+        self.app.add_handler(CommandHandler("merge", self.cmd_merge))
+        self.app.add_handler(CommandHandler("keep", self.cmd_keep))
         self.app.add_handler(CommandHandler("readings", self.cmd_readings))
         self.app.add_handler(CommandHandler("search", self.cmd_search))
         self.app.add_handler(CommandHandler("reading", self.cmd_reading))
@@ -330,6 +338,8 @@ class TelegramChatHandler:
         self.HISTORY_WINDOW_TURNS = 6       # keep last 6 user+assistant pairs (12 messages)
         # Last /review result set — used by /review <N>, /confirm <N>, /reject <N>, /edit <N>.
         self._last_candidate_set: list = []
+        # Last /dupes result set — used by /merge <N>, /keep <N>.
+        self._last_dupes_set: list = []
         # GitHub backing for feature/bug commands
         gh_cfg = config.get("github", {}) or {}
         repo = os.environ.get("GITHUB_REPO") or gh_cfg.get("repo", "")
@@ -853,6 +863,150 @@ class TelegramChatHandler:
         lines = "\n".join(f"{i + 1}. {d}" for i, d in enumerate(domains))
         await update.message.reply_text(f"Skipped domains:\n{lines}")
 
+    # ── Deduplication commands ────────────────────────────────────────────────
+
+    async def cmd_dupes(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List candidate duplicate memories."""
+        if not self._check_auth(update):
+            return
+
+        state_file = DEPLOY_DIR / "dedup-state.json"
+        if not state_file.exists():
+            await update.message.reply_text("No duplicate candidates found.")
+            self._last_dupes_set = []
+            return
+
+        try:
+            state = json.loads(state_file.read_text())
+            candidates = state.get("candidates", [])
+        except Exception as e:
+            await update.message.reply_text(f"Error reading dedup state: {e}")
+            self._last_dupes_set = []
+            return
+
+        if not candidates:
+            await update.message.reply_text("No duplicate candidates found.")
+            self._last_dupes_set = []
+            return
+
+        self._last_dupes_set = candidates
+
+        lines = [f"Found {len(candidates)} potential duplicate pairs:\n"]
+        for i, cand in enumerate(candidates, 1):
+            a = cand["a"]
+            b = cand["b"]
+            sim = cand["similarity"]
+            lines.append(f"{i}. {a} ~ {b} (similarity: {sim:.2f})")
+
+        lines.append("\nUse /merge N to merge pair N, or /keep N to dismiss as distinct.")
+        await update.message.reply_text("\n".join(lines))
+
+    async def cmd_merge(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Merge duplicate pair N into one memory."""
+        if not self._check_auth(update):
+            return
+
+        if not context.args:
+            await update.message.reply_text("Usage: /merge N")
+            return
+
+        try:
+            idx = int(context.args[0]) - 1
+        except (ValueError, TypeError):
+            await update.message.reply_text("Invalid index. Use /dupes to see the list.")
+            return
+
+        if not (0 <= idx < len(self._last_dupes_set)):
+            await update.message.reply_text("Index out of range. Use /dupes to see the list.")
+            return
+
+        candidate = self._last_dupes_set[idx]
+        filename_a = candidate["a"]
+        filename_b = candidate["b"]
+
+        memories_dir = BRAIN_DIR / "memories"
+        path_a = memories_dir / filename_a
+        path_b = memories_dir / filename_b
+
+        if not path_a.exists() or not path_b.exists():
+            await update.message.reply_text("One or both files no longer exist.")
+            return
+
+        try:
+            len_a = len(path_a.read_text())
+            len_b = len(path_b.read_text())
+            if len_a >= len_b:
+                keeper, deleter = path_a, path_b
+                keeper_name, deleter_name = filename_a, filename_b
+            else:
+                keeper, deleter = path_b, path_a
+                keeper_name, deleter_name = filename_b, filename_a
+
+            fm_keeper = self._parse_frontmatter(keeper)
+            fm_deleter = self._parse_frontmatter(deleter)
+
+            tags_keeper = set(fm_keeper.get("tags", []))
+            tags_deleter = set(fm_deleter.get("tags", []))
+            union_tags = sorted(tags_keeper | tags_deleter)
+
+            if union_tags != sorted(tags_keeper):
+                keeper_text = keeper.read_text()
+                m = re.match(r"^(---\n)(.*?)(\n---)", keeper_text, re.DOTALL)
+                if m:
+                    fm_keeper["tags"] = union_tags
+                    new_frontmatter = yaml.dump(fm_keeper, default_flow_style=False, allow_unicode=True)
+                    updated_text = f"---\n{new_frontmatter}---{keeper_text[m.end():]}"
+                    keeper.write_text(updated_text)
+
+            deleter.unlink()
+
+            state_file = DEPLOY_DIR / "dedup-state.json"
+            state = json.loads(state_file.read_text())
+            state["candidates"] = [c for c in state["candidates"] if c != candidate]
+            state_file.write_text(json.dumps(state, indent=2))
+
+            await update.message.reply_text(
+                f"Merged: kept {keeper_name}, deleted {deleter_name}.\n"
+                f"Tags merged: {', '.join(union_tags)}"
+            )
+        except Exception as e:
+            log.error("Error merging duplicates: %s", e)
+            await update.message.reply_text(f"Error merging files: {e}")
+
+    async def cmd_keep(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Dismiss duplicate pair N as intentionally distinct."""
+        if not self._check_auth(update):
+            return
+
+        if not context.args:
+            await update.message.reply_text("Usage: /keep N")
+            return
+
+        try:
+            idx = int(context.args[0]) - 1
+        except (ValueError, TypeError):
+            await update.message.reply_text("Invalid index. Use /dupes to see the list.")
+            return
+
+        if not (0 <= idx < len(self._last_dupes_set)):
+            await update.message.reply_text("Index out of range. Use /dupes to see the list.")
+            return
+
+        candidate = self._last_dupes_set[idx]
+
+        state_file = DEPLOY_DIR / "dedup-state.json"
+        try:
+            state = json.loads(state_file.read_text())
+            state["candidates"] = [c for c in state["candidates"] if c != candidate]
+            state.setdefault("dismissed", []).append(candidate)
+            state_file.write_text(json.dumps(state, indent=2))
+
+            await update.message.reply_text(
+                f"Dismissed pair as distinct: {candidate['a']} and {candidate['b']}"
+            )
+        except Exception as e:
+            log.error("Error dismissing duplicate: %s", e)
+            await update.message.reply_text(f"Error dismissing pair: {e}")
 
     # ── Memory management helpers ─────────────────────────────────────────────
 

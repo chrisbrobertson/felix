@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import re
 import yaml
 from datetime import datetime
@@ -11,6 +12,7 @@ from llm_routes import resolve
 log = logging.getLogger("index-builder")
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
+DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
 INDEX_PATH = BRAIN_DIR / "index.md"
 MAX_INPUT_CHARS = 120_000  # cap input to indexer — summarize summaries
 
@@ -95,6 +97,15 @@ class IndexBuilder:
             log.info(f"index.md rebuilt — {n} memories, {days_span} day span")
         except Exception as e:
             log.error(f"Index build failed: {e}")
+
+        # Run deduplication check after index build
+        try:
+            from dedup_checker import run as dedup_run
+            result = dedup_run(BRAIN_DIR / "memories", DEPLOY_DIR)
+            if result["auto_merged"]:
+                log.info("dedup: auto-merged %d duplicate memories", result["auto_merged"])
+        except Exception as e:
+            log.warning("dedup_checker failed: %s", e)
 
     def _log_watcher_health(self, memory_files: list):
         """

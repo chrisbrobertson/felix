@@ -4175,3 +4175,76 @@ async def test_document_upload_empty_content_rejected(handler, brain_dir):
 
     calls = " ".join(str(c) for c in mock_update.message.reply_text.call_args_list)
     assert "extract" in calls.lower()
+
+
+# --- Deduplication commands ---
+
+async def test_cmd_dupes_lists_candidates(handler, brain_dir, tmp_path):
+    """cmd_dupes should list candidates from dedup-state.json."""
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir(exist_ok=True)
+
+    state_file = deploy_dir / "dedup-state.json"
+    state_file.write_text(json.dumps({
+        "candidates": [
+            {
+                "a": "file1.md",
+                "b": "file2.md",
+                "similarity": 0.85,
+                "detected_at": "2026-04-17T12:00:00"
+            },
+            {
+                "a": "file3.md",
+                "b": "file4.md",
+                "similarity": 0.72,
+                "detected_at": "2026-04-17T12:05:00"
+            }
+        ],
+        "dismissed": []
+    }))
+
+    with patch.object(ch, "DEPLOY_DIR", deploy_dir):
+        update, ctx = _make_update(12345)
+        await handler.cmd_dupes(update, ctx)
+
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Found 2 potential duplicate pairs" in reply
+    assert "1. file1.md ~ file2.md (similarity: 0.85)" in reply
+    assert "2. file3.md ~ file4.md (similarity: 0.72)" in reply
+    assert "/merge" in reply
+    assert "/keep" in reply
+    assert len(handler._last_dupes_set) == 2
+
+
+async def test_cmd_keep_dismisses_pair(handler, brain_dir, tmp_path):
+    """cmd_keep should move pair from candidates to dismissed."""
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir(exist_ok=True)
+
+    candidate = {
+        "a": "file1.md",
+        "b": "file2.md",
+        "similarity": 0.85,
+        "detected_at": "2026-04-17T12:00:00"
+    }
+    state_file = deploy_dir / "dedup-state.json"
+    state_file.write_text(json.dumps({
+        "candidates": [candidate],
+        "dismissed": []
+    }))
+
+    handler._last_dupes_set = [candidate]
+
+    with patch.object(ch, "DEPLOY_DIR", deploy_dir):
+        update, ctx = _make_update(12345, ["1"])
+        await handler.cmd_keep(update, ctx)
+
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Dismissed pair as distinct" in reply
+    assert "file1.md" in reply
+    assert "file2.md" in reply
+
+    state = json.loads(state_file.read_text())
+    assert len(state["candidates"]) == 0
+    assert len(state["dismissed"]) == 1
+    assert state["dismissed"][0] == candidate
