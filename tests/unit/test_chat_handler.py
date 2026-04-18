@@ -3587,14 +3587,137 @@ async def test_cmd_reading_invalid_index_shows_registry_help(handler, brain_dir)
     reply = update.message.reply_text.call_args[0][0]
     assert "/readings" in reply
 
+def write_commitment(memories_dir: Path, description: str, status: str = "active",
+                     confidence: float = 0.85, commitment_type: str = "outbound",
+                     due_date: str = None, tags: list = None) -> Path:
+    """Write a commitment-*.md file for testing."""
+    from commitment_tracker import _stable_commitment_id, _slugify
+    source_url = "zoom:test123"
+    stable_id = _stable_commitment_id(source_url, description, "Alice")
+    slug = _slugify(description)
+    p = memories_dir / f"commitment-{slug}-{stable_id}.md"
+    fm = {
+        "source_title": description,
+        "summary": f"Alice committed to {description.lower()}",
+        "tags": tags or [],
+        "last_scanned": "2026-04-11T10:00:00",
+        "source_url": f"commitment:{stable_id}",
+        "type": "commitment",
+        "commitment_type": commitment_type,
+        "owner": "Alice",
+        "owner_email": "alice@acme.com",
+        "recipient": "Chris",
+        "due_date": due_date,
+        "due_date_confidence": "explicit" if due_date else "none",
+        "confidence": confidence,
+        "status": status,
+        "source_memory": source_url,
+        "extracted_text": "I'll do the thing.",
+    }
+    frontmatter = yaml.dump(fm, sort_keys=False, allow_unicode=True)
+    content = f"---\n{frontmatter}---\n\nCommitment details."
+    p.write_text(content)
+    return p
+
+
 @pytest.mark.asyncio
 async def test_cmd_complete_invalid_index_shows_commitments_help(handler, brain_dir):
     """Invalid index in /complete shows Commitments group help"""
     update, context = _make_update(12345, args=["xyz"])
     await handler.cmd_complete(update, context)
     reply = update.message.reply_text.call_args[0][0]
-    assert "Commitments commands:" in reply
-    assert "/complete" in reply
+    assert "not found" in reply
+
+
+@pytest.mark.asyncio
+async def test_complete_multiple_indices(handler, brain_dir):
+    """Multiple indices in /complete processes all successfully"""
+    m = brain_dir / "memories"
+    c1 = write_commitment(m, "Send quarterly report", status="active")
+    c2 = write_commitment(m, "Review design doc", status="active")
+
+    # Load commitments first to populate _last_commitment_set
+    update_list, context_list = _make_update(12345, args=[])
+    await handler.cmd_commitments(update_list, context_list)
+
+    # Complete indices 1 and 2
+    with patch("commitment_tracker.CommitmentTracker.update_commitment_status") as mock_update:
+        update, context = _make_update(12345, args=["1", "2"])
+        await handler.cmd_complete(update, context)
+        reply = update.message.reply_text.call_args[0][0]
+
+        # Should have two success lines
+        assert reply.count("\u2713") == 2
+        assert "Send quarterly report" in reply
+        assert "Review design doc" in reply
+        assert mock_update.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_complete_partial_failure(handler, brain_dir):
+    """Partial failure shows error for bad index, processes good index"""
+    m = brain_dir / "memories"
+    c1 = write_commitment(m, "Send quarterly report", status="active")
+
+    # Load commitments first
+    update_list, context_list = _make_update(12345, args=[])
+    await handler.cmd_commitments(update_list, context_list)
+
+    # Try to complete indices 1 and 99 (99 doesn't exist)
+    with patch("commitment_tracker.CommitmentTracker.update_commitment_status") as mock_update:
+        update, context = _make_update(12345, args=["1", "99"])
+        await handler.cmd_complete(update, context)
+        reply = update.message.reply_text.call_args[0][0]
+
+        # Should have one success and one failure
+        assert "\u2713" in reply
+        assert "#99: not found" in reply
+        assert mock_update.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_complete_deduplicates_args(handler, brain_dir):
+    """Duplicate indices are processed only once"""
+    m = brain_dir / "memories"
+    c1 = write_commitment(m, "Send quarterly report", status="active")
+
+    # Load commitments first
+    update_list, context_list = _make_update(12345, args=[])
+    await handler.cmd_commitments(update_list, context_list)
+
+    # Complete index 1 twice
+    with patch("commitment_tracker.CommitmentTracker.update_commitment_status") as mock_update:
+        update, context = _make_update(12345, args=["1", "1"])
+        await handler.cmd_complete(update, context)
+        reply = update.message.reply_text.call_args[0][0]
+
+        # Should only process once
+        assert mock_update.call_count == 1
+        assert reply.count("\u2713") == 1
+
+
+@pytest.mark.asyncio
+async def test_dismiss_multiple_indices(handler, brain_dir):
+    """Multiple indices in /dismiss processes all successfully"""
+    m = brain_dir / "memories"
+    c1 = write_commitment(m, "Send quarterly report", status="active")
+    c2 = write_commitment(m, "Review design doc", status="active")
+
+    # Load commitments first
+    update_list, context_list = _make_update(12345, args=[])
+    await handler.cmd_commitments(update_list, context_list)
+
+    # Dismiss indices 1 and 2
+    with patch("commitment_tracker.CommitmentTracker.update_commitment_status") as mock_update:
+        update, context = _make_update(12345, args=["1", "2"])
+        await handler.cmd_dismiss(update, context)
+        reply = update.message.reply_text.call_args[0][0]
+
+        # Should have two dismiss lines (using ✗ symbol)
+        assert reply.count("\u2717") == 2
+        assert "Send quarterly report" in reply
+        assert "Review design doc" in reply
+        assert mock_update.call_count == 2
 
 # ── Agent Actions Commands ───────────────────────────────────────────────────
 

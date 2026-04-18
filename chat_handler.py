@@ -1315,49 +1315,61 @@ class TelegramChatHandler:
         if not self._check_auth(update):
             return
         if not context.args:
-            await update.message.reply_text("Usage: /complete N")
-            return
-
-        path = self._resolve_commitment_index(context.args[0])
-        if path is None:
-            await update.message.reply_text(self._format_group_help("Commitments"))
+            await update.message.reply_text("Usage: /complete N [M P ...]")
             return
 
         from commitment_tracker import CommitmentTracker
-        fm = self._parse_frontmatter(path)
-        title = fm.get("source_title") or "commitment"
-        owner = fm.get("owner", "")
-        label = f'"{title}"' + (f" ({owner})" if owner else "")
+        lines = []
+        seen = set()
+        for arg in context.args:
+            if arg in seen:
+                continue
+            seen.add(arg)
+            path = self._resolve_commitment_index(arg)
+            if path is None:
+                lines.append(f"\u2717 #{arg}: not found (run /commitments to refresh)")
+                continue
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title") or "commitment"
+            owner = fm.get("owner", "")
+            label = f'"{title}"' + (f" ({owner})" if owner else "")
+            try:
+                CommitmentTracker().update_commitment_status(path, "completed")
+                lines.append(f"\u2713 {label}")
+            except Exception as e:
+                lines.append(f"\u2717 {label}: {e}")
 
-        try:
-            CommitmentTracker().update_commitment_status(path, "completed")
-            await update.message.reply_text(f"\u2713 Marked complete: {label}")
-        except Exception as e:
-            await update.message.reply_text(f"Error updating commitment: {e}")
+        await update.message.reply_text("\n".join(lines))
 
     async def cmd_dismiss(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
         if not context.args:
-            await update.message.reply_text("Usage: /dismiss N")
-            return
-
-        path = self._resolve_commitment_index(context.args[0])
-        if path is None:
-            await update.message.reply_text(self._format_group_help("Commitments"))
+            await update.message.reply_text("Usage: /dismiss N [M P ...]")
             return
 
         from commitment_tracker import CommitmentTracker
-        fm = self._parse_frontmatter(path)
-        title = fm.get("source_title") or "commitment"
-        owner = fm.get("owner", "")
-        label = f'"{title}"' + (f" ({owner})" if owner else "")
+        lines = []
+        seen = set()
+        for arg in context.args:
+            if arg in seen:
+                continue
+            seen.add(arg)
+            path = self._resolve_commitment_index(arg)
+            if path is None:
+                lines.append(f"\u2717 #{arg}: not found (run /commitments to refresh)")
+                continue
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title") or "commitment"
+            owner = fm.get("owner", "")
+            label = f'"{title}"' + (f" ({owner})" if owner else "")
+            try:
+                CommitmentTracker().update_commitment_status(path, "dismissed")
+                lines.append(f"\u2717 {label}")
+            except Exception as e:
+                lines.append(f"\u2717 {label}: {e}")
 
-        try:
-            CommitmentTracker().update_commitment_status(path, "dismissed")
-            await update.message.reply_text(f"\u2717 Dismissed: {label}")
-        except Exception as e:
-            await update.message.reply_text(f"Error updating commitment: {e}")
+        await update.message.reply_text("\n".join(lines))
 
     # ── /wrong command (FR-11) ────────────────────────────────────────────────
 
