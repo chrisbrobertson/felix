@@ -144,6 +144,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
     "System": [
         ("backfill", "Reprocess historical data: /backfill <type> [days] [host]. Types: readings, email, zoom, calendar, slack, projects"),
         ("remember", "Fetch a URL and save a reading memory: /remember <url>"),
+        ("deepen",   "Re-process reading N with deep analysis: /deepen N"),
         ("note", "Fetch a URL and save detailed study notes: /note <url>"),
         ("version", "Show the running daemon version"),
     ],
@@ -291,6 +292,7 @@ class TelegramChatHandler:
         # System
         self.app.add_handler(CommandHandler("backfill", self.cmd_backfill))
         self.app.add_handler(CommandHandler("remember", self.cmd_remember))
+        self.app.add_handler(CommandHandler("deepen", self.cmd_deepen))
         self.app.add_handler(CommandHandler("note", self.cmd_note))
         self.app.add_error_handler(self._on_telegram_error)
         # Cache: path -> (mtime, header_text). Invalidated when mtime changes.
@@ -1127,6 +1129,54 @@ class TelegramChatHandler:
 
         lines = [f"{title}", f"{url}", f"Date: {date}{tag_str}", "", summary]
         await update.message.reply_text("\n".join(lines))
+
+    # ── /deepen command ───────────────────────────────────────────────────────
+
+    async def cmd_deepen(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Re-process an existing reading memory with the deep analysis skill."""
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /deepen N")
+            return
+
+        path = self._resolve_index(context.args[0])
+        if path is None:
+            await update.message.reply_text("Invalid index. Run /readings first.")
+            return
+
+        fm = self._parse_frontmatter(path)
+        source_url = fm.get("source_url", "")
+        if not source_url or source_url.startswith("file://"):
+            await update.message.reply_text("Can only deepen URL-sourced memories.")
+            return
+
+        await update.message.reply_text("🔍 Re-processing with deep analysis…")
+        try:
+            from content_fetcher import fetch_url_content
+            from memory_writer import MemoryWriter
+            title, text = await fetch_url_content(source_url)
+            if not text or len(text.strip()) < 100:
+                await update.message.reply_text("Couldn't fetch content from the source URL.")
+                return
+
+            deep_executor = SkillExecutor("summarize-deep")
+            response = await deep_executor.run({"content": text, "url": source_url})
+            if not response:
+                await update.message.reply_text("Deep analysis failed — check error.log.")
+                return
+
+            await MemoryWriter().write(
+                {"url": source_url, "title": title or fm.get("source_title", ""), "browser": "telegram"},
+                response,
+                depth="deep",
+            )
+            await update.message.reply_text(
+                f"📚 Deepened: {title or fm.get('source_title', '')}"
+            )
+        except Exception as e:
+            log.exception("cmd_deepen failed")
+            await update.message.reply_text(f"Error: {e}")
 
     # ── /forget command ───────────────────────────────────────────────────────
 

@@ -23,12 +23,41 @@ CONTENT_TYPES = {
 }
 
 SKILL_REGISTRY: dict[str, str] = {
-    "research-paper": "summarize-paper",
+    "research-paper": "summarize-deep",
     "documentation": "summarize-docs",
     "code-repo": "summarize-repo",
     "video-transcript": "summarize-transcript",
     "default": "summarize-webpage",
 }
+
+# Mapping of content types to depth level
+DEPTH_REGISTRY: dict[str, str] = {
+    "research-paper": "deep",
+    "documentation": "standard",
+    "code-repo": "standard",
+    "video-transcript": "standard",
+    "default": "standard",
+}
+
+
+def get_skill_and_depth(content_type: str, word_count: int = 0) -> tuple[str, str]:
+    """
+    Get skill name and depth level for a content type.
+
+    Args:
+        content_type: A key from CONTENT_TYPES
+        word_count: Word count of the content (optional)
+
+    Returns:
+        Tuple of (skill_name, depth_level)
+    """
+    # Check for long article promotion to deep
+    if content_type == "default" and word_count > 2000:
+        return ("summarize-deep", "deep")
+
+    skill_name = SKILL_REGISTRY.get(content_type, "summarize-webpage")
+    depth = DEPTH_REGISTRY.get(content_type, "standard")
+    return (skill_name, depth)
 
 
 def detect_content_type(

@@ -11,7 +11,7 @@ from typing import Optional
 from memory_writer import MemoryWriter
 from skill_executor import SkillExecutor
 from content_fetcher import fetch_url_content
-from skill_router import detect_content_type, SKILL_REGISTRY
+from skill_router import detect_content_type, get_skill_and_depth
 
 log = logging.getLogger("browser-watcher")
 
@@ -154,7 +154,8 @@ class BrowserWatcher:
             url=entry["url"],
             content=content[:3000],
         )
-        skill_name = SKILL_REGISTRY.get(content_type, "summarize-webpage")
+        word_count = len(content.split())
+        skill_name, depth = get_skill_and_depth(content_type, word_count)
         executor = self._get_executor(skill_name)
 
         # If we fell back to default for a non-default type, signal gap to skill_creator
@@ -197,10 +198,10 @@ class BrowserWatcher:
                 log.debug(f"Shadow execution (probation): {skill_name} for {entry['url'][:60]}")
 
         if not in_probation:
-            await self.writer.write(entry, memory_body)
+            await self.writer.write(entry, memory_body, depth=depth)
             self.seen_urls.add(entry["url"])
             self.save_seen_urls()
-            log.info(f"Memory written: {entry['title'][:60]} [{content_type}]")
+            log.info(f"Memory written: {entry['title'][:60]} [{content_type}, {depth}]")
         else:
             # Still mark as seen so we don't re-process on next cycle
             self.seen_urls.add(entry["url"])

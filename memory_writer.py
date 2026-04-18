@@ -19,7 +19,7 @@ def _extract_summary(body: str) -> str:
 
 
 class MemoryWriter:
-    async def write(self, entry: dict, body: str) -> str:
+    async def write(self, entry: dict, body: str, depth: str = "standard") -> str:
         MEMORIES_DIR.mkdir(parents=True, exist_ok=True)
 
         date = datetime.now().strftime("%Y-%m-%d")
@@ -57,6 +57,7 @@ class MemoryWriter:
             "tags": tags,
             "browser": entry.get("browser", "unknown"),
             "hostname": __import__("socket").gethostname(),
+            "depth": depth,
         }
         if "content_type" in entry:
             frontmatter["content_type"] = entry["content_type"]

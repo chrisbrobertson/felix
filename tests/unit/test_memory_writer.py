@@ -154,3 +154,19 @@ async def test_falls_back_to_url_when_title_missing(writer, memories_dir):
     # Should not raise even without a "title" key
     filename = await writer.write(entry, SAMPLE_BODY)
     assert filename.endswith(".md")
+
+
+async def test_write_with_depth_deep(writer, memories_dir):
+    """depth=deep should appear in written frontmatter."""
+    filename = await writer.write(SAMPLE_ENTRY, SAMPLE_BODY, depth="deep")
+    parts = (memories_dir / filename).read_text().split("---", 2)
+    fm = yaml.safe_load(parts[1])
+    assert fm["depth"] == "deep"
+
+
+async def test_write_default_depth_standard(writer, memories_dir):
+    """omitting depth should write depth: standard."""
+    filename = await writer.write(SAMPLE_ENTRY, SAMPLE_BODY)
+    parts = (memories_dir / filename).read_text().split("---", 2)
+    fm = yaml.safe_load(parts[1])
+    assert fm["depth"] == "standard"
