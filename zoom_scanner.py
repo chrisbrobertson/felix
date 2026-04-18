@@ -35,6 +35,7 @@ class ZoomScanner:
         self.role = role
         self._token: Optional[str] = None
         self._token_expiry: float = 0.0
+        self.notification_callback = None  # Set by daemon.py for watchlist notifications
         self._ai_companion_disabled = False
         self._ai_companion_403_logged = False
         self._local_dir_warned = False
@@ -416,6 +417,12 @@ class ZoomScanner:
             tmp_path.write_text(content, encoding="utf-8")
             os.rename(str(tmp_path), str(memory_path))
             log.debug("Wrote AI Companion memory %s", memory_path.name)
+
+            # Check watchlists after successful write
+            if self.notification_callback:
+                from watchlist_checker import check_watchlists
+                check_watchlists(memory_path, MEMORIES_DIR, self.notification_callback)
+
         except Exception:
             log.exception("Failed to write %s", memory_path)
             try:
@@ -774,6 +781,12 @@ class ZoomScanner:
             tmp_path.write_text(content, encoding="utf-8")
             os.rename(str(tmp_path), str(memory_path))
             log.debug("Wrote %s", memory_path.name)
+
+            # Check watchlists after successful write
+            if self.notification_callback:
+                from watchlist_checker import check_watchlists
+                check_watchlists(memory_path, MEMORIES_DIR, self.notification_callback)
+
         except Exception:
             log.exception("Failed to write %s", memory_path)
             try:

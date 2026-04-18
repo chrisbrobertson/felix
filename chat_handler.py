@@ -106,6 +106,11 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("merge",    "Merge duplicate pair N into one memory"),
         ("keep",     "Dismiss duplicate pair N as intentionally distinct"),
     ],
+    "Watchlists": [
+        ("watch",    "Create watchlist: /watch \"topic\" [from:person] [type:email|slack|meeting]"),
+        ("watches",  "List active watchlists"),
+        ("unwatch",  "Deactivate watchlist N"),
+    ],
     "Feature Requests": [
         ("feature",          "Capture a new feature request"),
         ("feature_new",      "Alias of /feature"),
@@ -206,6 +211,9 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("dupes", self.cmd_dupes))
         self.app.add_handler(CommandHandler("merge", self.cmd_merge))
         self.app.add_handler(CommandHandler("keep", self.cmd_keep))
+        self.app.add_handler(CommandHandler("watch", self.cmd_watch))
+        self.app.add_handler(CommandHandler("watches", self.cmd_watches))
+        self.app.add_handler(CommandHandler("unwatch", self.cmd_unwatch))
         self.app.add_handler(CommandHandler("readings", self.cmd_readings))
         self.app.add_handler(CommandHandler("search", self.cmd_search))
         self.app.add_handler(CommandHandler("reading", self.cmd_reading))
@@ -342,6 +350,8 @@ class TelegramChatHandler:
         self._last_candidate_set: list = []
         # Last /dupes result set — used by /merge <N>, /keep <N>.
         self._last_dupes_set: list = []
+        # Last /watches result set — used by /unwatch <N>.
+        self._last_watchlist_set: list = []
         # GitHub backing for feature/bug commands
         gh_cfg = config.get("github", {}) or {}
         repo = os.environ.get("GITHUB_REPO") or gh_cfg.get("repo", "")
@@ -1009,6 +1019,181 @@ class TelegramChatHandler:
         except Exception as e:
             log.error("Error dismissing duplicate: %s", e)
             await update.message.reply_text(f"Error dismissing pair: {e}")
+
+    # ── Watchlist commands ────────────────────────────────────────────────────
+
+    async def cmd_watch(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Create a watchlist: /watch "topic" [from:person] [type:email|slack|meeting]"""
+        if not self._check_auth(update):
+            return
+
+        if not context.args:
+            await update.message.reply_text(
+                'Usage: /watch "topic" [from:person] [type:email|slack|meeting]\n'
+                'Examples:\n'
+                '  /watch "API redesign"\n'
+                '  /watch "budget approval" from:Sarah\n'
+                '  /watch "deployment" type:email'
+            )
+            return
+
+        full_text = " ".join(context.args)
+
+        topic_match = re.search(r'"([^"]+)"', full_text)
+        if not topic_match:
+            await update.message.reply_text(
+                'Topic must be quoted. Example: /watch "API redesign" from:Sarah'
+            )
+            return
+
+        topic = topic_match.group(1).strip()
+
+        person = None
+        person_match = re.search(r'from:(\S+)', full_text, re.IGNORECASE)
+        if person_match:
+            person = person_match.group(1).strip()
+
+        watch_type = "any"
+        type_match = re.search(r'type:(email|slack|meeting)', full_text, re.IGNORECASE)
+        if type_match:
+            watch_type = type_match.group(1).lower()
+
+        import hashlib
+        watchlist_id = hashlib.sha1(
+            f"{topic}{person or ''}{watch_type}{datetime.utcnow().isoformat()}".encode()
+        ).hexdigest()[:6]
+
+        slug = re.sub(r'[^a-z0-9]+', '-', topic.lower())[:40].strip('-')
+
+        fm = {
+            "type": "watchlist",
+            "id": watchlist_id,
+            "title": f"Watch for: {topic}",
+            "status": "active",
+            "topic": topic,
+            "watch_type": watch_type,
+            "created": datetime.utcnow().isoformat(),
+            "expires": None,
+        }
+        if person:
+            fm["person"] = person
+
+        person_part = f" from {person}" if person else ""
+        type_part = f" ({watch_type})" if watch_type != "any" else ""
+        body = f"Watching for {topic}{person_part}{type_part}"
+
+        filename = f"watchlist-{slug}-{watchlist_id}.md"
+        memory_path = BRAIN_DIR / "memories" / filename
+
+        frontmatter_str = yaml.dump(fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
+        content = f"---\n{frontmatter_str}---\n\n{body}\n"
+
+        tmp_path = memory_path.with_suffix(".tmp")
+        try:
+            tmp_path.write_text(content, encoding="utf-8")
+            os.rename(str(tmp_path), str(memory_path))
+
+            person_msg = f" from {person}" if person else ""
+            type_msg = f" (type: {watch_type})" if watch_type != "any" else ""
+            await update.message.reply_text(
+                f"Watching for: {topic}{person_msg}{type_msg}"
+            )
+        except Exception as e:
+            log.exception("Failed to create watchlist")
+            await update.message.reply_text(f"Failed to create watchlist: {e}")
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    async def cmd_watches(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List active watchlists."""
+        if not self._check_auth(update):
+            return
+
+        watchlist_files = list((BRAIN_DIR / "memories").glob("watchlist-*.md"))
+        if not watchlist_files:
+            await update.message.reply_text("No watchlists found.")
+            return
+
+        watchlists = []
+        for wl_path in watchlist_files:
+            try:
+                fm = self._parse_frontmatter(wl_path)
+                status = fm.get("status", "")
+                if status in ("active", "triggered"):
+                    watchlists.append((wl_path, fm))
+            except Exception:
+                log.warning("Failed to parse watchlist %s", wl_path.name)
+
+        if not watchlists:
+            await update.message.reply_text("No active watchlists.")
+            return
+
+        watchlists.sort(key=lambda x: x[1].get("created", ""), reverse=True)
+        self._last_watchlist_set = [wl[0] for wl in watchlists]
+
+        lines = [f"Active watchlists ({len(watchlists)}):"]
+        for i, (wl_path, fm) in enumerate(watchlists, 1):
+            topic = fm.get("topic", "")
+            person = fm.get("person")
+            watch_type = fm.get("watch_type", "any")
+            status = fm.get("status", "")
+
+            person_part = f" from {person}" if person else ""
+            type_part = f" [{watch_type}]" if watch_type != "any" else ""
+            status_mark = " (triggered)" if status == "triggered" else ""
+
+            lines.append(f"{i}. {topic}{person_part}{type_part}{status_mark}")
+
+        await self._send_reply(update, "\n".join(lines))
+
+    async def cmd_unwatch(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Deactivate watchlist N."""
+        if not self._check_auth(update):
+            return
+
+        if not context.args:
+            await update.message.reply_text("Usage: /unwatch N")
+            return
+
+        try:
+            n = int(context.args[0])
+        except (ValueError, TypeError):
+            await update.message.reply_text("N must be a number. Use /watches to see the list.")
+            return
+
+        if not self._last_watchlist_set:
+            await update.message.reply_text("Use /watches first to see the list.")
+            return
+
+        if not (1 <= n <= len(self._last_watchlist_set)):
+            await update.message.reply_text(
+                f"Index {n} out of range. You have {len(self._last_watchlist_set)} watchlist(s)."
+            )
+            return
+
+        watchlist_path = self._last_watchlist_set[n - 1]
+        try:
+            fm = self._parse_frontmatter(watchlist_path)
+            fm["status"] = "expired"
+
+            text = watchlist_path.read_text(encoding="utf-8")
+            parts = text.split("---", 2)
+            body = parts[2].strip() if len(parts) >= 3 else ""
+
+            frontmatter_str = yaml.dump(fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
+            content = f"---\n{frontmatter_str}---\n\n{body}\n"
+
+            tmp_path = watchlist_path.with_suffix(".tmp")
+            tmp_path.write_text(content, encoding="utf-8")
+            os.rename(str(tmp_path), str(watchlist_path))
+
+            topic = fm.get("topic", "")
+            await update.message.reply_text(f"Deactivated watchlist: {topic}")
+        except Exception as e:
+            log.exception("Failed to deactivate watchlist")
+            await update.message.reply_text(f"Failed to deactivate watchlist: {e}")
 
     # ── Memory management helpers ─────────────────────────────────────────────
 

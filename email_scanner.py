@@ -466,6 +466,7 @@ class EmailScanner:
     def __init__(self, role: str = "full"):
         self.role = role
         self._executor = None  # lazy LLM executor
+        self.notification_callback = None  # Set by daemon.py for watchlist notifications
 
     def _load_config(self) -> dict:
         if CONFIG_PATH.exists():
@@ -760,6 +761,12 @@ class EmailScanner:
             tmp_path.write_text(content, encoding="utf-8")
             os.rename(str(tmp_path), str(memory_path))
             log.debug("Wrote %s", memory_path.name)
+
+            # Check watchlists after successful write
+            if self.notification_callback:
+                from watchlist_checker import check_watchlists
+                check_watchlists(memory_path, MEMORIES_DIR, self.notification_callback)
+
         except Exception:
             log.exception("Failed to write %s", memory_path)
             try:

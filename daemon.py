@@ -148,6 +148,11 @@ async def main():
         chat.notification_manager = notification_mgr
         goal_agent.notification_callback = notification_mgr.send_message
 
+        # Wire up scanners for watchlist notifications
+        email_scanner.notification_callback = notification_mgr.send_message
+        slack_scanner.notification_callback = notification_mgr.send_message
+        zoom_scanner.notification_callback = notification_mgr.send_message
+
         # Skill creator — wired into browser_watcher and chat_handler
         skill_creator = SkillCreator(config)
         skill_creator._notification_callback = notification_mgr.send_message
