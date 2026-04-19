@@ -2,6 +2,7 @@
 Unit tests for slack_scanner.
 
 All external access (Slack API, httpx, LiteLLM, filesystem) is mocked.
+After Phase 1 refactor, Slack API calls go through SlackClient (scanner._client).
 """
 import asyncio
 import json
@@ -28,6 +29,23 @@ def scanner(tmp_path):
         yield s
 
 
+def _make_mock_client():
+    """Return a pre-configured AsyncMock that behaves like SlackClient."""
+    client = MagicMock()
+    client.api_call = AsyncMock(return_value={"ok": True})
+    client.resolve_user = AsyncMock(return_value="Unknown User")
+    client.list_channels = AsyncMock(return_value=[])
+    client.clear_user_cache = MagicMock()
+    return client
+
+
+@pytest.fixture
+def scanner_with_client(scanner):
+    """Scanner with a mock SlackClient pre-installed (for _run_scan tests)."""
+    scanner._client = _make_mock_client()
+    return scanner
+
+
 # ── Startup and credentials ───────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -45,21 +63,21 @@ async def test_missing_token_logs_warning_and_exits(scanner, tmp_path):
 async def test_invalid_token_logs_error_and_exits(scanner, tmp_path, caplog):
     """401 response → ERROR logged, loop exits cleanly."""
     import logging
+    from slack_client import SlackClient
+
     with patch.dict(os.environ, {"SLACK_USER_TOKEN": "xoxp-invalid"}):
         stop = asyncio.Event()
 
-        async def mock_api_call(client, method, params=None, _retry=0):
+        # Patch SlackClient so that api_call returns None (simulating auth failure)
+        async def mock_api_call(method, params=None, **kwargs):
             if method == "auth.test":
-                # Simulate 401 - return None
-                stop.set()  # stop after auth failure
+                stop.set()
                 return None
-            return {"ok": False}
+            return None
 
-        with patch.object(scanner, "_api_call", side_effect=mock_api_call), \
+        with patch.object(SlackClient, "api_call", side_effect=mock_api_call), \
              caplog.at_level(logging.ERROR):
             await scanner.run_loop(stop)
-            # Should not crash, just log and exit
-            # Check that SLACK_USER_TOKEN appears in error or warning messages
             assert "SLACK_USER_TOKEN" in caplog.text or "auth.test" in caplog.text
 
 
@@ -67,12 +85,15 @@ async def test_invalid_token_logs_error_and_exits(scanner, tmp_path, caplog):
 async def test_resolve_self_populates_own_user_id(tmp_path):
     """_resolve_self caches own_user_id from auth.test response."""
     scanner = SlackScanner(role="full")
+    scanner._client = _make_mock_client()
 
-    auth_response = {"ok": True, "user_id": "U01234567", "user": "testuser", "team": "TestTeam", "url": "https://testteam.slack.com/"}
+    auth_response = {
+        "ok": True, "user_id": "U01234567", "user": "testuser",
+        "team": "TestTeam", "url": "https://testteam.slack.com/"
+    }
+    scanner._client.api_call = AsyncMock(return_value=auth_response)
 
-    client = AsyncMock()
-    with patch.object(scanner, "_api_call", return_value=auth_response):
-        result = await scanner._resolve_self(client)
+    result = await scanner._resolve_self()
 
     assert result is True
     assert scanner.own_user_id == "U01234567"
@@ -83,11 +104,11 @@ async def test_resolve_self_401_logs_friendly_error(tmp_path, caplog):
     """_resolve_self logs a friendly error with xoxp- hint on auth failure."""
     import logging
     scanner = SlackScanner(role="full")
+    scanner._client = _make_mock_client()
+    scanner._client.api_call = AsyncMock(return_value=None)
 
-    client = AsyncMock()
-    with patch.object(scanner, "_api_call", return_value=None):
-        with caplog.at_level(logging.ERROR):
-            result = await scanner._resolve_self(client)
+    with caplog.at_level(logging.ERROR):
+        result = await scanner._resolve_self()
 
     assert result is False
     assert "xoxp-" in caplog.text
@@ -131,9 +152,10 @@ def test_archived_channel_always_excluded(scanner):
 # ── High-water and lookback ───────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_high_water_incremental_polling(scanner, tmp_path):
+async def test_high_water_incremental_polling(scanner_with_client, tmp_path):
     """Second cycle only requests messages after stored high_water."""
     state_file = tmp_path / "slack-state.json"
+    scanner = scanner_with_client
     with patch.object(ss, "STATE_FILE", state_file):
         state = {
             "channels": {
@@ -148,36 +170,33 @@ async def test_high_water_incremental_polling(scanner, tmp_path):
 
         called_oldest = []
 
-        async def mock_fetch_messages(client, channel_id, high_water, lookback_days):
+        async def mock_fetch_messages(channel_id, high_water, lookback_days):
             called_oldest.append(high_water)
             return []
 
-        with patch.dict(os.environ, {"SLACK_USER_TOKEN": "xoxb-test"}), \
-             patch.object(scanner, "_list_channels", return_value=[("C001", "engineering")]), \
-             patch.object(scanner, "_fetch_channel_messages", side_effect=mock_fetch_messages):
+        scanner._client.list_channels = AsyncMock(return_value=[("C001", "engineering")])
+        with patch.object(scanner, "_fetch_channel_messages", side_effect=mock_fetch_messages):
             await scanner._run_scan()
             assert called_oldest[0] == "1712800000.000000"
 
 
 @pytest.mark.asyncio
-async def test_first_run_uses_lookback_days(scanner, tmp_path):
+async def test_first_run_uses_lookback_days(scanner_with_client, tmp_path):
     """No state → oldest set to now − lookback_days."""
-    with patch.dict(os.environ, {"SLACK_USER_TOKEN": "xoxb-test"}), \
-         patch.object(scanner, "_list_channels", return_value=[("C001", "engineering")]), \
-         patch.object(scanner, "_fetch_channel_messages", return_value=[]):
+    scanner = scanner_with_client
+    called_args = []
 
-        called_args = []
+    async def capture_args(channel_id, high_water, lookback_days):
+        called_args.append((high_water, lookback_days))
+        return []
 
-        async def capture_args(client, channel_id, high_water, lookback_days):
-            called_args.append((high_water, lookback_days))
-            return []
+    scanner._client.list_channels = AsyncMock(return_value=[("C001", "engineering")])
+    scanner._fetch_channel_messages = capture_args
+    await scanner._run_scan()
 
-        scanner._fetch_channel_messages = capture_args
-        await scanner._run_scan()
-
-        hw, lb = called_args[0]
-        assert hw is None
-        assert lb == 7  # default lookback_days
+    hw, lb = called_args[0]
+    assert hw is None
+    assert lb == 7  # default lookback_days
 
 
 # ── Thread detection ──────────────────────────────────────────────────────────
@@ -209,13 +228,14 @@ async def test_change_detection_unchanged(tmp_path):
     """Same message_count + last_ts → no write, no LLM call."""
     # NOTE: Change detection logic is verified to work correctly (see test_change_detection_new_reply).
     # This test validates the skip path, but mocking the full state load/save cycle is complex.
-    # The actual implementation at slack_scanner.py:501-503 correctly skips unchanged threads.
+    # The actual implementation correctly skips unchanged threads.
     pass
 
 
 @pytest.mark.asyncio
-async def test_change_detection_new_reply(scanner, tmp_path):
+async def test_change_detection_new_reply(scanner_with_client, tmp_path):
     """New reply → re-fetch, re-summarize, overwrite."""
+    scanner = scanner_with_client
     state_file = tmp_path / "slack-state.json"
     with patch.object(ss, "STATE_FILE", state_file):
         state = {
@@ -253,11 +273,10 @@ async def test_change_detection_new_reply(scanner, tmp_path):
             llm_called = True
             return {"summary": "updated", "tags": []}
 
-        with patch.dict(os.environ, {"SLACK_USER_TOKEN": "xoxb-test"}), \
-             patch.object(scanner, "_list_channels", return_value=[("C001", "engineering")]), \
-             patch.object(scanner, "_fetch_channel_messages", return_value=[thread_msg]), \
+        scanner._client.list_channels = AsyncMock(return_value=[("C001", "engineering")])
+        scanner._client.resolve_user = AsyncMock(return_value="Test User")
+        with patch.object(scanner, "_fetch_channel_messages", return_value=[thread_msg]), \
              patch.object(scanner, "_fetch_thread_replies", return_value=full_thread), \
-             patch.object(scanner, "_resolve_user", return_value="Test User"), \
              patch.object(scanner, "_generate_summary", side_effect=mock_llm), \
              patch.object(scanner, "_write_memory"):
             await scanner._run_scan()
@@ -269,23 +288,24 @@ async def test_change_detection_new_reply(scanner, tmp_path):
 @pytest.mark.asyncio
 async def test_user_id_resolution_cached(scanner):
     """Second call for same user ID → cache used, no API call."""
-    client = AsyncMock()
+    from slack_client import SlackClient
 
     api_calls = []
 
-    async def mock_api_call(c, method, params, _retry=0):
+    async def mock_api_call(method, params=None, **kwargs):
         api_calls.append(method)
         return {"ok": True, "user": {"real_name": "Alice Smith", "name": "alice"}}
 
-    scanner._api_call = mock_api_call
+    client = SlackClient(token="xoxp-test")
+    client.api_call = mock_api_call  # type: ignore
 
     # First call
-    name1 = await scanner._resolve_user(client, "U001")
+    name1 = await client.resolve_user("U001")
     assert name1 == "Alice Smith"
     assert len(api_calls) == 1
 
     # Second call — should use cache
-    name2 = await scanner._resolve_user(client, "U001")
+    name2 = await client.resolve_user("U001")
     assert name2 == "Alice Smith"
     assert len(api_calls) == 1  # no additional API call
 
@@ -293,13 +313,14 @@ async def test_user_id_resolution_cached(scanner):
 @pytest.mark.asyncio
 async def test_user_id_resolution_unknown(scanner):
     """Unknown user ID → "Unknown User", no crash."""
-    client = AsyncMock()
+    from slack_client import SlackClient
 
-    async def mock_api_call(c, method, params, _retry=0):
+    async def mock_api_call(method, params=None, **kwargs):
         return None
 
-    scanner._api_call = mock_api_call
-    name = await scanner._resolve_user(client, "U999")
+    client = SlackClient(token="xoxp-test")
+    client.api_call = mock_api_call  # type: ignore
+    name = await client.resolve_user("U999")
     assert name == "Unknown User"
 
 
@@ -414,33 +435,39 @@ def test_messages_capped_at_50_lines(scanner, tmp_path):
 
 @pytest.mark.asyncio
 async def test_rate_limit_retry_after(scanner):
-    """429 + Retry-After=5 → sleep 5s, retry."""
-    client = AsyncMock()
+    """429 + Retry-After=5 → sleep 5s, retry. Tested via SlackClient.api_call."""
+    from slack_client import SlackClient
+
     call_count = [0]
 
     async def mock_get(*args, **kwargs):
         call_count[0] += 1
         resp = MagicMock()
         if call_count[0] == 1:
-            # First call: 429
             resp.status_code = 429
             resp.headers = {"Retry-After": "5"}
         else:
-            # Second call: success
             resp.status_code = 200
+            resp.raise_for_status = MagicMock()
             resp.json.return_value = {"ok": True, "channels": []}
         return resp
-
-    client.get = mock_get
 
     sleep_calls = []
 
     async def mock_sleep(duration):
         sleep_calls.append(duration)
 
-    with patch.dict(os.environ, {"SLACK_USER_TOKEN": "xoxb-test"}), \
-         patch("slack_scanner.asyncio.sleep", side_effect=mock_sleep):
-        result = await scanner._api_call(client, "conversations.list")
+    client = SlackClient(token="xoxb-test")
+
+    with patch("httpx.AsyncClient") as mock_client_cls, \
+         patch("slack_client.asyncio.sleep", side_effect=mock_sleep):
+        mock_httpx = AsyncMock()
+        mock_httpx.__aenter__ = AsyncMock(return_value=mock_httpx)
+        mock_httpx.__aexit__ = AsyncMock(return_value=False)
+        mock_httpx.get = mock_get
+        mock_client_cls.return_value = mock_httpx
+
+        result = await client.api_call("conversations.list")
         assert len(sleep_calls) == 1
         assert sleep_calls[0] == 5
         assert result["ok"] is True
@@ -448,23 +475,27 @@ async def test_rate_limit_retry_after(scanner):
 
 @pytest.mark.asyncio
 async def test_rate_limit_two_consecutive_skips(scanner):
-    """Second 429 → channel skipped, ERROR logged."""
-    client = AsyncMock()
+    """Second 429 → None returned, ERROR logged. Tested via SlackClient.api_call."""
+    from slack_client import SlackClient
 
     async def mock_get(*args, **kwargs):
-        # Always 429
         resp = MagicMock()
         resp.status_code = 429
         resp.headers = {"Retry-After": "1"}
         return resp
 
-    client.get = mock_get
+    client = SlackClient(token="xoxb-test")
 
-    with patch.dict(os.environ, {"SLACK_USER_TOKEN": "xoxb-test"}), \
-         patch("slack_scanner.asyncio.sleep"), \
-         patch("slack_scanner.log") as mock_log:
-        result = await scanner._api_call(client, "conversations.list", _retry=0)
-        # Should retry once, then return None
+    with patch("httpx.AsyncClient") as mock_client_cls, \
+         patch("slack_client.asyncio.sleep"), \
+         patch("slack_client.log") as mock_log:
+        mock_httpx = AsyncMock()
+        mock_httpx.__aenter__ = AsyncMock(return_value=mock_httpx)
+        mock_httpx.__aexit__ = AsyncMock(return_value=False)
+        mock_httpx.get = mock_get
+        mock_client_cls.return_value = mock_httpx
+
+        result = await client.api_call("conversations.list")
         assert result is None
         mock_log.error.assert_called()
 
@@ -480,29 +511,29 @@ async def test_inter_request_delay(scanner):
 # ── State file management ─────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_state_file_created_on_first_run(scanner, tmp_path):
+async def test_state_file_created_on_first_run(scanner_with_client, tmp_path):
     """No existing state → state file written."""
+    scanner = scanner_with_client
     state_file = tmp_path / "slack-state.json"
     with patch.object(ss, "STATE_FILE", state_file):
         assert not state_file.exists()
 
-        with patch.dict(os.environ, {"SLACK_USER_TOKEN": "xoxb-test"}), \
-             patch.object(scanner, "_list_channels", return_value=[("C001", "engineering")]), \
-             patch.object(scanner, "_fetch_channel_messages", return_value=[]):
+        scanner._client.list_channels = AsyncMock(return_value=[("C001", "engineering")])
+        with patch.object(scanner, "_fetch_channel_messages", return_value=[]):
             await scanner._run_scan()
             assert state_file.exists()
 
 
 @pytest.mark.asyncio
-async def test_state_file_persists_high_water(scanner, tmp_path):
+async def test_state_file_persists_high_water(scanner_with_client, tmp_path):
     """High-water survives simulated restart."""
+    scanner = scanner_with_client
     state_file = tmp_path / "slack-state.json"
     with patch.object(ss, "STATE_FILE", state_file):
         messages = [{"ts": "1712800000.000000", "text": "msg"}]
 
-        with patch.dict(os.environ, {"SLACK_USER_TOKEN": "xoxb-test"}), \
-             patch.object(scanner, "_list_channels", return_value=[("C001", "engineering")]), \
-             patch.object(scanner, "_fetch_channel_messages", return_value=messages):
+        scanner._client.list_channels = AsyncMock(return_value=[("C001", "engineering")])
+        with patch.object(scanner, "_fetch_channel_messages", return_value=messages):
             await scanner._run_scan()
 
         # Reload state
@@ -541,26 +572,27 @@ def test_thread_state_pruned_by_age(scanner, tmp_path):
 # ── Cycle limits ──────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_max_channels_per_cycle(scanner):
+async def test_max_channels_per_cycle(scanner_with_client):
     """25 channels → 20 processed, 5 deferred."""
+    scanner = scanner_with_client
     channels = [(f"C{i:03d}", f"channel-{i}") for i in range(25)]
 
     processed = []
 
-    async def mock_fetch(client, channel_id, high_water, lookback_days):
+    async def mock_fetch(channel_id, high_water, lookback_days):
         processed.append(channel_id)
         return []
 
-    with patch.dict(os.environ, {"SLACK_USER_TOKEN": "xoxb-test"}), \
-         patch.object(scanner, "_list_channels", return_value=channels), \
-         patch.object(scanner, "_fetch_channel_messages", side_effect=mock_fetch):
+    scanner._client.list_channels = AsyncMock(return_value=channels)
+    with patch.object(scanner, "_fetch_channel_messages", side_effect=mock_fetch):
         await scanner._run_scan()
         assert len(processed) == 20
 
 
 @pytest.mark.asyncio
-async def test_max_threads_per_channel(scanner):
+async def test_max_threads_per_channel(scanner_with_client):
     """35 threads in channel → 30 processed."""
+    scanner = scanner_with_client
     thread_msgs = [
         {"ts": f"1712700{i:03d}.000000", "thread_ts": f"1712700{i:03d}.000000", "reply_count": 3}
         for i in range(35)
@@ -568,15 +600,14 @@ async def test_max_threads_per_channel(scanner):
 
     processed_threads = []
 
-    async def mock_fetch_replies(client, channel_id, thread_ts):
+    async def mock_fetch_replies(channel_id, thread_ts):
         processed_threads.append(thread_ts)
         return [{"ts": thread_ts, "user": "U001", "text": "msg", "_resolved_name": "Alice"}]
 
-    with patch.dict(os.environ, {"SLACK_USER_TOKEN": "xoxb-test"}), \
-         patch.object(scanner, "_list_channels", return_value=[("C001", "engineering")]), \
-         patch.object(scanner, "_fetch_channel_messages", return_value=thread_msgs), \
+    scanner._client.list_channels = AsyncMock(return_value=[("C001", "engineering")])
+    scanner._client.resolve_user = AsyncMock(return_value="Alice")
+    with patch.object(scanner, "_fetch_channel_messages", return_value=thread_msgs), \
          patch.object(scanner, "_fetch_thread_replies", side_effect=mock_fetch_replies), \
-         patch.object(scanner, "_resolve_user", return_value="Alice"), \
          patch.object(scanner, "_generate_summary", return_value={"summary": "test", "tags": []}), \
          patch.object(scanner, "_write_memory"):
         await scanner._run_scan()
@@ -605,21 +636,13 @@ async def test_watcher_role_skips_slack_scanner():
 async def test_backfill_clears_high_water_per_channel(tmp_path):
     """backfill() clears high_water for all channels."""
     scanner = SlackScanner(role="full")
+    scanner._client = _make_mock_client()
 
     with patch.object(ss, "MEMORIES_DIR", tmp_path / "memories"), \
          patch.object(ss, "STATE_FILE", tmp_path / "state.json"), \
-         patch.object(ss, "CONFIG_PATH", tmp_path / "config.yaml"), \
-         patch("httpx.AsyncClient") as mock_client_cls, \
-         patch("os.environ.get", return_value="xoxp-test-token"):
+         patch.object(ss, "CONFIG_PATH", tmp_path / "config.yaml"):
 
-        # Mock httpx.AsyncClient context manager
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client_cls.return_value = mock_client
-
-        # Mock scanner methods - return a channel to process
-        scanner._list_channels = AsyncMock(return_value=[("C123", "general")])
+        scanner._client.list_channels = AsyncMock(return_value=[("C123", "general")])
         scanner._filter_channels = MagicMock(return_value=[("C123", "general")])
         scanner._fetch_channel_messages = AsyncMock(return_value=[])  # No messages
 

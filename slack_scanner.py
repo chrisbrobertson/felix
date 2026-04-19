@@ -9,10 +9,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-import httpx
 import yaml
 
 from llm_routes import resolve
+from slack_client import SlackClient
 
 log = logging.getLogger("slack-scanner")
 
@@ -32,7 +32,7 @@ MAX_TRANSCRIPT_LINES = 50
 class SlackScanner:
     def __init__(self, role: str = "full"):
         self.role = role
-        self._user_cache: dict = {}  # user_id -> display_name
+        self._client: Optional[SlackClient] = None
         self.own_user_id = None
         self._self_resolved = False
         self.notification_callback = None  # Set by daemon.py for watchlist notifications
@@ -87,69 +87,7 @@ class SlackScanner:
             channel_state["threads"] = pruned
 
     # ── API helpers ───────────────────────────────────────────────────────────
-
-    async def _api_call(
-        self,
-        client: httpx.AsyncClient,
-        method: str,
-        params: dict = None,
-        _retry: int = 0,
-    ) -> Optional[dict]:
-        token = os.environ.get("SLACK_USER_TOKEN", "")
-        if not token:
-            return None
-        try:
-            resp = await client.get(
-                f"{SLACK_API_BASE}/{method}",
-                headers={"Authorization": f"Bearer {token}"},
-                params=params or {},
-            )
-            if resp.status_code == 429:
-                retry_after = int(resp.headers.get("Retry-After", 60))
-                log.warning("Slack API rate limited — waiting %ds (method=%s)", retry_after, method)
-                if _retry < 1:
-                    await asyncio.sleep(retry_after)
-                    return await self._api_call(client, method, params, _retry + 1)
-                log.error("Persistent rate limit on %s — skipping", method)
-                return None
-            if resp.status_code == 401:
-                log.error("Slack API auth failed (401) — check SLACK_USER_TOKEN (must start with xoxp-)")
-                return None
-            resp.raise_for_status()
-            data = resp.json()
-            if not data.get("ok"):
-                log.warning("Slack API error on %s: %s", method, data.get("error", "unknown"))
-                return None
-            return data
-        except httpx.HTTPStatusError as e:
-            log.warning("Slack API HTTP error %s: %s", e.response.status_code, method)
-            return None
-        except Exception as e:
-            log.warning("Slack API request failed (%s): %s", method, e)
-            return None
-
-    # ── Channel discovery ─────────────────────────────────────────────────────
-
-    async def _list_channels(self, client: httpx.AsyncClient) -> list:
-        """Return list of (channel_id, channel_name) tuples for channels user is a member of."""
-        channels = []
-        cursor = None
-        while True:
-            params = {"types": "public_channel,private_channel", "exclude_archived": "true", "limit": 200}
-            if cursor:
-                params["cursor"] = cursor
-            data = await self._api_call(client, "users.conversations", params)
-            if not data:
-                break
-            for ch in data.get("channels", []):
-                if not ch.get("is_archived", False):
-                    channels.append((ch["id"], ch.get("name", "unknown")))
-            cursor = data.get("response_metadata", {}).get("next_cursor")
-            if not cursor:
-                break
-            await asyncio.sleep(1)  # rate limit compliance
-        log.info("Enumerated %d channels via users.conversations", len(channels))
-        return channels
+    # (Removed — now delegated to SlackClient)
 
     def _filter_channels(self, channels: list, config: dict) -> list:
         """Apply whitelist/blacklist filtering."""
@@ -170,7 +108,7 @@ class SlackScanner:
     # ── Message polling ───────────────────────────────────────────────────────
 
     async def _fetch_channel_messages(
-        self, client: httpx.AsyncClient, channel_id: str, high_water: Optional[str], lookback_days: int
+        self, channel_id: str, high_water: Optional[str], lookback_days: int
     ) -> list:
         """Return list of message dicts newer than high_water."""
         if high_water:
@@ -187,7 +125,7 @@ class SlackScanner:
             params = {"channel": channel_id, "oldest": oldest, "limit": 100, "inclusive": str(inclusive).lower()}
             if cursor:
                 params["cursor"] = cursor
-            data = await self._api_call(client, "conversations.history", params)
+            data = await self._client.api_call("conversations.history", params)
             if not data:
                 break
             messages.extend(data.get("messages", []))
@@ -199,7 +137,7 @@ class SlackScanner:
 
     # ── Thread retrieval ──────────────────────────────────────────────────────
 
-    async def _fetch_thread_replies(self, client: httpx.AsyncClient, channel_id: str, thread_ts: str) -> list:
+    async def _fetch_thread_replies(self, channel_id: str, thread_ts: str) -> list:
         """Return all messages in a thread (including root message)."""
         replies = []
         cursor = None
@@ -207,7 +145,7 @@ class SlackScanner:
             params = {"channel": channel_id, "ts": thread_ts, "limit": 100}
             if cursor:
                 params["cursor"] = cursor
-            data = await self._api_call(client, "conversations.replies", params)
+            data = await self._client.api_call("conversations.replies", params)
             if not data:
                 break
             replies.extend(data.get("messages", []))
@@ -218,21 +156,7 @@ class SlackScanner:
         return replies
 
     # ── User identity resolution ──────────────────────────────────────────────
-
-    async def _resolve_user(self, client: httpx.AsyncClient, user_id: str) -> str:
-        """Resolve user ID to display name, with in-memory cache."""
-        if user_id in self._user_cache:
-            return self._user_cache[user_id]
-
-        data = await self._api_call(client, "users.info", {"user": user_id})
-        if data and data.get("user"):
-            name = data["user"].get("real_name") or data["user"].get("name") or "Unknown User"
-        else:
-            name = "Unknown User"
-
-        self._user_cache[user_id] = name
-        await asyncio.sleep(1)  # rate limit compliance
-        return name
+    # (Removed — now delegated to SlackClient)
 
     # ── LLM summary ───────────────────────────────────────────────────────────
 
@@ -415,9 +339,9 @@ class SlackScanner:
 
     # ── Self-resolution ───────────────────────────────────────────────────────
 
-    async def _resolve_self(self, client: httpx.AsyncClient) -> bool:
+    async def _resolve_self(self) -> bool:
         """Call auth.test to cache own_user_id and log authenticated identity."""
-        data = await self._api_call(client, "auth.test", {})
+        data = await self._client.api_call("auth.test", {})
         if not data or not data.get("ok"):
             log.error("Slack auth.test failed — check SLACK_USER_TOKEN (must start with xoxp-)")
             return False
@@ -438,6 +362,9 @@ class SlackScanner:
             log.warning("SLACK_USER_TOKEN not set — Slack scanner disabled")
             return
 
+        # Initialize SlackClient
+        self._client = SlackClient(token=token)
+
         sc = self._scanner_config()
         interval = sc.get("interval_seconds", 300)
 
@@ -445,11 +372,10 @@ class SlackScanner:
             try:
                 # Resolve self on first iteration
                 if not self._self_resolved:
-                    async with httpx.AsyncClient(timeout=30) as client:
-                        if not await self._resolve_self(client):
-                            log.warning("Slack scanner disabled — auth.test failed")
-                            return
-                        self._self_resolved = True
+                    if not await self._resolve_self():
+                        log.warning("Slack scanner disabled — auth.test failed")
+                        return
+                    self._self_resolved = True
 
                 await self._run_scan()
             except Exception:
@@ -475,96 +401,95 @@ class SlackScanner:
         skipped = 0
         errors = 0
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            # Discover channels
-            all_channels = await self._list_channels(client)
-            if not all_channels:
-                return {
-                    "processed": 0,
-                    "skipped": 0,
-                    "errors": 0,
-                    "notes": "No channels found or API error"
-                }
+        # Discover channels
+        all_channels = await self._client.list_channels()
+        if not all_channels:
+            return {
+                "processed": 0,
+                "skipped": 0,
+                "errors": 0,
+                "notes": "No channels found or API error"
+            }
 
-            channels = self._filter_channels(all_channels, sc)
-            if not channels:
-                return {
-                    "processed": 0,
-                    "skipped": 0,
-                    "errors": 0,
-                    "notes": "No channels after filtering"
-                }
+        channels = self._filter_channels(all_channels, sc)
+        if not channels:
+            return {
+                "processed": 0,
+                "skipped": 0,
+                "errors": 0,
+                "notes": "No channels after filtering"
+            }
 
-            # Process all channels
-            for channel_id, channel_name in channels:
-                log.info("Backfill: scanning channel %s", channel_name)
+        # Process all channels
+        for channel_id, channel_name in channels:
+            log.info("Backfill: scanning channel %s", channel_name)
 
-                channel_state = state["channels"].setdefault(channel_id, {"name": channel_name, "threads": {}})
+            channel_state = state["channels"].setdefault(channel_id, {"name": channel_name, "threads": {}})
 
-                # Fetch messages with no high_water (full lookback)
-                messages = await self._fetch_channel_messages(client, channel_id, None, days)
-                if messages is None:
+            # Fetch messages with no high_water (full lookback)
+            messages = await self._fetch_channel_messages(channel_id, None, days)
+            if messages is None:
+                errors += 1
+                continue
+
+            # Find thread roots
+            thread_roots = []
+            for msg in messages:
+                reply_count = msg.get("reply_count", 0)
+                thread_ts = msg.get("thread_ts")
+                ts = msg.get("ts")
+                if reply_count >= min_thread_messages and thread_ts == ts:
+                    thread_roots.append(msg)
+
+            # Process all threads (no limit for backfill)
+            for thread_msg in thread_roots:
+                thread_ts = thread_msg["ts"]
+                thread_state = channel_state["threads"].setdefault(thread_ts, {})
+
+                # Fetch full thread
+                full_thread = await self._fetch_thread_replies(channel_id, thread_ts)
+                if full_thread is None:
                     errors += 1
                     continue
 
-                # Find thread roots
-                thread_roots = []
-                for msg in messages:
-                    reply_count = msg.get("reply_count", 0)
-                    thread_ts = msg.get("thread_ts")
-                    ts = msg.get("ts")
-                    if reply_count >= min_thread_messages and thread_ts == ts:
-                        thread_roots.append(msg)
+                current_count = len(full_thread)
+                current_last_ts = full_thread[-1].get("ts", "") if full_thread else ""
 
-                # Process all threads (no limit for backfill)
-                for thread_msg in thread_roots:
-                    thread_ts = thread_msg["ts"]
-                    thread_state = channel_state["threads"].setdefault(thread_ts, {})
+                # Resolve user names
+                for msg in full_thread:
+                    user_id = msg.get("user", "")
+                    if user_id:
+                        name = await self._client.resolve_user(user_id)
+                        msg["_resolved_name"] = name
+                    else:
+                        msg["_resolved_name"] = "Unknown User"
 
-                    # Fetch full thread
-                    full_thread = await self._fetch_thread_replies(client, channel_id, thread_ts)
-                    if full_thread is None:
-                        errors += 1
-                        continue
+                # Extract unique participants
+                participants = list({msg.get("_resolved_name", "Unknown User") for msg in full_thread if msg.get("user")})
 
-                    current_count = len(full_thread)
-                    current_last_ts = full_thread[-1].get("ts", "") if full_thread else ""
+                # Generate summary
+                try:
+                    llm_result = await self._generate_summary(channel_name, full_thread, participants)
 
-                    # Resolve user names
-                    for msg in full_thread:
-                        user_id = msg.get("user", "")
-                        if user_id:
-                            name = await self._resolve_user(client, user_id)
-                            msg["_resolved_name"] = name
-                        else:
-                            msg["_resolved_name"] = "Unknown User"
+                    # Write memory file
+                    self._write_memory(channel_id, channel_name, thread_ts, full_thread, llm_result)
 
-                    # Extract unique participants
-                    participants = list({msg.get("_resolved_name", "Unknown User") for msg in full_thread if msg.get("user")})
+                    # Update thread state
+                    thread_state["message_count"] = current_count
+                    thread_state["last_ts"] = current_last_ts
 
-                    # Generate summary
-                    try:
-                        llm_result = await self._generate_summary(channel_name, full_thread, participants)
+                    processed += 1
+                except Exception as e:
+                    log.error(f"Backfill error processing Slack thread {thread_ts}: {e}")
+                    errors += 1
 
-                        # Write memory file
-                        self._write_memory(channel_id, channel_name, thread_ts, full_thread, llm_result)
+            # Update high-water mark
+            if messages:
+                newest_ts = max(msg.get("ts", "0") for msg in messages)
+                channel_state["high_water"] = newest_ts
 
-                        # Update thread state
-                        thread_state["message_count"] = current_count
-                        thread_state["last_ts"] = current_last_ts
-
-                        processed += 1
-                    except Exception as e:
-                        log.error(f"Backfill error processing Slack thread {thread_ts}: {e}")
-                        errors += 1
-
-                # Update high-water mark
-                if messages:
-                    newest_ts = max(msg.get("ts", "0") for msg in messages)
-                    channel_state["high_water"] = newest_ts
-
-                # Save state after each channel
-                self._save_state(state)
+            # Save state after each channel
+            self._save_state(state)
 
         self._save_state(state)
 
@@ -586,101 +511,100 @@ class SlackScanner:
         self._prune_threads(state, lookback_days)
 
         # Clear user cache each cycle
-        self._user_cache = {}
+        self._client.clear_user_cache()
 
         rate_limit_hits = 0
 
-        async with httpx.AsyncClient(timeout=30) as client:
-            # Discover channels
-            all_channels = await self._list_channels(client)
-            if not all_channels:
-                log.debug("No channels found or API error")
-                return
+        # Discover channels
+        all_channels = await self._client.list_channels()
+        if not all_channels:
+            log.debug("No channels found or API error")
+            return
 
-            channels = self._filter_channels(all_channels, sc)
-            if not channels:
-                log.debug("No channels after filtering")
-                return
+        channels = self._filter_channels(all_channels, sc)
+        if not channels:
+            log.debug("No channels after filtering")
+            return
 
-            # Process up to max_channels
-            for channel_id, channel_name in channels[:max_channels]:
-                if rate_limit_hits >= 3:
-                    log.warning("3+ rate limit hits this cycle — skipping remaining channels")
-                    break
+        # Process up to max_channels
+        for channel_id, channel_name in channels[:max_channels]:
+            if rate_limit_hits >= 3:
+                log.warning("3+ rate limit hits this cycle — skipping remaining channels")
+                break
 
-                log.debug("Scanning channel: %s", channel_name)
+            log.debug("Scanning channel: %s", channel_name)
 
-                channel_state = state["channels"].setdefault(channel_id, {"name": channel_name, "threads": {}})
-                high_water = channel_state.get("high_water")
+            channel_state = state["channels"].setdefault(channel_id, {"name": channel_name, "threads": {}})
+            high_water = channel_state.get("high_water")
 
-                messages = await self._fetch_channel_messages(client, channel_id, high_water, lookback_days)
-                if messages is None:
+            messages = await self._fetch_channel_messages(channel_id, high_water, lookback_days)
+            if messages is None:
+                rate_limit_hits += 1
+                continue
+
+            # Find thread roots
+            thread_roots = []
+            for msg in messages:
+                reply_count = msg.get("reply_count", 0)
+                thread_ts = msg.get("thread_ts")
+                ts = msg.get("ts")
+                if reply_count >= min_thread_messages and thread_ts == ts:
+                    thread_roots.append(msg)
+
+            # Process threads
+            for thread_msg in thread_roots[:max_threads]:
+                thread_ts = thread_msg["ts"]
+                thread_state = channel_state["threads"].setdefault(thread_ts, {})
+
+                # Fetch full thread to check for changes
+                full_thread = await self._fetch_thread_replies(channel_id, thread_ts)
+                if full_thread is None:
                     rate_limit_hits += 1
                     continue
 
-                # Find thread roots
-                thread_roots = []
-                for msg in messages:
-                    reply_count = msg.get("reply_count", 0)
-                    thread_ts = msg.get("thread_ts")
-                    ts = msg.get("ts")
-                    if reply_count >= min_thread_messages and thread_ts == ts:
-                        thread_roots.append(msg)
+                current_count = len(full_thread)
+                current_last_ts = full_thread[-1].get("ts", "") if full_thread else ""
 
-                # Process threads
-                for thread_msg in thread_roots[:max_threads]:
-                    thread_ts = thread_msg["ts"]
-                    thread_state = channel_state["threads"].setdefault(thread_ts, {})
+                # Change detection
+                prev_count = thread_state.get("message_count", 0)
+                prev_last_ts = thread_state.get("last_ts", "")
 
-                    # Fetch full thread to check for changes
-                    full_thread = await self._fetch_thread_replies(client, channel_id, thread_ts)
-                    if full_thread is None:
-                        rate_limit_hits += 1
-                        continue
+                if current_count == prev_count and current_last_ts == prev_last_ts:
+                    log.debug("Thread %s unchanged — skipping", thread_ts)
+                    continue
 
-                    current_count = len(full_thread)
-                    current_last_ts = full_thread[-1].get("ts", "") if full_thread else ""
+                # Resolve user names
+                for msg in full_thread:
+                    user_id = msg.get("user", "")
+                    if user_id:
+                        name = await self._client.resolve_user(user_id)
+                        msg["_resolved_name"] = name
+                    else:
+                        msg["_resolved_name"] = "Unknown User"
 
-                    # Change detection
-                    prev_count = thread_state.get("message_count", 0)
-                    prev_last_ts = thread_state.get("last_ts", "")
+                # Extract unique participants
+                participants = list({msg.get("_resolved_name", "Unknown User") for msg in full_thread if msg.get("user")})
 
-                    if current_count == prev_count and current_last_ts == prev_last_ts:
-                        log.debug("Thread %s unchanged — skipping", thread_ts)
-                        continue
+                # Generate summary
+                llm_result = await self._generate_summary(channel_name, full_thread, participants)
 
-                    # Resolve user names
-                    for msg in full_thread:
-                        user_id = msg.get("user", "")
-                        if user_id:
-                            name = await self._resolve_user(client, user_id)
-                            msg["_resolved_name"] = name
-                        else:
-                            msg["_resolved_name"] = "Unknown User"
+                # Write memory file
+                self._write_memory(channel_id, channel_name, thread_ts, full_thread, llm_result)
 
-                    # Extract unique participants
-                    participants = list({msg.get("_resolved_name", "Unknown User") for msg in full_thread if msg.get("user")})
+                # Update thread state
+                thread_state["message_count"] = current_count
+                thread_state["last_ts"] = current_last_ts
 
-                    # Generate summary
-                    llm_result = await self._generate_summary(channel_name, full_thread, participants)
+                log.info("Slack thread processed: %s in #%s", thread_ts, channel_name)
 
-                    # Write memory file
-                    self._write_memory(channel_id, channel_name, thread_ts, full_thread, llm_result)
+            # Update high-water mark
+            if messages:
+                newest_ts = max(msg.get("ts", "0") for msg in messages)
+                channel_state["high_water"] = newest_ts
 
-                    # Update thread state
-                    thread_state["message_count"] = current_count
-                    thread_state["last_ts"] = current_last_ts
+            # Save state after each channel
+            self._save_state(state)
 
-                    log.info("Slack thread processed: %s in #%s", thread_ts, channel_name)
-
-                # Update high-water mark
-                if messages:
-                    newest_ts = max(msg.get("ts", "0") for msg in messages)
-                    channel_state["high_water"] = newest_ts
-
-                # Save state after each channel
-                self._save_state(state)
-
-                await asyncio.sleep(1)  # inter-channel delay
+            await asyncio.sleep(1)  # inter-channel delay
 
         self._save_state(state)

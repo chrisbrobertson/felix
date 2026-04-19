@@ -1459,11 +1459,14 @@ async def test_slack_scanner_writes_memory_for_thread(tmp_path):
         "tags": ["postgres", "database", "migration"]
     })
 
+    from slack_client import SlackClient as _SlackClient
     scanner = SlackScanner(role="full")
+    # Pre-install a mock SlackClient so _run_scan doesn't need run_loop to set it up
+    mock_client = MagicMock()
 
     import yaml as _yaml
 
-    async def fake_api_call(client, method, params=None, _retry=0):
+    async def fake_api_call(method, params=None, **kwargs):
         if method == "users.conversations":
             return CHANNELS_RESPONSE
         elif method == "conversations.history":
@@ -1476,6 +1479,18 @@ async def test_slack_scanner_writes_memory_for_thread(tmp_path):
             return {"ok": True, "user_id": "U001", "user": "testuser"}
         return None
 
+    async def fake_resolve_user(user_id):
+        return USER_RESPONSE["user"]["real_name"]
+
+    async def fake_list_channels():
+        return [("C001", "engineering")]
+
+    mock_client.api_call = fake_api_call
+    mock_client.resolve_user = fake_resolve_user
+    mock_client.list_channels = fake_list_channels
+    mock_client.clear_user_cache = MagicMock()
+    scanner._client = mock_client
+
     mock_acompletion = AsyncMock()
     mock_resp = MagicMock()
     mock_resp.choices = [MagicMock()]
@@ -1485,7 +1500,6 @@ async def test_slack_scanner_writes_memory_for_thread(tmp_path):
     with patch.object(ss, "MEMORIES_DIR", memories_dir), \
          patch.object(ss, "STATE_FILE", state_file), \
          patch.object(ss, "CONFIG_PATH", tmp_path / "config.yaml"), \
-         patch.object(scanner, "_api_call", side_effect=fake_api_call), \
          patch("litellm.acompletion", mock_acompletion), \
          patch.dict(os.environ, {"SLACK_USER_TOKEN": "xoxp-test"}):
 
