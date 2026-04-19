@@ -6,6 +6,11 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Skill optimizer scoring deadlock** — three compounding bugs prevented the optimizer from ever scoring or optimizing any skill after 6 days of running: (1) `_make_slug()` in `SkillExecutor` now generates sanitized, stable slugs — URL-based skills embed the same SHA1(url)[:6] hash that `memory_writer.py` uses in filenames, non-URL skills are regex-sanitized to strip newlines and pipe characters; (2) `_find_output_by_slug()` in `SkillOptimizer` now matches by hash suffix (primary) with substring fallback for legacy slugs; (3) `chat` skill rows are now marked `n/a` instead of accumulating as perpetually-pending (chat responses stream to Telegram, never to memory files)
+- **Score=0.00 excluded from stats** — `_parse_history_rows` was filtering out `score > 0`, silently dropping API-error rows scored at 0.00; changed to `>= 0` so error runs count as data points
+- **Missed optimizer pass after daemon restart** — if the daemon restarted after the scheduled 3 AM run hour, the daily pass was skipped until the next day; `run_loop` now persists `last_pass_date` to `skill-optimizer-state.json` and runs a missed pass immediately on restart
+
 ### Added
 - **Adapter protocol** — `transport.py` defines `TransportAdapter` protocol and `CommandContext` dataclass; any future transport (Slack, MCP, REST) implements this interface without touching command logic
 - **CommandRouter** — `command_core.py` provides a transport-agnostic command dispatcher and moves `COMMAND_REGISTRY` to a single source of truth
