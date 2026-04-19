@@ -151,7 +151,6 @@ def test_find_envelope_index_path(tmp_path):
     with patch("pathlib.Path.home", return_value=tmp_path):
         result = EnvelopeIndexSource._find_db_path()
 
-    assert result is not None
     assert "V10" in str(result)
 
 

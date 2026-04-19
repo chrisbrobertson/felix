@@ -141,12 +141,32 @@ def test_channel_exclude_blacklist(scanner):
     assert ("C002", "general") not in result
 
 
-def test_archived_channel_always_excluded(scanner):
-    """Archived channels skipped in conversations.list response."""
-    # This is tested at the API level — conversations.list filters by is_archived.
-    # The scanner checks is_archived=False in _list_channels, so no special test needed
-    # beyond verifying the filter logic.
-    pass
+@pytest.mark.asyncio
+async def test_archived_channel_always_excluded(scanner_with_client):
+    """Scanner only processes channels returned by list_channels(); archived ones are excluded there.
+
+    SlackClient.list_channels() passes exclude_archived=true to the API, so the scanner
+    never sees archived channels. This test verifies the scanner uses list_channels() as
+    its sole channel source — if it bypassed that and called conversations.list directly,
+    archived channels could leak through.
+    """
+    scanner = scanner_with_client
+    # list_channels returns only the non-archived channel (archived already excluded by SlackClient)
+    scanner._client.list_channels = AsyncMock(return_value=[("C001", "general")])
+
+    fetch_calls = []
+
+    async def track_fetch(channel_id, *args, **kwargs):
+        fetch_calls.append(channel_id)
+        return []
+
+    with patch.object(scanner, "_fetch_channel_messages", side_effect=track_fetch):
+        await scanner._run_scan()
+
+    # Only C001 (the non-archived channel) was fetched
+    assert fetch_calls == ["C001"]
+    # list_channels() was called — scanner used it as the channel source
+    scanner._client.list_channels.assert_awaited_once()
 
 
 # ── High-water and lookback ───────────────────────────────────────────────────
@@ -208,28 +228,101 @@ def test_thread_detection(scanner):
     assert msg["thread_ts"] == msg["ts"]
 
 
-def test_min_thread_messages_filter(scanner):
-    """Single-reply thread below min_thread_messages → skipped."""
-    # This is tested in the scan logic — threads with reply_count < min_thread_messages
-    # are not processed.
-    pass
+@pytest.mark.asyncio
+async def test_min_thread_messages_filter(scanner_with_client):
+    """reply_count < min_thread_messages (default 2) → thread not fetched."""
+    scanner = scanner_with_client
+    scanner._client.list_channels = AsyncMock(return_value=[("C001", "general")])
+
+    # Message has only 1 reply — below the threshold of 2
+    low_reply_msg = {
+        "ts": "1712700000.000100",
+        "thread_ts": "1712700000.000100",
+        "reply_count": 1,
+        "text": "root message",
+    }
+
+    with patch.object(scanner, "_fetch_channel_messages", return_value=[low_reply_msg]), \
+         patch.object(scanner, "_fetch_thread_replies") as mock_fetch_replies:
+        await scanner._run_scan()
+
+    mock_fetch_replies.assert_not_called()
 
 
-def test_standalone_messages_skipped(scanner):
-    """Non-threaded messages → not written as memory files."""
-    # Messages without reply_count or with thread_ts != ts are skipped.
-    pass
+@pytest.mark.asyncio
+async def test_standalone_messages_skipped(scanner_with_client):
+    """Message where thread_ts != ts (a reply, not a root) → not processed as thread root."""
+    scanner = scanner_with_client
+    scanner._client.list_channels = AsyncMock(return_value=[("C001", "general")])
+
+    # thread_ts != ts means this is a reply in someone else's thread, not a root
+    reply_msg = {
+        "ts": "1712700000.000200",
+        "thread_ts": "1712700000.000100",  # different from ts — this is a reply
+        "reply_count": 5,
+        "text": "a reply",
+    }
+
+    with patch.object(scanner, "_fetch_channel_messages", return_value=[reply_msg]), \
+         patch.object(scanner, "_fetch_thread_replies") as mock_fetch_replies:
+        await scanner._run_scan()
+
+    mock_fetch_replies.assert_not_called()
 
 
 # ── Change detection ──────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_change_detection_unchanged(tmp_path):
-    """Same message_count + last_ts → no write, no LLM call."""
-    # NOTE: Change detection logic is verified to work correctly (see test_change_detection_new_reply).
-    # This test validates the skip path, but mocking the full state load/save cycle is complex.
-    # The actual implementation correctly skips unchanged threads.
-    pass
+async def test_change_detection_unchanged(scanner_with_client, tmp_path):
+    """Same message_count + last_ts → no LLM call, no memory write."""
+    import time as _time
+
+    scanner = scanner_with_client
+    state_file = tmp_path / "slack-state.json"
+
+    # Use recent timestamps so _prune_threads (lookback_days=7) doesn't evict the entry
+    now = _time.time()
+    thread_ts = f"{now - 3600:.6f}"   # 1 hour ago
+    last_ts   = f"{now - 1800:.6f}"   # 30 minutes ago
+
+    state = {
+        "channels": {
+            "C001": {
+                "name": "engineering",
+                "threads": {
+                    thread_ts: {
+                        "message_count": 2,
+                        "last_ts": last_ts,
+                    }
+                },
+            }
+        }
+    }
+    state_file.write_text(json.dumps(state))
+
+    thread_msg = {
+        "ts": thread_ts,
+        "thread_ts": thread_ts,
+        "reply_count": 2,
+        "text": "root",
+    }
+    # Full thread returns same count and same last_ts — nothing changed
+    full_thread = [
+        {"ts": thread_ts, "user": "U001", "text": "root"},
+        {"ts": last_ts,   "user": "U002", "text": "reply"},
+    ]
+
+    scanner._client.list_channels = AsyncMock(return_value=[("C001", "engineering")])
+
+    with patch.object(ss, "STATE_FILE", state_file), \
+         patch.object(scanner, "_fetch_channel_messages", return_value=[thread_msg]), \
+         patch.object(scanner, "_fetch_thread_replies", return_value=full_thread), \
+         patch.object(scanner, "_generate_summary") as mock_llm, \
+         patch.object(scanner, "_write_memory") as mock_write:
+        await scanner._run_scan()
+
+    mock_llm.assert_not_called()
+    mock_write.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -501,11 +594,29 @@ async def test_rate_limit_two_consecutive_skips(scanner):
 
 
 @pytest.mark.asyncio
-async def test_inter_request_delay(scanner):
-    """1-second sleep observed between consecutive API calls."""
-    # This is tested implicitly in the _run_scan flow — asyncio.sleep(1) is called
-    # after each API operation. We verify this by checking sleep is called.
-    pass
+async def test_inter_request_delay(scanner_with_client):
+    """Paginated _fetch_channel_messages calls asyncio.sleep(1) between pages."""
+    scanner = scanner_with_client
+
+    # First API response has a cursor (triggers sleep); second has no cursor
+    scanner._client.api_call = AsyncMock(side_effect=[
+        {
+            "ok": True,
+            "messages": [{"ts": "1712700000.1", "text": "msg"}],
+            "response_metadata": {"next_cursor": "cursor1"},
+        },
+        {
+            "ok": True,
+            "messages": [],
+            "response_metadata": {"next_cursor": ""},
+        },
+    ])
+
+    with patch("slack_scanner.asyncio.sleep", new=AsyncMock()) as mock_sleep:
+        result = await scanner._fetch_channel_messages("C001", None, 7)
+
+    mock_sleep.assert_called_once_with(1)
+    assert len(result) == 1  # message from first page
 
 
 # ── State file management ─────────────────────────────────────────────────────

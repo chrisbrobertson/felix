@@ -267,7 +267,7 @@ async def test_rate_limit_respects_retry_after(scanner):
         result = await scanner._api_get(mock_client, "/users/me/recordings")
 
     mock_sleep.assert_called_once_with(30)
-    assert result is not None
+    assert result == {"meetings": [], "next_page_token": None}
 
 
 # ── Memory file write ─────────────────────────────────────────────────────────
@@ -677,18 +677,14 @@ def test_numeric_meeting_id_in_summary_request():
 
 def test_parse_folder_name_valid(scanner):
     """'2026-04-15 14.30.22 Weekly Standup' → ('2026-04-15T14:30:22', 'Weekly Standup')."""
-    result = scanner._parse_folder_name("2026-04-15 14.30.22 Weekly Standup")
-    assert result is not None
-    iso_datetime, topic = result
+    iso_datetime, topic = scanner._parse_folder_name("2026-04-15 14.30.22 Weekly Standup")
     assert iso_datetime == "2026-04-15T14:30:22"
     assert topic == "Weekly Standup"
 
 
 def test_parse_folder_name_no_topic(scanner):
     """'2026-04-15 14.30.22' → returns tuple with folder name as topic."""
-    result = scanner._parse_folder_name("2026-04-15 14.30.22")
-    assert result is not None
-    iso_datetime, topic = result
+    iso_datetime, topic = scanner._parse_folder_name("2026-04-15 14.30.22")
     assert iso_datetime == "2026-04-15T14:30:22"
     assert topic == "2026-04-15 14.30.22"
 

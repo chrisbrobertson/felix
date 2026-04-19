@@ -325,18 +325,29 @@ async def test_gates_above_underperformance(optimizer, skills_dir):
 
 @pytest.mark.asyncio
 async def test_gates_meta_skill_always_skipped(optimizer, skills_dir):
-    """skill-optimizer.md never optimized."""
-    skill_content = create_skill_file("skill-optimizer", total_runs=20, success_rate=0.60)
-    skill_path = skills_dir / "skill-optimizer.md"
-    skill_path.write_text(skill_content)
+    """skill-optimizer.md is never passed to _check_optimization_gates; regular skills are."""
+    # Both files present — only the regular skill should reach the gate check
+    (skills_dir / "skill-optimizer.md").write_text(
+        create_skill_file("skill-optimizer", total_runs=20, success_rate=0.60)
+    )
+    (skills_dir / "regular-skill.md").write_text(
+        create_skill_file("regular-skill", total_runs=20, success_rate=0.60)
+    )
 
-    # Optimizer should skip it in _run_daily_pass
-    # We'll test this by checking that it's explicitly skipped
-    with patch.object(optimizer, "_score_pending_rows") as mock_score:
-        stop_event = asyncio.Event()
-        await optimizer._run_daily_pass(stop_event)
-        # Should not have been called for skill-optimizer.md
-        assert mock_score.call_count == 0
+    gate_call_args = []
+
+    async def tracking_gate(skill_path):
+        gate_call_args.append(skill_path.name)
+        return False, "test skip"
+
+    with patch.object(optimizer, "_score_pending_rows", new=AsyncMock()), \
+         patch.object(optimizer, "_prune_execution_history", new=AsyncMock()), \
+         patch.object(optimizer, "_check_regression_and_rollback", new=AsyncMock(return_value=False)), \
+         patch.object(optimizer, "_check_optimization_gates", side_effect=tracking_gate):
+        await optimizer._run_daily_pass(asyncio.Event())
+
+    assert "regular-skill.md" in gate_call_args
+    assert "skill-optimizer.md" not in gate_call_args
 
 
 @pytest.mark.asyncio
@@ -516,7 +527,6 @@ Rewrite the skill.""")
         critique = {"failure_patterns": ["test"], "root_cause": "test", "suggested_focus": "test"}
         new_text = await optimizer._rewrite_skill(skill_path, critique)
 
-    assert new_text is not None
     fm = yaml.safe_load(new_text.split("---")[1])
     assert fm["version"] == 2
 
@@ -852,7 +862,7 @@ def test_compute_utility_score_skips_non_numeric(optimizer):
     assert len(rows) == 3
     assert all(r["score"] != "pending" for r in rows)
     result = optimizer._compute_utility_score(rows)
-    assert result is not None
+    assert isinstance(result, float)
 
 
 def test_compute_trend_improving(optimizer):
@@ -911,7 +921,7 @@ async def test_update_frontmatter_writes_utility_score(optimizer, skills_dir):
     assert "utility_score" in fm
     assert "utility_score_updated" in fm
     assert fm["score_trend"] in ("improving", "declining", "stable", "insufficient-data")
-    assert fm["success_rate"] is not None  # backwards compat preserved
+    assert isinstance(fm["success_rate"], float)  # backwards compat: success_rate still written as float
 
 
 @pytest.mark.asyncio
