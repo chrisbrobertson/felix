@@ -350,3 +350,30 @@ async def test_clear_user_cache():
     client.clear_user_cache()
 
     assert client._user_cache == {}
+
+
+# ── api_call non-JSON response ────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_api_call_non_json_returns_none():
+    """Non-JSON response body (e.g. HTML error page) → None returned, warning logged."""
+    client = SlackClient(token="xoxp-test")
+
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.headers = {}
+    resp.raise_for_status = MagicMock()
+    resp.json.side_effect = ValueError("not valid JSON")
+
+    inner = AsyncMock()
+    inner.__aenter__ = AsyncMock(return_value=inner)
+    inner.__aexit__ = AsyncMock(return_value=False)
+    inner.get = AsyncMock(return_value=resp)
+
+    with patch("httpx.AsyncClient", return_value=inner), \
+         patch("slack_client.log") as mock_log:
+        result = await client.api_call("conversations.list")
+
+    assert result is None
+    mock_log.warning.assert_called_once()
+    assert "non-JSON" in mock_log.warning.call_args[0][0]

@@ -1630,3 +1630,80 @@ async def test_project_alert_skips_candidates(tmp_path):
                     await mgr._check_project_alerts(state)
 
     bot_mock.send_message.assert_not_called()
+
+
+# ── Multi-transport send_message ──────────────────────────────────────────────
+
+def _make_adapter(chat_id):
+    """Build a minimal mock TransportAdapter with the given chat_id (or None)."""
+    a = MagicMock()
+    a.get_chat_id = MagicMock(return_value=chat_id)
+    a.max_message_length = MagicMock(return_value=4000)
+    a.send_text = AsyncMock()
+    return a
+
+
+@pytest.mark.asyncio
+async def test_send_message_multi_transport_delivers_to_all(tmp_path):
+    """With two adapters that both have chat_ids, both receive the message."""
+    state_file = tmp_path / "state.json"
+    a1 = _make_adapter("D001")
+    a2 = _make_adapter("D002")
+    mgr = NotificationManager(transports=[a1, a2], deploy_dir=tmp_path)
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        await mgr.send_message("hello")
+
+    a1.send_text.assert_awaited_once_with("D001", "hello")
+    a2.send_text.assert_awaited_once_with("D002", "hello")
+
+
+@pytest.mark.asyncio
+async def test_send_message_multi_transport_skips_none_chat_id(tmp_path):
+    """Adapter with no chat_id is skipped; others still receive the message."""
+    state_file = tmp_path / "state.json"
+    a_ok = _make_adapter("D001")
+    a_none = _make_adapter(None)
+    mgr = NotificationManager(transports=[a_ok, a_none], deploy_dir=tmp_path)
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        await mgr.send_message("hello")
+
+    a_ok.send_text.assert_awaited_once_with("D001", "hello")
+    a_none.send_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_message_falls_back_to_bot_when_all_adapters_have_no_chat_id(tmp_path):
+    """All adapters have chat_id=None → falls through to legacy self.bot path."""
+    state_file = tmp_path / "state.json"
+    state_file.write_text('{"chat_id": 12345, "muted": false}')
+
+    bot_mock = AsyncMock()
+    a1 = _make_adapter(None)
+    a2 = _make_adapter(None)
+    mgr = NotificationManager(bot=bot_mock, transports=[a1, a2], deploy_dir=tmp_path)
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        await mgr.send_message("startup notification")
+
+    # Legacy bot path fires since no adapter could send
+    bot_mock.send_message.assert_awaited_once()
+    assert "startup notification" in bot_mock.send_message.call_args[1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_send_message_no_double_delivery_when_adapter_sends(tmp_path):
+    """When adapters send successfully, legacy self.bot path does NOT fire."""
+    state_file = tmp_path / "state.json"
+    state_file.write_text('{"chat_id": 12345, "muted": false}')
+
+    bot_mock = AsyncMock()
+    a1 = _make_adapter("D001")
+    mgr = NotificationManager(bot=bot_mock, transports=[a1], deploy_dir=tmp_path)
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        await mgr.send_message("hello")
+
+    a1.send_text.assert_awaited_once()
+    bot_mock.send_message.assert_not_awaited()

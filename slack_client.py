@@ -42,7 +42,11 @@ class SlackClient:
                     log.error("Slack API auth failed (401) on %s", method)
                     return None
                 resp.raise_for_status()
-                data = resp.json()
+                try:
+                    data = resp.json()
+                except Exception:
+                    log.warning("Slack API returned non-JSON response for %s", method)
+                    return None
                 if not data.get("ok"):
                     log.warning("Slack API error on %s: %s", method, data.get("error", "unknown"))
                     return None

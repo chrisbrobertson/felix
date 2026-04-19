@@ -148,6 +148,7 @@ class NotificationManager:
         existing callers continue to work unchanged.
         """
         if self._transports:
+            any_sent = False
             for adapter in self._transports:
                 try:
                     adapter_chat_id = getattr(adapter, "get_chat_id", lambda: None)()
@@ -158,9 +159,13 @@ class NotificationManager:
                     chunks = _chunk_message(text, max_len)
                     for chunk in chunks:
                         await adapter.send_text(adapter_chat_id, chunk)
+                    any_sent = True
                 except Exception as e:
                     log.warning("send_message: error sending via %s: %s", adapter, e)
-            return
+            if any_sent:
+                return
+            # All adapters had no chat_id yet (startup before first user message) —
+            # fall through to legacy self.bot path so notifications aren't lost.
 
         # Legacy path — direct telegram.Bot
         if self.bot is None:
