@@ -3,7 +3,7 @@ import asyncio
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 import yaml
@@ -1103,3 +1103,60 @@ async def test_missed_pass_recovery_runs_pass_when_stale(optimizer, tmp_path, br
         await optimizer.run_loop(stop_event)
 
     assert pass_count >= 1, "Expected _run_daily_pass to be called for missed pass"
+
+
+# --- LLM call timeouts ---
+
+@pytest.mark.asyncio
+async def test_judge_timeout_leaves_row_pending(optimizer, skills_dir, memories_dir, brain_dir):
+    """A timeout on the judge LLM call leaves the row as pending (not crashing the pass)."""
+    from litellm.exceptions import Timeout as LiteLLMTimeout
+    skill_content = create_skill_file(
+        name="test-skill",
+        history_rows=[{"date": "2026-04-14", "slug": "article-abc123", "model": "haiku", "score": "pending"}]
+    )
+    skill_path = skills_dir / "test-skill.md"
+    skill_path.write_text(skill_content)
+
+    mem_file = memories_dir / "2026-04-14-article-abc123.md"
+    mem_file.write_text("---\ntype: webpage\n---\n\nArticle body text here.")
+
+    stop_event = asyncio.Event()
+
+    with patch.object(so, "SKILLS_DIR", skills_dir), \
+         patch.object(so, "MEMORIES_DIR", memories_dir), \
+         patch("skill_optimizer.acompletion", new=AsyncMock(side_effect=LiteLLMTimeout(message="timeout", llm_provider="anthropic", model="haiku"))):
+        await optimizer._score_pending_rows(skill_path, stop_event)
+
+    result = skill_path.read_text()
+    # Row must remain pending — timeout should not crash or corrupt
+    assert "| pending |" in result
+    assert "| n/a |" not in result
+
+
+@pytest.mark.asyncio
+async def test_rewrite_missing_instructions_logs_preview(optimizer, skills_dir, brain_dir, caplog):
+    """When rewrite LLM returns text without ## Instructions, logs a preview for diagnosis."""
+    import logging
+    skill_content = create_skill_file(name="bad-rewrite", total_runs=15, success_rate=0.3,
+                                      instructions="Summarize the content.")
+    skill_path = skills_dir / "bad-rewrite.md"
+    skill_path.write_text(skill_content)
+
+    # LLM returns something without ## Instructions
+    bad_response = MagicMock()
+    bad_response.choices[0].message.content = "Just some text with no instructions section at all."
+
+    critique = {"root_cause": "poor quality", "specific_failures": [], "suggested_fix": "improve"}
+
+    meta_skill = skills_dir / "skill-optimizer.md"
+    meta_skill.write_text("---\nname: skill-optimizer\n---\n\n## Instructions\n\nRewrite skills.\n")
+
+    with patch.object(so, "SKILLS_DIR", skills_dir), \
+         patch("skill_optimizer.acompletion", new=AsyncMock(return_value=bad_response)), \
+         caplog.at_level(logging.WARNING, logger="skill-optimizer"):
+        result = await optimizer._rewrite_skill(skill_path, critique)
+
+    assert result is None
+    assert any("missing Instructions section" in r.message for r in caplog.records)
+    assert any("response preview" in r.message for r in caplog.records)

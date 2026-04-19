@@ -383,8 +383,11 @@ class SkillOptimizer:
         1. Hash-based (primary): new-format slugs end with a 6-char hex url hash
            (e.g. "article-title-a1b2c3") — match against the hash suffix in memory
            filenames, which use the same SHA1(url)[:6] hash from memory_writer.py.
-        2. Substring fallback: legacy slugs that don't end in a hex hash fall back
-           to the original startswith/contains check.
+        2. URL-prefix (legacy): old-format slugs are the first 15 chars of the raw URL
+           (e.g. "https://sfbay.c") — search memory file frontmatter for source_url
+           that starts with the slug value.
+        3. Filename substring fallback: original startswith/contains check on the
+           filename slug component.
         """
         if not MEMORIES_DIR.exists():
             return None
@@ -392,33 +395,43 @@ class SkillOptimizer:
         # Check whether input_slug ends with a 6-char hex hash (new format)
         hash_match = re.search(r'([0-9a-f]{6})$', input_slug)
 
+        # Check whether input_slug looks like a URL prefix (legacy format)
+        is_url_prefix = input_slug.startswith(("https://", "http://"))
+
         for mem_file in MEMORIES_DIR.glob("*.md"):
-            # Extract slug from filename: YYYY-MM-DD-{slug}.md
-            name_parts = mem_file.stem.split("-", 3)
-            if len(name_parts) < 4:
+            try:
+                content = mem_file.read_text()
+            except Exception:
                 continue
-            file_slug = name_parts[3]
 
             matched = False
-            # Primary: hash-based matching (new slugs with url hash suffix)
+
+            # Strategy 1: hash-based matching (new slugs with url hash suffix)
             if hash_match:
-                file_hash = re.search(r'([0-9a-f]{6})$', file_slug)
-                if file_hash and file_hash.group(1) == hash_match.group(1):
+                name_parts = mem_file.stem.split("-", 3)
+                if len(name_parts) >= 4:
+                    file_hash = re.search(r'([0-9a-f]{6})$', name_parts[3])
+                    if file_hash and file_hash.group(1) == hash_match.group(1):
+                        matched = True
+
+            # Strategy 2: URL-prefix matching against frontmatter source_url (legacy)
+            if not matched and is_url_prefix:
+                url_match = re.search(r'source_url:\s*(\S+)', content)
+                if url_match and url_match.group(1).startswith(input_slug):
                     matched = True
 
-            # Fallback: substring matching (legacy slugs, non-URL skills)
-            if not matched and (file_slug.startswith(input_slug) or input_slug in file_slug):
-                matched = True
+            # Strategy 3: filename substring fallback
+            if not matched:
+                name_parts = mem_file.stem.split("-", 3)
+                if len(name_parts) >= 4:
+                    file_slug = name_parts[3]
+                    if file_slug.startswith(input_slug) or input_slug in file_slug:
+                        matched = True
 
             if matched:
-                try:
-                    content = mem_file.read_text()
-                    # Extract body (after frontmatter)
-                    parts = content.split("---", 2)
-                    if len(parts) >= 3:
-                        return parts[2].strip()
-                except Exception:
-                    continue
+                parts = content.split("---", 2)
+                if len(parts) >= 3:
+                    return parts[2].strip()
 
         return None
 
@@ -448,7 +461,8 @@ Respond with JSON only:
         response = await acompletion(
             model=resolve(self.judge_model),
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=200
+            max_tokens=200,
+            timeout=30
         )
 
         result_text = response.choices[0].message.content.strip()
@@ -837,7 +851,8 @@ Be specific. Cite evidence from the execution examples. Avoid generic observatio
             response = await acompletion(
                 model=resolve("optimizer"),
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=500
+                max_tokens=500,
+                timeout=60
             )
 
             result_text = response.choices[0].message.content.strip()
@@ -943,7 +958,8 @@ Please rewrite the skill file following the meta-skill instructions."""
                     {"role": "system", "content": meta_instructions},
                     {"role": "user", "content": user_msg}
                 ],
-                max_tokens=2000
+                max_tokens=2000,
+                timeout=60
             )
 
             new_skill_text = response.choices[0].message.content.strip()
@@ -960,7 +976,8 @@ Please rewrite the skill file following the meta-skill instructions."""
             # Validate structure
             new_instructions = self._extract_section(new_skill_text, "## Instructions")
             if not new_instructions:
-                log.warning("Rewritten skill missing Instructions section")
+                log.warning(f"Rewritten skill missing Instructions section — "
+                            f"response preview: {new_skill_text[:300]!r}")
                 return None
 
             # Check if instructions actually changed
@@ -1220,6 +1237,7 @@ Respond with JSON only: {{"score": 1, "reasoning": "one sentence"}}"""
                 model=resolve(self.judge_model),
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=100,
+                timeout=30
             )
             text = response.choices[0].message.content.strip()
             data = json.loads(text)
