@@ -11,6 +11,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **CommandRouter** — `command_core.py` provides a transport-agnostic command dispatcher and moves `COMMAND_REGISTRY` to a single source of truth
 - **TelegramAdapter** — `telegram_adapter.py` wraps `TelegramChatHandler` as a `TransportAdapter`, enabling multi-transport notification dispatch
 - **Multi-transport NotificationManager** — `notification_manager.py` now accepts an optional `transports` list; `send_message` routes to all active adapters when set, falling back to the legacy `bot=` path
+- **SlackClient** — `slack_client.py` extracts shared Slack API infrastructure (rate-limit-aware `api_call`, `resolve_user` with cache, `list_channels`, `post_message`) from the scanner into a reusable client; scanner and future chat adapter both use it
 
 ## [1.4.1] — 2026-04-18
 
