@@ -420,6 +420,9 @@ DAEMON_FILES=(
     content_fetcher.py
     chat_handler.py
     chat_tools.py
+    command_core.py
+    transport.py
+    telegram_adapter.py
     commitment_tracker.py
     contact_tracker.py
     email_scanner.py

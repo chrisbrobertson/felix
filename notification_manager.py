@@ -98,10 +98,14 @@ def _chunk_message(text: str, max_len: int = TG_MAX_CHARS) -> list:
 # ── NotificationManager ───────────────────────────────────────────────────────
 
 class NotificationManager:
-    def __init__(self, bot=None, deploy_dir: Path = DEPLOY_DIR):
+    def __init__(self, bot=None, deploy_dir: Path = DEPLOY_DIR, transports: Optional[list] = None):
         self.bot = bot
         self.deploy_dir = deploy_dir
         self._state_cache = None
+        # Optional list of TransportAdapter instances for multi-transport dispatch.
+        # When set, send_message delivers to each transport instead of (or in addition to)
+        # the legacy self.bot. Phase 4 will make this the primary path.
+        self._transports: list = transports or []
 
     def _load_config(self) -> dict:
         if CONFIG_PATH.exists():
@@ -137,7 +141,28 @@ class NotificationManager:
         _save_state(state)
 
     async def send_message(self, text: str, chat_id: Optional[int] = None):
-        """Send message to Telegram, chunking if needed."""
+        """Send message to all active transports, chunking if needed.
+
+        When self._transports is populated (Phase 4+), each TransportAdapter's
+        send_text() is called.  Falls back to the legacy self.bot path so
+        existing callers continue to work unchanged.
+        """
+        if self._transports:
+            for adapter in self._transports:
+                try:
+                    adapter_chat_id = getattr(adapter, "get_chat_id", lambda: None)()
+                    if adapter_chat_id is None:
+                        log.debug("send_message: adapter %s has no chat_id — skipping", adapter)
+                        continue
+                    max_len = adapter.max_message_length()
+                    chunks = _chunk_message(text, max_len)
+                    for chunk in chunks:
+                        await adapter.send_text(adapter_chat_id, chunk)
+                except Exception as e:
+                    log.warning("send_message: error sending via %s: %s", adapter, e)
+            return
+
+        # Legacy path — direct telegram.Bot
         if self.bot is None:
             log.debug("Bot is None — skipping send")
             return
