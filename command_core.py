@@ -138,19 +138,17 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
     "Meta": [
         ("help",     "Show this list"),
         ("commands", "Alias of /help"),
-        ("version",  "Show daemon version"),
         ("settings", "View or change display settings (date_format, timezone)"),
-        ("reset",    "Clear conversation history"),
+        ("reset",    "Clear conversation history (history is lost on daemon restart anyway)"),
+        ("deliver",  "Send queued replies that couldn't be delivered due to network issues"),
+        ("discard",  "Drop queued replies that couldn't be delivered due to network issues"),
+        ("version",  "Show the running daemon version"),
     ],
-    "Notes": [
-        ("remember", "Save a quick note to memory: /remember <text>"),
-        ("note",     "Alias of /remember"),
+    "System": [
+        ("backfill", "Reprocess historical data: /backfill <type> [days] [host]. Types: readings, email, zoom, calendar, slack, projects"),
+        ("remember", "Fetch a URL and save a reading memory: /remember <url>"),
         ("deepen",   "Re-process reading N with deep analysis: /deepen N"),
-    ],
-    "Queue": [
-        ("deliver", "Send queued replies that couldn't be delivered due to network issues"),
-        ("discard", "Drop queued replies that couldn't be delivered"),
-        ("backfill", "Reprocess historical data: /backfill <type> [days] [host]"),
+        ("note",     "Fetch a URL and save detailed study notes: /note <url>"),
     ],
 }
 

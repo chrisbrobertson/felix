@@ -26,143 +26,10 @@ DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbr
 MAX_CONTEXT_CHARS = 80_000
 TG_MAX_CHARS = 4096  # Telegram hard limit per message
 
-# Single source of truth for all Telegram commands and their descriptions.
-# /help iterates this to render the grouped help text.
-# A test enforces that every CommandHandler registration appears here.
-COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
-    "Knowledge listings": [
-        ("readings",       "List recent web captures"),
-        ("search",         "Keyword search — grouped by type. /search <type> <query> to filter"),
-        ("reading",        "Show reading N from last list"),
-        ("forget",         "Forget item(s) N [N...] from your last list, or all captures from a domain"),
-        ("people",         "List contacts (alias of /contacts)"),
-        ("contacts",       "List people you've interacted with"),
-        ("contact",        "Show contact by name or N"),
-        ("code",           "List git repos"),
-        ("events",         "List recent and upcoming calendar events"),
-        ("event",          "Show event N from last list"),
-        ("meetings",       "List recent meeting transcripts"),
-        ("meeting",        "Show meeting N from last list"),
-        ("comms",          "List recent email + slack threads (optional 'email' or 'slack' filter)"),
-        ("comm",           "Show comm N from last list"),
-        ("messages",       "Alias of /comms"),
-        ("communications", "Alias of /comms"),
-        ("message",        "Alias of /comm"),
-        ("communication",  "Alias of /comm"),
-        ("insights",       "List recent synthesis insights across memories"),
-    ],
-    "Commitments": [
-        ("commitments", "List active commitments"),
-        ("complete",    "Mark commitment N complete"),
-        ("dismiss",     "Dismiss commitment N"),
-        ("wrong",       "Mark extracted commitment N as a false positive"),
-        ("missed",      "Manually add a commitment the bot missed"),
-        ("accuracy",    "Show extraction precision per source type"),
-    ],
-    "Goals": [
-        ("addgoal",       "Add a new goal"),
-        ("goals",         "List goals (filter: /goals [category|status])"),
-        ("goal",          "Show goal N from last list"),
-        ("completegoal",  "Mark goal N as completed"),
-        ("abandongoal",   "Mark goal N as abandoned"),
-    ],
-    "Projects": [
-        ("addproject",      "Add a new project"),
-        ("projects",        "List projects (filter: /projects [category|status])"),
-        ("project",         "Show project N from last list"),
-        ("completeproject", "Mark project N as completed"),
-        ("abandonproject",  "Mark project N as abandoned"),
-        ("holdproject",     "Put project N on hold"),
-        ("addmilestone",    "Add milestone to project N: /addmilestone N text"),
-        ("milestone",       "Toggle milestone M on project N: /milestone N M"),
-        ("linkgoal",        "Link project N to goal M: /linkgoal N M"),
-        ("unlinkgoal",      "Unlink project N from its goal"),
-    ],
-    "Review": [
-        ("review",   "List pending project/repo candidates (/review N for detail)"),
-        ("confirm",  "Confirm candidate N (/confirm N [category])"),
-        ("reject",   "Reject candidate N"),
-        ("edit",     "Edit a candidate field (/edit N field=value)"),
-    ],
-    "Agent actions": [
-        ("actions", "List pending agent-proposed actions (filter: approved, all)"),
-        ("action",  "Show full detail for action N"),
-        ("run",     "Approve and execute action N"),
-        ("drop",    "Reject action N"),
-        ("defer",   "Snooze action N for N hours (default 24)"),
-    ],
-    "Notifications": [
-        ("briefing", "Trigger today's briefing now"),
-        ("mute",     "Suppress proactive notifications"),
-        ("unmute",   "Resume proactive notifications"),
-    ],
-    "Domain filter": [
-        ("skip",     "Add a domain to the ignore list"),
-        ("unskip",   "Remove a domain from the ignore list"),
-        ("skiplist", "Show currently skipped domains"),
-    ],
-    "Deduplication": [
-        ("dupes",    "List candidate duplicate memories"),
-        ("merge",    "Merge duplicate pair N into one memory"),
-        ("keep",     "Dismiss duplicate pair N as intentionally distinct"),
-    ],
-    "Watchlists": [
-        ("watch",    "Create watchlist: /watch \"topic\" [from:person] [type:email|slack|meeting]"),
-        ("watches",  "List active watchlists"),
-        ("unwatch",  "Deactivate watchlist N"),
-    ],
-    "Import": [
-        ("import_chats", "Import ChatGPT or Claude conversation export (attach ZIP or JSON file)"),
-    ],
-    "Feature Requests": [
-        ("feature",          "Capture a new feature request"),
-        ("feature_new",      "Alias of /feature"),
-        ("bug",              "Capture a new bug report"),
-        ("bugs",             "List bug reports (alias of /features bug)"),
-        ("features",         "List feature requests. Filter: bug|feature|<status>|all"),
-        ("feature_detail",   "Show feature N from last list"),
-        ("fdetail",          "Alias of /feature-detail"),
-        ("feature_priority", "Set priority of feature N (low/medium/high/critical)"),
-        ("feature_plan",     "Mark feature N as planned"),
-        ("feature_start",    "Mark feature N as in-progress"),
-        ("feature_done",     "Mark feature N as done (optional closing note)"),
-        ("feature_wont_do",  "Mark feature N as won't do (optional reason)"),
-        ("feature_note",     "Append a timestamped note to feature N"),
-        ("feature_import",   "Import existing local feature files into GitHub issues (one-time migration)"),
-    ],
-    "Skill Management": [
-        ("skill_drafts",    "List pending skill drafts awaiting approval"),
-        ("skill_draft",     "Show full draft N from last list"),
-        ("approve_skill",   "Approve skill draft N and enter probation"),
-        ("reject_skill",    "Reject skill draft N"),
-        ("skill_approval",  "Toggle HITL mode: /skill-approval on|off|status"),
-        ("skill_health",    "Show all skills with utility scores and trends"),
-    ],
-    "Reports": [
-        ("reports",        "List all configured reports"),
-        ("report",         "Show report N detail from last list"),
-        ("report_add",     "Add a new report: /report-add <schedule> <type> <sources...>"),
-        ("report_remove",  "Remove runtime report N"),
-        ("report_pause",   "Pause report N"),
-        ("report_resume",  "Resume paused report N"),
-        ("report_run",     "Run report N immediately"),
-    ],
-    "Meta": [
-        ("help",     "Show this list"),
-        ("commands", "Alias of /help"),
-        ("settings", "View or change display settings (date_format, timezone)"),
-        ("reset",    "Clear conversation history (history is lost on daemon restart anyway)"),
-        ("deliver",  "Send queued replies that couldn't be delivered due to network issues"),
-        ("discard",  "Drop queued replies that couldn't be delivered due to network issues"),
-    ],
-    "System": [
-        ("backfill", "Reprocess historical data: /backfill <type> [days] [host]. Types: readings, email, zoom, calendar, slack, projects"),
-        ("remember", "Fetch a URL and save a reading memory: /remember <url>"),
-        ("deepen",   "Re-process reading N with deep analysis: /deepen N"),
-        ("note", "Fetch a URL and save detailed study notes: /note <url>"),
-        ("version", "Show the running daemon version"),
-    ],
-}
+# COMMAND_REGISTRY is the single source of truth for all commands.
+# Defined in command_core.py and imported here so cmd_help, tests, and
+# _format_commands_text all reference the same object.
+from command_core import COMMAND_REGISTRY  # noqa: E402 (import after stdlib)
 
 # Backfill configuration: default and max days per scanner type
 BACKFILL_CONFIG = {
@@ -6048,6 +5915,24 @@ class TelegramChatHandler:
                 await _m(fake_update, fake_context)
 
             router.register(cmd_name, _handler)
+
+        # Register Telegram command aliases that have no matching cmd_<alias> method.
+        # These are wired in setup_handlers() as CommandHandler(alias, self.cmd_target)
+        # but register_with_router() only discovers cmd_* methods by name.
+        _ALIASES: dict[str, str] = {
+            "people":          "contacts",
+            "messages":        "comms",
+            "communications":  "comms",
+            "message":         "comm",
+            "communication":   "comm",
+            "commands":        "help",
+            "fdetail":         "feature_detail",
+            "feature_new":     "feature",
+        }
+        for alias, target in _ALIASES.items():
+            target_handler = router._cmd_handlers.get(target)
+            if target_handler is not None:
+                router.register(alias, target_handler)
 
         # Register free-text LLM chat as __message__
         async def _message_handler(ctx) -> None:

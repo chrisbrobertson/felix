@@ -4267,13 +4267,15 @@ async def test_register_with_router_registers_all_cmd_methods(handler):
     router = CommandRouter()
     handler.register_with_router(router)
 
-    # Every cmd_* method should appear (minus the "cmd_" prefix)
+    # Every cmd_* method should appear (minus the "cmd_" prefix).
+    # registered may also include aliases (e.g. "people", "messages") — those are extra, not missing.
     expected = {
         name[4:] for name, _ in inspect.getmembers(handler, predicate=inspect.ismethod)
         if name.startswith("cmd_")
     }
     registered = set(router._cmd_handlers.keys()) - {"__message__"}
-    assert expected == registered
+    missing = expected - registered
+    assert not missing, f"cmd_* methods not registered in router: {missing}"
 
 
 @pytest.mark.asyncio
