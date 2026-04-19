@@ -20,8 +20,18 @@ user:
   name: Chris
   timezone: America/Los_Angeles
 
+chat:
+  # List of active transports. Currently supported: telegram, slack
+  # Old scalar form (transport: telegram) is still accepted.
+  transports: [telegram]
+
 telegram:
   bot_token: YOUR_BOT_TOKEN                 # from @BotFather — only needed on full node
+
+slack:
+  bot_token: ""        # xoxb- bot token (chat:write, im:history, im:read, im:write)
+  app_token: ""        # xapp- app-level token (connections:write scope)
+  user_id: ""          # Your Slack user ID (e.g. U12345678)
 
 browser_watcher:
   interval_seconds: 300          # poll every 5 minutes

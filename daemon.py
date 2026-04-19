@@ -72,6 +72,41 @@ log = logging.getLogger("second-brain")
 CONFIG_PATH = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain/config.yaml"
 
 
+def _build_slack_adapter(config: dict, chat):
+    """Construct SlackTransportAdapter from config, or return None if not configured."""
+    chat_cfg = config.get("chat", {})
+    transports = chat_cfg.get("transports", chat_cfg.get("transport", "telegram"))
+    if isinstance(transports, str):
+        transports = [transports]
+    if "slack" not in transports:
+        return None
+    slack_cfg = config.get("slack", {})
+    bot_token = slack_cfg.get("bot_token", "")
+    app_token = slack_cfg.get("app_token", "")
+    user_id = slack_cfg.get("user_id", "")
+    if not (bot_token and app_token and user_id):
+        log.warning(
+            "chat.transports includes 'slack' but slack.bot_token / slack.app_token / "
+            "slack.user_id not set — Slack adapter disabled"
+        )
+        return None
+    try:
+        from slack_adapter import SlackTransportAdapter
+        from command_core import CommandRouter
+        router = CommandRouter()
+        # Phase 2 stub: no commands registered yet — Slack can only send !help
+        # (Phase 3 migrates TelegramChatHandler commands into CommandRouter)
+        return SlackTransportAdapter(
+            router=router,
+            bot_token=bot_token,
+            app_token=app_token,
+            user_id=user_id,
+        )
+    except Exception as e:
+        log.error("Failed to build Slack adapter: %s", e)
+        return None
+
+
 async def main():
     # Configure Python-managed rotating log files before any other logging
     deploy_dir = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
@@ -169,6 +204,9 @@ async def main():
         )
         chat.report_scheduler = report_scheduler
 
+        # ── Slack chat adapter (Phase 2) ──────────────────────────────────────
+        slack_adapter = _build_slack_adapter(config, chat)
+
         tasks += [
             chat.poll_loop,
             optimizer.run_loop,
@@ -183,6 +221,10 @@ async def main():
             goal_agent.run_loop,
             synthesis_scanner.run_loop,
         ]
+
+        # Add Slack adapter task if configured
+        if slack_adapter is not None:
+            tasks.append(slack_adapter.start)
 
     stop_event = asyncio.Event()
 
@@ -212,6 +254,9 @@ async def main():
         watcher.save_seen_urls()
         if chat is not None:
             await chat.stop()
+        # Stop Slack adapter if running (only available in full role)
+        if role == "full" and 'slack_adapter' in locals() and slack_adapter is not None:
+            await slack_adapter.stop()
 
 
 if __name__ == "__main__":

@@ -439,6 +439,7 @@ DAEMON_FILES=(
     skill_executor.py
     skill_optimizer.py
     skill_router.py
+    slack_adapter.py
     slack_client.py
     slack_scanner.py
     utils.py
