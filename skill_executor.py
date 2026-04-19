@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -97,10 +98,29 @@ class SkillExecutor:
         await self._log_execution(inputs, resolve(preferred), score=0.0, notes=str(last_err)[:80])
         return None
 
+    def _make_slug(self, inputs: dict) -> str:
+        """Generate a sanitized, stable slug from skill inputs.
+
+        For URL-based skills, embeds the same 6-char SHA1 hash that memory_writer.py
+        uses in filenames — enabling _find_output_by_slug to match by hash suffix.
+        For other skills, sanitizes the first input value to be safe in pipe tables.
+        """
+        if not inputs:
+            return "unknown"
+
+        if "url" in inputs:
+            url = inputs["url"]
+            url_hash = hashlib.sha1(url.encode()).hexdigest()[:6]
+            title = inputs.get("title", url)
+            title_part = re.sub(r'[^a-z0-9]+', '-', title[:14].lower()).strip('-')
+            return f"{title_part}-{url_hash}" if title_part else url_hash
+
+        raw = list(inputs.values())[0][:30]
+        return re.sub(r'[^a-z0-9]+', '-', raw.lower()).strip('-')[:20] or "unknown"
+
     async def _log_execution(self, inputs: dict, model: str,
                               score, notes: str = ""):
-        slug = list(inputs.values())[0][:20].replace(" ", "-").lower() \
-               if inputs else "unknown"
+        slug = self._make_slug(inputs)
         date = datetime.now().strftime("%Y-%m-%d")
         score_str = f"{score:.2f}" if score is not None else "pending"
 

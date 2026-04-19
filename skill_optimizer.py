@@ -18,6 +18,7 @@ log = logging.getLogger("skill-optimizer")
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
 SKILLS_DIR = BRAIN_DIR / "skills"
 MEMORIES_DIR = BRAIN_DIR / "memories"
+DEPLOY_DIR = Path.home() / "secondbrain"
 
 
 class SkillOptimizer:
@@ -60,6 +61,23 @@ class SkillOptimizer:
                 self.__init__(config)
             except Exception as e:
                 log.warning(f"Config reload failed: {e}")
+
+            # Check if today's pass was missed (e.g. daemon restarted after run_hour)
+            state_file = DEPLOY_DIR / "skill-optimizer-state.json"
+            try:
+                state = json.loads(state_file.read_text()) if state_file.exists() else {}
+                last_pass = state.get("last_pass_date")
+                today = datetime.now().strftime("%Y-%m-%d")
+                now_hour = datetime.now().hour
+                if last_pass != today and now_hour >= self.run_hour:
+                    log.info(f"Missed pass detected (last={last_pass}) — running now")
+                    await self._run_daily_pass(stop_event)
+                    state["last_pass_date"] = today
+                    state_file.write_text(json.dumps(state))
+                    if stop_event.is_set():
+                        break
+            except Exception as e:
+                log.warning(f"Missed-pass check failed: {e}")
 
             # Calculate sleep duration until next run_hour
             now = datetime.now()
@@ -141,6 +159,15 @@ class SkillOptimizer:
                 continue
 
         log.info("Daily optimization pass complete")
+
+        # Persist last_pass_date for missed-pass recovery
+        try:
+            state_file = DEPLOY_DIR / "skill-optimizer-state.json"
+            state = json.loads(state_file.read_text()) if state_file.exists() else {}
+            state["last_pass_date"] = datetime.now().strftime("%Y-%m-%d")
+            state_file.write_text(json.dumps(state))
+        except Exception as e:
+            log.warning(f"Could not save optimizer state: {e}")
 
         # Trigger probation graduation check if skill_creator is wired in
         if self._skill_creator is not None:
@@ -282,6 +309,17 @@ class SkillOptimizer:
             log.debug(f"No pending rows to score in {skill_name}")
             return
 
+        # Chat skill responses are streamed to Telegram — no memory-file output to score against.
+        # Mark pending rows as n/a to prevent permanent backlog growth.
+        if skill_name == "chat":
+            for row_idx, row_text in pending_rows:
+                lines[row_idx] = row_text.replace("| pending |", "| n/a |")
+            new_history = "\n".join(lines)
+            text = self._replace_section(text, "## Execution History", new_history)
+            self._atomic_write(skill_path, text)
+            log.info(f"Marked {len(pending_rows)} chat rows as n/a (no memory-file output)")
+            return
+
         if self.dry_run:
             log.info(f"DRY RUN: Would score {len(pending_rows)} pending rows for {skill_name}")
             return
@@ -339,20 +377,40 @@ class SkillOptimizer:
         log.info(f"Scored {scored_count} rows in {skill_name}")
 
     async def _find_output_by_slug(self, input_slug: str) -> Optional[str]:
-        """Find memory file matching input_slug prefix and return its body."""
+        """Find memory file matching input_slug and return its body.
+
+        Matching strategy:
+        1. Hash-based (primary): new-format slugs end with a 6-char hex url hash
+           (e.g. "article-title-a1b2c3") — match against the hash suffix in memory
+           filenames, which use the same SHA1(url)[:6] hash from memory_writer.py.
+        2. Substring fallback: legacy slugs that don't end in a hex hash fall back
+           to the original startswith/contains check.
+        """
         if not MEMORIES_DIR.exists():
             return None
 
-        # Match files where the slug component (after date prefix) starts with input_slug
+        # Check whether input_slug ends with a 6-char hex hash (new format)
+        hash_match = re.search(r'([0-9a-f]{6})$', input_slug)
+
         for mem_file in MEMORIES_DIR.glob("*.md"):
             # Extract slug from filename: YYYY-MM-DD-{slug}.md
-            # Slug starts after third hyphen
             name_parts = mem_file.stem.split("-", 3)
             if len(name_parts) < 4:
                 continue
             file_slug = name_parts[3]
 
-            if file_slug.startswith(input_slug) or input_slug in file_slug:
+            matched = False
+            # Primary: hash-based matching (new slugs with url hash suffix)
+            if hash_match:
+                file_hash = re.search(r'([0-9a-f]{6})$', file_slug)
+                if file_hash and file_hash.group(1) == hash_match.group(1):
+                    matched = True
+
+            # Fallback: substring matching (legacy slugs, non-URL skills)
+            if not matched and (file_slug.startswith(input_slug) or input_slug in file_slug):
+                matched = True
+
+            if matched:
                 try:
                     content = mem_file.read_text()
                     # Extract body (after frontmatter)
@@ -421,11 +479,11 @@ Respond with JSON only:
                 continue
             date_str = parts[1]
             score_str = parts[4]
-            if score_str == "pending" or not score_str:
+            if score_str in ("pending", "n/a") or not score_str:
                 continue
             try:
                 score = float(score_str)
-                if score > 0:
+                if score >= 0:
                     rows.append({"date": date_str, "score": score})
             except ValueError:
                 continue

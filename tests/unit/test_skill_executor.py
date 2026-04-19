@@ -466,3 +466,51 @@ async def test_run_with_tools_transient_error_falls_back(skills_dir):
 
     assert result == "tools fallback result"
     assert call_count == 2
+
+
+# --- _make_slug ---
+
+def test_make_slug_url_inputs_embed_hash(executor_full):
+    """URL-based inputs produce a slug ending in the SHA1(url)[:6] hash."""
+    import hashlib
+    url = "https://example.com/article"
+    slug = executor_full._make_slug({"url": url, "title": "Article Title", "content": "..."})
+    expected_hash = hashlib.sha1(url.encode()).hexdigest()[:6]
+    assert slug.endswith(expected_hash), f"slug={slug!r} does not end with hash {expected_hash!r}"
+
+
+def test_make_slug_url_with_title_uses_title_fragment(executor_full):
+    """URL-based slug starts with a sanitized fragment of the title."""
+    slug = executor_full._make_slug({"url": "https://example.com/", "title": "Hello World"})
+    assert slug.startswith("hello-world-"), f"slug={slug!r} should start with title fragment"
+
+
+def test_make_slug_url_without_title_uses_url_for_fragment(executor_full):
+    """When no title key, URL itself provides the fragment before the hash."""
+    import hashlib
+    url = "https://example.com/"
+    slug = executor_full._make_slug({"url": url})
+    expected_hash = hashlib.sha1(url.encode()).hexdigest()[:6]
+    assert slug.endswith(expected_hash)
+
+
+def test_make_slug_non_url_sanitizes_input(executor_full):
+    """Non-URL inputs are sanitized — no newlines or pipe characters."""
+    slug = executor_full._make_slug({"memory_context": "---\nbrowser: chrome\nquery: hello | world"})
+    assert "\n" not in slug
+    assert "|" not in slug
+    assert len(slug) <= 20
+
+
+def test_make_slug_empty_inputs_returns_unknown(executor_full):
+    """Empty dict returns 'unknown'."""
+    assert executor_full._make_slug({}) == "unknown"
+
+
+def test_make_slug_chat_context_no_newlines(executor_full):
+    """Multi-line memory_context produces a slug safe for pipe-delimited tables."""
+    context = "---\nbrowser: chrome\ntab_count: 12\nquery: what is the status\n"
+    slug = executor_full._make_slug({"memory_context": context, "user_query": "hello"})
+    assert "\n" not in slug
+    assert "|" not in slug
+    assert slug != "unknown"

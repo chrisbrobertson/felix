@@ -974,3 +974,132 @@ async def test_declining_skill_priority_bypasses_min_runs(optimizer, skills_dir)
     should_optimize, reason = await optimizer._check_optimization_gates(skill_path)
     assert should_optimize is True
     assert "declining" in reason
+
+
+# --- _find_output_by_slug (hash-based matching) ---
+
+@pytest.mark.asyncio
+async def test_find_output_by_slug_matches_by_hash(optimizer, memories_dir, brain_dir):
+    """New-format slugs ending in a 6-char hex hash match memory files by hash suffix."""
+    # Create a memory file whose slug ends with hash "a1b2c3"
+    mem_file = memories_dir / "2026-04-14-article-title-a1b2c3.md"
+    mem_file.write_text("---\ntype: webpage\n---\n\nThis is the article body.")
+
+    with patch.object(so, "MEMORIES_DIR", memories_dir):
+        # Input slug uses same hash but different title fragment
+        result = await optimizer._find_output_by_slug("page-frag-a1b2c3")
+
+    assert result == "This is the article body."
+
+
+@pytest.mark.asyncio
+async def test_find_output_by_slug_no_match_different_hash(optimizer, memories_dir):
+    """Slug with a different hash does not match a memory file."""
+    mem_file = memories_dir / "2026-04-14-article-title-a1b2c3.md"
+    mem_file.write_text("---\ntype: webpage\n---\n\nBody text.")
+
+    with patch.object(so, "MEMORIES_DIR", memories_dir):
+        result = await optimizer._find_output_by_slug("page-frag-b1b2b3")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_find_output_by_slug_legacy_substring_fallback(optimizer, memories_dir):
+    """Legacy slugs without a hex hash still match via substring fallback."""
+    mem_file = memories_dir / "2026-04-14-my-article-abc.md"
+    mem_file.write_text("---\ntype: webpage\n---\n\nLegacy body.")
+
+    with patch.object(so, "MEMORIES_DIR", memories_dir):
+        # Old-format slug: no trailing hex hash — should match by substring
+        result = await optimizer._find_output_by_slug("my-article")
+
+    assert result == "Legacy body."
+
+
+# --- chat skill n/a handling ---
+
+@pytest.mark.asyncio
+async def test_score_pending_rows_chat_marked_na(optimizer, skills_dir, brain_dir):
+    """Chat skill pending rows are marked n/a instead of being scored."""
+    chat_content = (
+        "---\nname: chat\nversion: 1\n"
+        "preferred_model: claude-sonnet-4-6\n"
+        "success_rate: null\ntotal_runs: 0\n---\n\n"
+        "## Instructions\n\nRespond helpfully.\n\n"
+        "## Execution History\n\n"
+        "| date | input_slug | model | score | notes |\n"
+        "|------|-----------|-------|-------|-------|\n"
+        "| 2026-04-14 | memory-context-abc | claude-sonnet-4-6 | pending |  |\n"
+        "| 2026-04-15 | memory-context-def | claude-sonnet-4-6 | pending |  |\n"
+    )
+    skill_path = skills_dir / "chat.md"
+    skill_path.write_text(chat_content)
+    stop_event = asyncio.Event()
+
+    with patch.object(so, "SKILLS_DIR", skills_dir), \
+         patch.object(so, "MEMORIES_DIR", brain_dir / "memories"):
+        await optimizer._score_pending_rows(skill_path, stop_event)
+
+    result = skill_path.read_text()
+    assert "| n/a |" in result
+    assert "| pending |" not in result
+
+
+# --- _parse_history_rows score filter ---
+
+def test_parse_history_rows_includes_zero_scores(optimizer):
+    """Rows with score 0.00 are now included (error runs are valid data points)."""
+    history = (
+        "| date | input_slug | model | score | notes |\n"
+        "|------|-----------|-------|-------|-------|\n"
+        "| 2026-04-14 | article-a1b2c3 | haiku | 0.00 | timeout |\n"
+        "| 2026-04-15 | article-b2c3d4 | haiku | 0.80 |  |\n"
+    )
+    rows = optimizer._parse_history_rows(history)
+    assert len(rows) == 2
+    scores = [r["score"] for r in rows]
+    assert 0.0 in scores
+    assert 0.8 in scores
+
+
+def test_parse_history_rows_skips_na(optimizer):
+    """Rows with score n/a (chat skill) are excluded from stats."""
+    history = (
+        "| date | input_slug | model | score | notes |\n"
+        "|------|-----------|-------|-------|-------|\n"
+        "| 2026-04-14 | memory-abc | sonnet | n/a |  |\n"
+        "| 2026-04-15 | article-xyz | haiku | 0.75 |  |\n"
+    )
+    rows = optimizer._parse_history_rows(history)
+    assert len(rows) == 1
+    assert rows[0]["score"] == 0.75
+
+
+# --- missed-pass recovery ---
+
+@pytest.mark.asyncio
+async def test_missed_pass_recovery_runs_pass_when_stale(optimizer, tmp_path, brain_dir):
+    """If last_pass_date is yesterday and hour >= run_hour, pass runs immediately."""
+    state_file = tmp_path / "skill-optimizer-state.json"
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    state_file.write_text(json.dumps({"last_pass_date": yesterday}))
+
+    stop_event = asyncio.Event()
+    pass_count = 0
+
+    async def mock_daily_pass(se):
+        nonlocal pass_count
+        pass_count += 1
+        stop_event.set()  # stop after one pass
+
+    with patch.object(so, "DEPLOY_DIR", tmp_path), \
+         patch.object(so, "BRAIN_DIR", brain_dir), \
+         patch.object(so, "SKILLS_DIR", brain_dir / "skills"), \
+         patch.object(optimizer, "_run_daily_pass", new=mock_daily_pass):
+        # run_hour=3 so hour check will pass (test runs during business hours typically,
+        # but we force it via a fresh datetime that is always >= 3)
+        optimizer.run_hour = 0  # hour 0 — always past midnight, always triggers
+        await optimizer.run_loop(stop_event)
+
+    assert pass_count >= 1, "Expected _run_daily_pass to be called for missed pass"
