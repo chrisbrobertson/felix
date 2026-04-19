@@ -47,8 +47,8 @@ class SlackTransportAdapter:
 
     # ── TransportAdapter protocol ─────────────────────────────────────────────
 
-    async def start(self) -> None:
-        """Start the Slack Socket Mode connection."""
+    async def start(self, stop_event: asyncio.Event) -> None:
+        """Start the Slack Socket Mode connection and run until stop_event is set."""
         try:
             from slack_bolt.async_app import AsyncApp
             from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
@@ -68,7 +68,10 @@ class SlackTransportAdapter:
             await self._on_message(event, say)
 
         log.info("Slack adapter starting Socket Mode connection")
-        await self._handler.start_async()
+        await self._handler.connect_async()
+        log.info("Slack adapter connected — waiting for stop signal")
+        await stop_event.wait()
+        log.info("Slack adapter stop_event received — shutting down")
 
     async def stop(self) -> None:
         """Close the Socket Mode WebSocket."""
@@ -108,6 +111,8 @@ class SlackTransportAdapter:
 
         channel = event.get("channel", "")
         text = event.get("text", "").strip()
+        if not text:
+            return  # ignore reactions, file-only messages, empty edits
 
         # Cache the DM channel ID for proactive notifications
         if self._dm_channel_id is None:

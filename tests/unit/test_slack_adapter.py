@@ -115,3 +115,61 @@ async def test_send_text_chunks_long_message(adapter):
 @pytest.mark.asyncio
 async def test_max_message_length(adapter):
     assert adapter.max_message_length() == 4000
+
+
+@pytest.mark.asyncio
+async def test_empty_text_ignored(adapter):
+    """Message with no text (reaction, file-only, empty edit) → no reply sent."""
+    event = {"user": "U001", "channel": "D001", "text": ""}
+    await adapter._on_message(event, say=None)
+    adapter._client.post_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_whitespace_only_text_ignored(adapter):
+    """Message with only whitespace → treated as empty, no reply sent."""
+    event = {"user": "U001", "channel": "D001", "text": "   "}
+    await adapter._on_message(event, say=None)
+    adapter._client.post_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_accepts_stop_event(adapter):
+    """start() must accept a stop_event and return when it fires."""
+    stop_event = asyncio.Event()
+
+    mock_handler = MagicMock()
+    mock_handler.connect_async = AsyncMock()
+    mock_handler.close_async = AsyncMock()
+
+    mock_app = MagicMock()
+    mock_app.event = lambda *a, **kw: (lambda f: f)  # no-op decorator
+
+    mock_async_app_cls = MagicMock(return_value=mock_app)
+    mock_handler_cls = MagicMock(return_value=mock_handler)
+
+    import sys
+    fake_bolt = MagicMock()
+    fake_bolt_async_app = MagicMock()
+    fake_bolt_async_app.AsyncApp = mock_async_app_cls
+    fake_bolt_socket = MagicMock()
+    fake_bolt_socket.AsyncSocketModeHandler = mock_handler_cls
+
+    async def fire_stop():
+        await asyncio.sleep(0.05)
+        stop_event.set()
+
+    with patch.dict(sys.modules, {
+        "slack_bolt": fake_bolt,
+        "slack_bolt.async_app": fake_bolt_async_app,
+        "slack_bolt.adapter": MagicMock(),
+        "slack_bolt.adapter.socket_mode": MagicMock(),
+        "slack_bolt.adapter.socket_mode.async_handler": fake_bolt_socket,
+    }):
+        await asyncio.gather(
+            adapter.start(stop_event),
+            fire_stop(),
+        )
+
+    # start() returned after stop_event fired — connect_async was called once
+    mock_handler.connect_async.assert_awaited_once()

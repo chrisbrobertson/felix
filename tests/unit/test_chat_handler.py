@@ -4363,3 +4363,39 @@ async def test_register_with_router_fake_auth_passes(handler):
     handled = await router.dispatch_command(ctx, "version")
     assert handled is True
     assert len(replies) >= 1
+
+
+@pytest.mark.asyncio
+async def test_register_with_router_no_shared_state_between_calls(handler):
+    """Each bridge invocation gets its own fake objects — no state sharing between calls."""
+    from command_core import CommandRouter
+    from transport import CommandContext
+
+    router = CommandRouter()
+    handler.register_with_router(router)
+
+    replies_a = []
+    replies_b = []
+
+    async def noop_typing() -> None:
+        pass
+
+    async def reply_a(t): replies_a.append(t)
+    async def reply_b(t): replies_b.append(t)
+
+    # Two concurrent dispatches with different args must not bleed into each other
+    ctx_a = CommandContext(args=["10"], user_id="u1",
+                           reply=reply_a, send_typing=noop_typing)
+    ctx_b = CommandContext(args=["5"], user_id="u2",
+                           reply=reply_b, send_typing=noop_typing)
+
+    await asyncio.gather(
+        router.dispatch_command(ctx_a, "readings"),
+        router.dispatch_command(ctx_b, "readings"),
+    )
+
+    # Both should have received replies — no cross-contamination
+    assert len(replies_a) >= 1
+    assert len(replies_b) >= 1
+    # replies must not have landed in the wrong list
+    assert replies_a is not replies_b

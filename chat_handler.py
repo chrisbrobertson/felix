@@ -6024,13 +6024,15 @@ class TelegramChatHandler:
                     pass
 
             class _FakeUpdate:
-                message = _FakeMessage()
-                effective_user = _FakeUser()
-                effective_chat = _FakeChat()
+                def __init__(self):
+                    self.message = _FakeMessage()
+                    self.effective_user = _FakeUser()
+                    self.effective_chat = _FakeChat()
 
             class _FakeContext:
-                args = list(ctx.args)
-                bot = _FakeBot()
+                def __init__(self):
+                    self.args = list(ctx.args)
+                    self.bot = _FakeBot()
 
             return _FakeUpdate(), _FakeContext()
 
