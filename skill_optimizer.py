@@ -326,6 +326,10 @@ class SkillOptimizer:
 
         log.info(f"Scoring {len(pending_rows)} pending rows in {skill_name}")
 
+        # Build memory lookup once per skill — avoids O(n*m) file reads
+        # (503 rows × 1000 files = 500k reads through iCloud without this)
+        memory_index = self._build_memory_index()
+
         # Score each pending row
         scored_count = 0
         for row_idx, row_text in pending_rows:
@@ -342,8 +346,8 @@ class SkillOptimizer:
             model = parts[3]
             notes = parts[5] if len(parts) > 5 else ""
 
-            # Find output by matching memory file
-            output_text = await self._find_output_by_slug(input_slug)
+            # Find output by matching memory file (uses pre-built index)
+            output_text = self._find_output_in_index(input_slug, memory_index)
             if not output_text:
                 log.warning(f"No memory file found for {input_slug} in {skill_name} — leaving pending")
                 continue
@@ -435,6 +439,60 @@ class SkillOptimizer:
 
         return None
 
+    def _build_memory_index(self) -> list[dict]:
+        """Pre-scan all memory files once, returning a list of dicts with slug, url, and body.
+
+        Calling _find_output_by_slug per row scans the full MEMORIES_DIR on every call —
+        O(n*m) file reads through iCloud. Building the index once reduces it to O(m) reads
+        regardless of how many pending rows need scoring.
+        """
+        index = []
+        if not MEMORIES_DIR.exists():
+            return index
+        for mem_file in MEMORIES_DIR.glob("*.md"):
+            try:
+                content = mem_file.read_text()
+            except Exception:
+                continue
+            # Extract body (after frontmatter)
+            fm_parts = content.split("---", 2)
+            body = fm_parts[2].strip() if len(fm_parts) >= 3 else ""
+            if not body:
+                continue
+            # Extract filename slug component
+            name_parts = mem_file.stem.split("-", 3)
+            file_slug = name_parts[3] if len(name_parts) >= 4 else ""
+            # Extract source_url from frontmatter for URL-prefix matching
+            url_match = re.search(r'source_url:\s*(\S+)', content)
+            source_url = url_match.group(1) if url_match else ""
+            index.append({"file_slug": file_slug, "source_url": source_url, "body": body})
+        return index
+
+    def _find_output_in_index(self, input_slug: str, index: list[dict]) -> Optional[str]:
+        """Match input_slug against pre-built memory index. Three strategies (same as _find_output_by_slug):
+        1. Hash-based: slug ends with 6-char hex hash → match against file_slug hash suffix
+        2. URL-prefix: slug starts with http → match against source_url prefix
+        3. Substring: fallback to startswith/contains on file_slug
+        """
+        hash_match = re.search(r'([0-9a-f]{6})$', input_slug)
+        is_url_prefix = input_slug.startswith(("https://", "http://"))
+
+        for entry in index:
+            matched = False
+            if hash_match:
+                file_hash = re.search(r'([0-9a-f]{6})$', entry["file_slug"])
+                if file_hash and file_hash.group(1) == hash_match.group(1):
+                    matched = True
+            if not matched and is_url_prefix and entry["source_url"].startswith(input_slug):
+                matched = True
+            if not matched and entry["file_slug"] and (
+                entry["file_slug"].startswith(input_slug) or input_slug in entry["file_slug"]
+            ):
+                matched = True
+            if matched:
+                return entry["body"]
+        return None
+
     async def _call_judge(self, skill_name: str, instructions: str, input_slug: str,
                           output_text: str, date_str: str) -> tuple[float, str]:
         """Call judge model to score an execution."""
@@ -458,10 +516,12 @@ Rate this output on a scale of 0.0 to 1.0 using this rubric:
 Respond with JSON only:
 {{"score": 0.0, "reasoning": "one sentence explanation"}}"""
 
-        response = await acompletion(
-            model=resolve(self.judge_model),
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=200,
+        response = await asyncio.wait_for(
+            acompletion(
+                model=resolve(self.judge_model),
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=300,
+            ),
             timeout=30
         )
 
@@ -848,10 +908,12 @@ Your output must be a JSON object:
 Be specific. Cite evidence from the execution examples. Avoid generic observations."""
 
         try:
-            response = await acompletion(
-                model=resolve("optimizer"),
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=500,
+            response = await asyncio.wait_for(
+                acompletion(
+                    model=resolve("optimizer"),
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=500,
+                ),
                 timeout=60
             )
 
@@ -952,13 +1014,15 @@ Critique from analysis:
 Please rewrite the skill file following the meta-skill instructions."""
 
         try:
-            response = await acompletion(
-                model=resolve("optimizer"),
-                messages=[
-                    {"role": "system", "content": meta_instructions},
-                    {"role": "user", "content": user_msg}
-                ],
-                max_tokens=2000,
+            response = await asyncio.wait_for(
+                acompletion(
+                    model=resolve("optimizer"),
+                    messages=[
+                        {"role": "system", "content": meta_instructions},
+                        {"role": "user", "content": user_msg}
+                    ],
+                    max_tokens=2000,
+                ),
                 timeout=60
             )
 
@@ -1233,10 +1297,12 @@ Rate this output on a scale of 1 to 5:
 Respond with JSON only: {{"score": 1, "reasoning": "one sentence"}}"""
 
         try:
-            response = await acompletion(
-                model=resolve(self.judge_model),
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=100,
+            response = await asyncio.wait_for(
+                acompletion(
+                    model=resolve(self.judge_model),
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=100,
+                ),
                 timeout=30
             )
             text = response.choices[0].message.content.strip()

@@ -227,7 +227,7 @@ Test article summary.
     mock_response = Mock()
     mock_response.choices = [Mock(message=Mock(content='{"score": 0.85, "reasoning": "Good summary"}'))]
 
-    with patch("skill_optimizer.acompletion", return_value=mock_response):
+    with patch("skill_optimizer.acompletion", new=AsyncMock(return_value=mock_response)):
         stop_event = asyncio.Event()
         await optimizer._score_pending_rows(skill_path, stop_event)
 
@@ -256,7 +256,7 @@ async def test_score_pending_updates_frontmatter(optimizer, skills_dir, memories
     mock_response = Mock()
     mock_response.choices = [Mock(message=Mock(content='{"score": 0.90, "reasoning": "Excellent"}'))]
 
-    with patch("skill_optimizer.acompletion", return_value=mock_response):
+    with patch("skill_optimizer.acompletion", new=AsyncMock(return_value=mock_response)):
         stop_event = asyncio.Event()
         await optimizer._score_pending_rows(skill_path, stop_event)
 
@@ -465,7 +465,7 @@ async def test_critique_json_parse_failure_skips(optimizer, skills_dir, memories
     mock_response = Mock()
     mock_response.choices = [Mock(message=Mock(content="This is not JSON"))]
 
-    with patch("skill_optimizer.acompletion", return_value=mock_response):
+    with patch("skill_optimizer.acompletion", new=AsyncMock(return_value=mock_response)):
         critique = await optimizer._generate_critique(skill_path)
 
     assert critique is None
@@ -493,7 +493,7 @@ You rewrite skills. Output the complete skill file.""")
     mock_response = Mock()
     mock_response.choices = [Mock(message=Mock(content=skill_content))]
 
-    with patch("skill_optimizer.acompletion", return_value=mock_response):
+    with patch("skill_optimizer.acompletion", new=AsyncMock(return_value=mock_response)):
         critique = {"failure_patterns": ["test"], "root_cause": "test", "suggested_focus": "test"}
         new_text = await optimizer._rewrite_skill(skill_path, critique)
 
@@ -523,7 +523,7 @@ Rewrite the skill.""")
     mock_response = Mock()
     mock_response.choices = [Mock(message=Mock(content=new_skill))]
 
-    with patch("skill_optimizer.acompletion", return_value=mock_response):
+    with patch("skill_optimizer.acompletion", new=AsyncMock(return_value=mock_response)):
         critique = {"failure_patterns": ["test"], "root_cause": "test", "suggested_focus": "test"}
         new_text = await optimizer._rewrite_skill(skill_path, critique)
 
@@ -1109,8 +1109,7 @@ async def test_missed_pass_recovery_runs_pass_when_stale(optimizer, tmp_path, br
 
 @pytest.mark.asyncio
 async def test_judge_timeout_leaves_row_pending(optimizer, skills_dir, memories_dir, brain_dir):
-    """A timeout on the judge LLM call leaves the row as pending (not crashing the pass)."""
-    from litellm.exceptions import Timeout as LiteLLMTimeout
+    """asyncio.TimeoutError from a hung judge call leaves the row as pending (not crashing)."""
     skill_content = create_skill_file(
         name="test-skill",
         history_rows=[{"date": "2026-04-14", "slug": "article-abc123", "model": "haiku", "score": "pending"}]
@@ -1123,9 +1122,10 @@ async def test_judge_timeout_leaves_row_pending(optimizer, skills_dir, memories_
 
     stop_event = asyncio.Event()
 
+    # asyncio.wait_for raises TimeoutError when the coroutine exceeds the deadline
     with patch.object(so, "SKILLS_DIR", skills_dir), \
          patch.object(so, "MEMORIES_DIR", memories_dir), \
-         patch("skill_optimizer.acompletion", new=AsyncMock(side_effect=LiteLLMTimeout(message="timeout", llm_provider="anthropic", model="haiku"))):
+         patch("skill_optimizer.acompletion", new=AsyncMock(side_effect=asyncio.TimeoutError())):
         await optimizer._score_pending_rows(skill_path, stop_event)
 
     result = skill_path.read_text()
