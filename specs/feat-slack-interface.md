@@ -2,12 +2,12 @@
 specmas: 3.0
 kind: feature
 id: feat-slack-interface
-version: 1.0.0
-status: open
+version: 2.0.0
+status: implemented
 created: 2026-04-12
-updated: 2026-04-18
+updated: 2026-04-19
 complexity: high
-maturity: 2
+maturity: 5
 parent_system: second-brain
 related_specs:
   - feat-slack-scanner
@@ -20,17 +20,13 @@ related_specs:
 
 ### Problem Statement
 
-The second brain's interactive interface is currently Telegram-only. Users who spend their day in Slack must context-switch to Telegram to run `/commitments`, `/search`, `/briefing`, or any other command. For users where Slack is the primary communication surface, this friction reduces the second brain's utility.
-
-Additionally, the current `chat_handler.py` is tightly coupled to `python-telegram-bot`, making it impossible to add a second transport without duplicating ~6000 lines of command logic. The Slack scanner (`slack_scanner.py`) and any future Slack chat adapter would also duplicate Slack API infrastructure (rate limiting, user resolution, token management) if built independently.
+The second brain's interactive interface was Telegram-only. Users who spend their day in Slack had to context-switch to Telegram to run `/commitments`, `/search`, `/briefing`, or any other command. Additionally, `chat_handler.py` was tightly coupled to `python-telegram-bot`, making it impossible to add a second transport without duplicating ~6000 lines of command logic.
 
 ### Goal
 
-1. **Adapter architecture** — extract the command logic from `chat_handler.py` into a transport-agnostic core (`command_core.py`), then implement Telegram and Slack as thin adapters over it. Future transports (MCP server, REST API) can be added by implementing a single `TransportAdapter` protocol.
-
-2. **Shared Slack infrastructure** — extract common Slack API helpers (`SlackClient`) from the scanner into a shared module consumed by both the scanner and the chat adapter.
-
-3. **Slack chat interface** — a new `slack_adapter.py` delivers the full command surface in a Slack DM using Socket Mode (no public URL required).
+1. **Adapter architecture** — introduce a `TransportAdapter` protocol and `CommandRouter` so future transports can be added by implementing a single interface.
+2. **Shared Slack infrastructure** — extract common Slack API helpers (`SlackClient`) from the scanner into a shared module.
+3. **Slack chat interface** — a new `slack_adapter.py` delivers the full command surface in a Slack DM via Socket Mode (no public URL required).
 
 ---
 
@@ -39,40 +35,57 @@ Additionally, the current `chat_handler.py` is tightly coupled to `python-telegr
 ### Layer Overview
 
 ```
-┌─────────────────────────────────────────────────┐
-│              TransportAdapter protocol           │
-│  telegram_adapter.py     slack_adapter.py  ...  │
-│       (Telegram)             (Slack)       MCP  │
-└──────────────────┬──────────────────────────────┘
-                   │  CommandContext
-┌──────────────────▼──────────────────────────────┐
-│           command_core.py (CommandRouter)        │
-│   COMMAND_REGISTRY, _load_context(), cmd_*,      │
-│   handle_message(), LLM tool dispatch            │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│               TransportAdapter protocol                   │
+│   telegram_adapter.py        slack_adapter.py      ...   │
+│       (TelegramAdapter)    (SlackTransportAdapter)  MCP  │
+└──────────────┬───────────────────────┬────────────────────┘
+               │  CommandContext        │  CommandContext
+               ▼                       ▼
+┌──────────────────────────────────────────────────────────┐
+│          command_core.py (CommandRouter)                  │
+│   COMMAND_REGISTRY, dispatch_command(), handle_message() │
+│   Handlers registered at startup via register_with_router│
+└──────────────────────────────────────────────────────────┘
+               │  delegates to
+               ▼
+┌──────────────────────────────────────────────────────────┐
+│          chat_handler.py (TelegramChatHandler)            │
+│   All cmd_* methods — called via bridge from any adapter  │
+└──────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────┐
-│              slack_client.py (SlackClient)       │
-│  api_call(), resolve_user(), list_channels()     │
-│  Used by: slack_scanner.py + slack_adapter.py   │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│              slack_client.py (SlackClient)                │
+│  api_call(), resolve_user(), list_channels(), post_msg() │
+│  Used by: slack_scanner.py + slack_adapter.py            │
+└──────────────────────────────────────────────────────────┘
 ```
+
+### Design Decision: Bridge Pattern (not individual command migration)
+
+Rather than individually migrating all 90+ `cmd_*` methods to `CommandContext` signatures, `TelegramChatHandler.register_with_router(router)` registers them all via a bridge:
+
+- For each `cmd_*` method, a wrapper closure creates lightweight fake Telegram `Update` and `Context` objects wired to `ctx.reply` and `ctx.args`.
+- `update.effective_user.id` is set to `self.allowed_user_id` so `_check_auth()` always passes — auth is enforced at the adapter boundary before the router is called.
+- `update.message.reply_text(text)` delegates to `await ctx.reply(text)`.
+- `update.message.set_reaction()`, `context.bot.send_chat_action()`, and similar Telegram-specific calls are no-ops.
+- Free-text messages register a `__message__` handler that delegates to `TelegramChatHandler.handle_message()` via the same fake objects; `CommandContext.raw_text` carries the original message text.
+
+This approach delivers full command parity over Slack without touching the existing `cmd_*` implementations. The trade-off is that `chat_handler.py` retains its internal Telegram dependency.
 
 ---
 
-### `transport.py` — Adapter Protocol (new)
+### `transport.py` — Adapter Protocol
 
 ```python
-from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Protocol, runtime_checkable
-
 @dataclass
 class CommandContext:
     """Passed from every adapter into CommandRouter for each user interaction."""
-    args: list[str]              # Parsed command arguments (empty list for free-text)
-    user_id: str                 # Transport-specific user identifier
-    reply: Callable[[str], Awaitable[None]]  # Send text back to user
-    send_typing: Callable[[], Awaitable[None]]  # Show typing indicator
+    args: list[str]                                # Parsed command arguments
+    user_id: str                                   # Transport-specific user identifier
+    reply: Callable[[str], Awaitable[None]]        # Send text back to user
+    send_typing: Callable[[], Awaitable[None]]     # Show typing indicator (no-op ok)
+    raw_text: str = ""                             # Original free-text message (non-command)
 
 @runtime_checkable
 class TransportAdapter(Protocol):
@@ -85,60 +98,53 @@ class TransportAdapter(Protocol):
 
 ---
 
-### `command_core.py` — Transport-Agnostic Command Core (new)
+### `command_core.py` — Command Router
 
-Extracted from `chat_handler.py`:
+A thin routing layer. Does **not** hold command implementations — those remain in `TelegramChatHandler`.
 
 - **`COMMAND_REGISTRY`** — moved here; single source of truth for all command names and descriptions
 - **`CommandRouter`** class:
-  - Holds `SkillExecutor`, `GoalManager`, scanner refs, notification callback, chat history
-  - `handle_message(ctx: CommandContext, text: str)` — free-text LLM chat
-  - `dispatch_command(ctx: CommandContext, command: str)` — routes to `cmd_*`
-  - All `cmd_*` methods accept `CommandContext` instead of `Update`
-  - `_load_context(query, history)` — memory context assembly (unchanged)
-  - LLM tool dispatch via `SkillExecutor.run_with_tools()` (unchanged)
-- Chat history keyed by `"{transport_prefix}:{user_id}"` to isolate per-transport context
+  - `register(name, handler)` / `register_all(mapping)` — register command handlers
+  - `dispatch_command(ctx, command) -> bool` — routes to registered handler; returns `False` if unknown
+  - `handle_message(ctx, text)` — delegates to `__message__` handler if registered
+  - `format_help(use_markdown)` — renders `COMMAND_REGISTRY` as text or Markdown
 
-**Migration approach**: Commands are migrated incrementally. The compatibility shim in `chat_handler.py` continues forwarding to the old Telegram-coupled implementations until each command is ported to `CommandContext`. Tests run against `CommandRouter` directly, without any transport.
+Handlers are registered at daemon startup by `TelegramChatHandler.register_with_router(router)`.
 
 ---
 
-### `telegram_adapter.py` — Telegram Adapter (new, refactored from `chat_handler.py`)
+### `telegram_adapter.py` — Telegram Adapter
 
-- Wraps `python-telegram-bot` `ApplicationBuilder`, `Update`, `CommandHandler`, `MessageHandler`
-- Translates `Update` → `CommandContext` → calls `CommandRouter`
-- `send_text` → `bot.send_message()`, chunked at 4096 chars
-- `send_typing` → `ChatAction.TYPING`
-- `_check_auth()` validates `update.effective_user.id` against `config.user.telegram_user_id`
-- `start()` / `stop()` manage `Application.run_polling()` lifecycle
-- `chat_handler.py` becomes a backward-compatible shim importing from here
+Wraps `TelegramChatHandler` to implement `TransportAdapter`:
+
+- `start()` / `stop()` delegate to handler's polling lifecycle
+- `send_text(chat_id, text)` → `bot.send_message()`, chunked at 4096
+- `send_typing(chat_id)` → `ChatAction.TYPING`
+- `get_chat_id()` returns the known DM chat ID (from handler or notification state)
+
+`chat_handler.py` is **not** a shim — it is still the primary implementation. `TelegramAdapter` adds the `TransportAdapter` interface on top.
 
 ---
 
-### `slack_client.py` — Shared Slack API Client (new, extracted from `slack_scanner.py`)
+### `slack_client.py` — Shared Slack API Client
 
-Single `SlackClient` class used by both the scanner (user token) and the chat adapter (bot token). Accepts token at construction — same interface regardless of token type.
+Single `SlackClient` class used by both the scanner (user token) and the chat adapter (bot token). Backed by raw `httpx` (no `slack_sdk` dependency added).
 
-**Extracted from `SlackScanner`:**
 - `api_call(method, params) -> Optional[dict]` — rate-limit-aware (429 retry with `Retry-After`), 401 detection, `"ok": false` handling
 - `resolve_user(user_id) -> str` — display name lookup with in-memory `_user_cache`
 - `list_channels() -> list[tuple[str, str]]` — paginated `users.conversations` enumeration
+- `post_message(channel, text) -> bool` — `chat.postMessage` for the adapter
+- `clear_user_cache()` — clears the in-memory cache
 
-**New in `SlackClient`:**
-- Backed by `slack_sdk.web.async_client.AsyncWebClient` instead of raw `httpx`
-- `post_message(channel, text) -> bool` — `chat_postMessage` for the adapter
-- Token provided at init: scanner uses `SLACK_USER_TOKEN` (xoxp-), adapter uses `slack.bot_token` (xoxb-)
+Token is provided at init: scanner uses `SLACK_USER_TOKEN` (`xoxp-`), adapter uses `slack.bot_token` (`xoxb-`).
 
 **`slack_scanner.py` after refactor:**
-- Replaces all direct `httpx` `GET` calls with `self._client.api_call(...)`
-- Replaces `self._user_cache` / `self._resolve_user()` with `self._client.resolve_user()`
-- Replaces `self._list_channels()` with `self._client.list_channels()`
+- Replaces `self._api_call()`, `self._resolve_user()`, `self._list_channels()` with `self._client.*`
 - No change to state file format, memory output, or scan logic
-- All existing `test_slack_scanner.py` tests pass unchanged
 
 ---
 
-### `slack_adapter.py` — Slack Chat Adapter (new)
+### `slack_adapter.py` — Slack Chat Adapter
 
 ```python
 class SlackTransportAdapter:
@@ -146,70 +152,93 @@ class SlackTransportAdapter:
 
     def __init__(self, router: CommandRouter, bot_token: str, app_token: str, user_id: str):
         self._router = router
-        self._client = SlackClient(token=bot_token)  # shared infrastructure
+        self._client = SlackClient(token=bot_token)
+        self._authorized_user_id = user_id
+        self._dm_channel_id: Optional[str] = None  # discovered on first message
+
+    async def start(self):
+        # Lazy import of slack_bolt — graceful degradation if not installed
+        from slack_bolt.async_app import AsyncApp
+        from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
         self._app = AsyncApp(token=bot_token)
         self._handler = AsyncSocketModeHandler(self._app, app_token)
-        self._authorized_user_id = user_id
-
-    async def start(self): await self._handler.start_async()
-    async def stop(self): await self._handler.close_async()
-
-    async def send_text(self, chat_id: str, text: str):
-        for chunk in self._chunk(text):
-            await self._client.post_message(chat_id, chunk)
-
-    def max_message_length(self) -> int: return 4000
-
-    def _chunk(self, text: str) -> list[str]: ...  # split at 4000
+        await self._handler.start_async()
 
     async def _on_message(self, event, say):
-        """Handles all DM messages — dispatches to CommandRouter."""
+        if event.get("bot_id") or event.get("subtype"):
+            return
         if event.get("user") != self._authorized_user_id:
-            return  # auth check
-        text = event.get("text", "").strip()
-        channel = event["channel"]
+            return  # auth check at adapter boundary
 
-        ctx = CommandContext(
-            args=[],
-            user_id=self._authorized_user_id,
-            reply=lambda t: self.send_text(channel, t),
-            send_typing=lambda: None,  # Slack has no typing indicator in DMs
-        )
+        channel = event["channel"]
+        text = event.get("text", "").strip()
+        if self._dm_channel_id is None:
+            self._dm_channel_id = channel  # cache for proactive notifications
 
         if text.startswith("!"):
-            # Command dispatch: "!commitments 3" → command="commitments", args=["3"]
             parts = text[1:].split()
-            command, ctx.args = parts[0].lower(), parts[1:]
-            await self._router.dispatch_command(ctx, command)
+            command, args = parts[0].lower(), parts[1:]
+            ctx = CommandContext(args=args, user_id=self._authorized_user_id,
+                                 reply=lambda t: self.send_text(channel, t),
+                                 send_typing=noop)
+            handled = await self._router.dispatch_command(ctx, command)
+            if not handled:
+                await ctx.reply(f"Unknown command: !{command}\nSend !help for a list.")
         else:
+            ctx = CommandContext(args=[], user_id=self._authorized_user_id,
+                                 reply=lambda t: self.send_text(channel, t),
+                                 send_typing=noop, raw_text=text)
             await self._router.handle_message(ctx, text)
 ```
 
-**Command prefix:** `!command args` in Slack DMs. Avoids Slack's built-in slash command system, which requires a public Request URL even for Socket Mode interactivity. Users type `!search quantum computing` rather than `/search quantum computing`.
+**Command prefix:** `!command args` in Slack DMs. Avoids Slack's built-in slash command system, which requires a public Request URL even for Socket Mode interactivity.
+
+**`get_chat_id()`** returns `self._dm_channel_id` — set on first inbound message; used by `NotificationManager` for proactive delivery.
 
 ---
 
-### `notification_manager.py` — Multi-Transport Notifications (refactored)
+### `notification_manager.py` — Multi-Transport Notifications
 
-- `__init__` accepts `transports: list[TransportAdapter]` instead of `telegram.Bot`
-- `send_message(text)` iterates over all active transports and calls `send_text(chat_id, text)` on each
-- Each adapter stores its own `chat_id` (Telegram stores the user's chat_id from state; Slack stores the DM channel ID discovered on first message)
-- `_chunk_message()` calls each adapter's `max_message_length()` during dispatch
+`__init__` now accepts `transports: list[TransportAdapter]` alongside the legacy `bot=` parameter.
+
+`send_message(text)` iterates all active transports:
+```python
+for adapter in self._transports:
+    chat_id = adapter.get_chat_id()
+    if chat_id:
+        for chunk in _chunk(text, adapter.max_message_length()):
+            await adapter.send_text(chat_id, chunk)
+```
+
+Falls back to the legacy `self.bot` path when `_transports` is empty (watcher role, no Slack configured).
+
+---
+
+### `daemon.py` — Wiring
+
+At startup, `full` role:
+
+1. `_build_slack_adapter(config, chat)` — reads `chat.transports` config; if `"slack"` is listed and credentials are present, builds `SlackTransportAdapter` and calls `chat.register_with_router(router)` to populate the router with all commands.
+2. `TelegramAdapter(chat)` is always constructed.
+3. Both adapters are passed to `NotificationManager(transports=[tg_adapter, slack_adapter])`.
+4. `slack_adapter.start` is added to the async task list.
 
 ---
 
 ## Functional Requirements
 
-| ID | Requirement |
-|----|-------------|
-| FR-1 | Free-text messages in a Slack DM with the bot produce LLM-backed responses identical to Telegram |
-| FR-2 | `!command args` in a Slack DM dispatches to the same command logic as Telegram |
-| FR-3 | Proactive notifications (briefings, commitment alerts, pre-meeting context) are delivered to Slack when Slack is an active transport |
-| FR-4 | When `chat.transports: [telegram, slack]`, both receive all notifications simultaneously |
-| FR-5 | Chat history is maintained per-transport so Slack and Telegram conversations don't bleed into each other |
-| FR-6 | Phase 0 (core extraction) produces zero behavior change — all 912 existing tests pass |
-| FR-7 | `slack_scanner.py` behavior is unchanged after migration to `SlackClient` |
-| FR-8 | Unauthorized Slack users (not `slack.user_id`) receive no response |
+| ID | Requirement | Status |
+|----|-------------|--------|
+| FR-1 | Free-text messages in a Slack DM produce LLM-backed responses | ✅ |
+| FR-2 | `!command args` dispatches to the same command logic as Telegram | ✅ |
+| FR-3 | Proactive notifications are delivered to Slack when configured | ✅ |
+| FR-4 | With `transports: [telegram, slack]`, both receive all notifications simultaneously | ✅ |
+| FR-5 | Slack and Telegram share the same `chat-history.json` (keyed by Telegram `allowed_user_id`) | ✅ (shared; not per-transport isolated) |
+| FR-6 | Core extraction produces zero behavior change — all existing tests pass | ✅ |
+| FR-7 | `slack_scanner.py` behavior is unchanged after migration to `SlackClient` | ✅ |
+| FR-8 | Unauthorized Slack users (not `slack.user_id`) receive no response | ✅ |
+
+> **Note on FR-5:** Chat history is shared across transports rather than isolated per-transport. Both Telegram and Slack conversations write to and read from the same history, keyed by `TelegramChatHandler.allowed_user_id`. This is simpler and maintains continuity when switching between interfaces.
 
 ---
 
@@ -233,7 +262,8 @@ class SlackTransportAdapter:
 
 ```yaml
 chat:
-  # Previously a string "telegram" — now a list to support multiple simultaneous transports
+  # Previously a string "telegram" — now a list to support multiple simultaneous transports.
+  # Backward compatible: "telegram" (string) is accepted and treated as ["telegram"].
   transports: [telegram]    # any combo of: telegram, slack
 
 slack:
@@ -250,79 +280,74 @@ slack_scanner:
   interval_seconds: 300
 ```
 
-**Backward compatibility:** `chat.transport: telegram` (old string form) is accepted and treated as `chat.transports: [telegram]`.
-
 ---
 
 ## Phased Delivery
 
-### Phase 0 — Core extraction + adapter protocol
-**Scope:** Transport-agnostic foundation. No behavior change.
+### Phase 0 — Core extraction + adapter protocol ✅
 **New files:** `transport.py`, `command_core.py`, `telegram_adapter.py`
-**Modified:** `chat_handler.py` (becomes shim), `notification_manager.py` (accepts `TransportAdapter`)
-**Migrated commands (10):** `search`, `readings`, `reading`, `commitments`, `complete`, `dismiss`, `briefing`, `goals`, `projects`, `help`
-**Acceptance:** All 912 existing tests pass. `TelegramChatHandler` in `chat_handler.py` still importable.
+**Modified:** `notification_manager.py` (accepts `transports` list)
+**What shipped:** `TransportAdapter` protocol, `CommandContext` dataclass, `CommandRouter` (routing only — no command implementations), `COMMAND_REGISTRY` as single source of truth, `TelegramAdapter` wrapper, multi-transport `send_message`.
+**What was NOT done:** `chat_handler.py` was not turned into a shim; no individual commands were migrated to `CommandContext` signatures.
 
-### Phase 1 — Shared Slack client + scanner migration
-**Scope:** Extract `SlackClient`, migrate scanner off raw `httpx`.
+### Phase 1 — Shared Slack client + scanner migration ✅
 **New files:** `slack_client.py`
 **Modified:** `slack_scanner.py`
-**New dependency:** `slack_sdk>=3.19`
-**Acceptance:** All existing `test_slack_scanner.py` tests pass. No change to memory files or state.
+**Dependencies:** No new packages — `SlackClient` uses `httpx` (already present), not `slack_sdk`.
+**What shipped:** `SlackClient` with `api_call`, `resolve_user`, `list_channels`, `post_message`, `clear_user_cache`; `slack_scanner.py` migrated to use `self._client` for all API calls.
 
-### Phase 2 — Slack Socket Mode adapter
-**Scope:** New `slack_adapter.py` connects and can receive/send DMs.
+### Phase 2 — Slack Socket Mode adapter ✅
 **New files:** `slack_adapter.py`
-**Modified:** `daemon.py`, `install.sh`, `requirements.txt`
-**New dependency:** `slack_bolt[async]>=1.18`
-**Config additions:** `slack.bot_token`, `slack.app_token`, `slack.user_id`, `chat.transports`
-**Acceptance:** Sending `!help` in Slack DM returns the help text. Free-text chat works.
+**Modified:** `daemon.py`, `install.sh`, `requirements.txt`, `config.yaml.template`
+**New dependency:** `slack_bolt[async]>=1.18` (lazy import — graceful if missing)
+**What shipped:** `SlackTransportAdapter` with Socket Mode, `!command` dispatch stub, DM channel discovery for proactive notifications.
 
-### Phase 3 — Complete command migration
-**Scope:** Port remaining ~70 commands to `CommandContext`.
-**Modified:** `command_core.py` (add commands), `chat_handler.py` (shrinks toward removal)
-**Acceptance:** Every command listed in `COMMAND_REGISTRY` works over both Telegram and Slack.
+### Phase 3 — Command bridge ✅
+**Modified:** `chat_handler.py`, `transport.py`, `slack_adapter.py`, `daemon.py`
+**What shipped:** `TelegramChatHandler.register_with_router(router)` — registers all 90+ `cmd_*` methods via fake Telegram object bridge; `CommandContext.raw_text` field for free-text delegation; `daemon.py` calls `register_with_router` at startup.
 
-### Phase 4 — Notifications via all transports
-**Scope:** `NotificationManager` dispatches to all active transports.
-**Modified:** `notification_manager.py`
-**Acceptance:** With `transports: [telegram, slack]`, briefings arrive on both platforms.
+### Phase 4 — Multi-transport notifications ✅
+**Modified:** `daemon.py`
+**What shipped:** `daemon.py` builds `TelegramAdapter` + `SlackTransportAdapter` (if configured) and passes both to `NotificationManager(transports=[...])`. Briefings, alerts, and goal notifications are delivered to all active transports simultaneously.
+
+---
+
+## Files Created / Modified
+
+| File | Change |
+|------|--------|
+| `transport.py` | New — `TransportAdapter` protocol, `CommandContext` dataclass (with `raw_text`) |
+| `command_core.py` | New — `CommandRouter` (routing only), `COMMAND_REGISTRY` |
+| `telegram_adapter.py` | New — `TelegramAdapter` wrapping `TelegramChatHandler` |
+| `slack_client.py` | New — `SlackClient` with `api_call`, `resolve_user`, `list_channels`, `post_message` |
+| `slack_adapter.py` | New — `SlackTransportAdapter` using Socket Mode + `SlackClient` |
+| `slack_scanner.py` | Refactor — replace raw `httpx` with `SlackClient`; no functional change |
+| `chat_handler.py` | Extended — `register_with_router()` bridge method added; otherwise unchanged |
+| `notification_manager.py` | Refactor — accepts `list[TransportAdapter]`, dispatches to all |
+| `daemon.py` | Modified — builds adapters from `chat.transports` config, passes to NotificationManager |
+| `install.sh` | Modified — added `transport.py`, `command_core.py`, `telegram_adapter.py`, `slack_client.py`, `slack_adapter.py` to `DAEMON_FILES` |
+| `requirements.txt` | Modified — added `slack_bolt[async]>=1.18` |
 
 ---
 
 ## Out of Scope
 
-- **Slack slash commands** (e.g., `/secondbrain`) — require a public Request URL even with Socket Mode interactivity; use `!command` prefix instead
-- **Rich Slack UI** (Block Kit buttons, modals) — plain text first
-- **Multi-user / workspace-wide** deployment — single authorized user only
-- **Migrating `slack_scanner.py` to `slack_bolt`** — scanner uses `SlackClient` (wrapping `slack_sdk`), not the full `slack_bolt` event framework
-- **Threaded replies in Slack** — all responses go to the DM as flat messages, matching Telegram behavior
-- **MCP / REST adapter implementation** — architecture supports it via `TransportAdapter` but not specified here
-- **Slack file uploads** — `/import_chats` over Slack not in scope for initial delivery
+- **Slack slash commands** — require a public Request URL; use `!command` prefix instead
+- **Rich Slack UI** (Block Kit buttons, modals) — plain text only
+- **Multi-user / workspace-wide** deployment — single authorized user
+- **Migrating `slack_scanner.py` to `slack_bolt`** — scanner uses `SlackClient` (raw `httpx`), not `slack_bolt`
+- **Threaded Slack replies** — all responses go to the DM as flat messages
+- **MCP / REST adapter** — architecture supports it via `TransportAdapter` but not implemented
+- **Per-transport chat history isolation** — both transports share the same history
+- **Individual `cmd_*` migration to `CommandContext`** — commands use the bridge pattern instead; `chat_handler.py` retains its Telegram-specific internals
 
 ---
 
-## Files to Create / Modify
+## Testing
 
-| File | Change |
-|------|--------|
-| `transport.py` | New — `TransportAdapter` protocol, `CommandContext` dataclass |
-| `command_core.py` | New — `CommandRouter`, all `cmd_*` methods, `COMMAND_REGISTRY` |
-| `telegram_adapter.py` | New — Telegram `TransportAdapter` extracted from `chat_handler.py` |
-| `slack_client.py` | New — `SlackClient` with `api_call`, `resolve_user`, `list_channels`, `post_message` |
-| `slack_adapter.py` | New — `SlackTransportAdapter` using Socket Mode + `SlackClient` |
-| `slack_scanner.py` | Refactor — replace raw `httpx` with `SlackClient`; no functional change |
-| `chat_handler.py` | Refactor — thin shim delegating to `telegram_adapter` + `command_core` |
-| `notification_manager.py` | Refactor — accept `list[TransportAdapter]`, dispatch to all |
-| `daemon.py` | Modify — instantiate adapters from `chat.transports` config |
-| `install.sh` | Modify — add `transport.py`, `command_core.py`, `telegram_adapter.py`, `slack_client.py`, `slack_adapter.py` to `DAEMON_FILES` |
-| `requirements.txt` | Modify — add `slack_sdk>=3.19`, `slack_bolt[async]>=1.18` |
-
----
-
-## Testing Strategy
-
-- **Phase 0**: New `tests/unit/test_command_core.py` — test `CommandRouter` commands via `CommandContext` with a mock `reply` callable. No Telegram or Slack imports needed.
-- **Phase 1**: Existing `tests/unit/test_slack_scanner.py` must pass unchanged. New `tests/unit/test_slack_client.py` tests `SlackClient` with mocked `AsyncWebClient`.
-- **Phase 2**: New `tests/unit/test_slack_adapter.py` tests `_on_message` routing using mocked `CommandRouter`.
-- **Phase 4**: Integration test verifies `NotificationManager` calls `send_text` on both a mock Telegram and mock Slack adapter.
+- `tests/unit/test_command_core.py` — `CommandRouter` routing logic
+- `tests/unit/test_slack_client.py` — `SlackClient` with mocked `httpx` (17 tests)
+- `tests/unit/test_slack_scanner.py` — scanner behavior unchanged after `SlackClient` migration
+- `tests/unit/test_slack_adapter.py` — `_on_message` routing, auth, chunking, channel caching (9 tests)
+- `tests/unit/test_chat_handler.py` — `register_with_router` bridge: completeness, `__message__` handler, args forwarding, auth bypass (5 tests)
+- `tests/integration/test_pipeline.py` — end-to-end scanner memory write with mocked `SlackClient`
