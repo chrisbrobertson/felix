@@ -6,6 +6,12 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Adapter protocol** — `transport.py` defines `TransportAdapter` protocol and `CommandContext` dataclass; any future transport (Slack, MCP, REST) implements this interface without touching command logic
+- **CommandRouter** — `command_core.py` provides a transport-agnostic command dispatcher and moves `COMMAND_REGISTRY` to a single source of truth
+- **TelegramAdapter** — `telegram_adapter.py` wraps `TelegramChatHandler` as a `TransportAdapter`, enabling multi-transport notification dispatch
+- **Multi-transport NotificationManager** — `notification_manager.py` now accepts an optional `transports` list; `send_message` routes to all active adapters when set, falling back to the legacy `bot=` path
+
 ## [1.4.1] — 2026-04-18
 
 ### Fixed
