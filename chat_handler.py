@@ -5980,3 +5980,78 @@ class TelegramChatHandler:
                 await update.message.set_reaction("❌")
             except Exception:
                 pass
+
+    # ── CommandRouter bridge ──────────────────────────────────────────────────
+
+    def register_with_router(self, router) -> None:
+        """Register all cmd_* methods and the LLM chat handler with a CommandRouter.
+
+        Creates lightweight fake Telegram update/context objects so existing
+        cmd_* methods work unchanged over non-Telegram transports (e.g. Slack).
+        Auth is assumed to have been checked at the adapter boundary.
+        """
+        import inspect
+
+        allowed_uid = self.allowed_user_id
+
+        def _make_fake(ctx):
+            """Return (fake_update, fake_context) wired to ctx.reply / ctx.args."""
+
+            class _FakeMessage:
+                def __init__(self):
+                    self.text = ""
+                    self.document = None
+                    self.photo = None
+                    self.chat = _FakeChat()
+
+                async def reply_text(self, text: str, **kwargs) -> None:
+                    await ctx.reply(text)
+
+                async def set_reaction(self, *args, **kwargs) -> None:
+                    pass  # no-op outside Telegram
+
+            class _FakeChat:
+                id = allowed_uid
+
+            class _FakeUser:
+                id = allowed_uid
+
+            class _FakeBot:
+                async def send_chat_action(self, **kwargs) -> None:
+                    pass
+
+                async def send_message(self, *args, **kwargs) -> None:
+                    pass
+
+            class _FakeUpdate:
+                message = _FakeMessage()
+                effective_user = _FakeUser()
+                effective_chat = _FakeChat()
+
+            class _FakeContext:
+                args = list(ctx.args)
+                bot = _FakeBot()
+
+            return _FakeUpdate(), _FakeContext()
+
+        # Register every cmd_* method
+        for attr_name, method in inspect.getmembers(self, predicate=inspect.ismethod):
+            if not attr_name.startswith("cmd_"):
+                continue
+            cmd_name = attr_name[4:]  # strip "cmd_" prefix
+            bound = method
+
+            async def _handler(ctx, _m=bound) -> None:
+                fake_update, fake_context = _make_fake(ctx)
+                await _m(fake_update, fake_context)
+
+            router.register(cmd_name, _handler)
+
+        # Register free-text LLM chat as __message__
+        async def _message_handler(ctx) -> None:
+            fake_update, fake_context = _make_fake(ctx)
+            # Inject the original text so handle_message can read it
+            fake_update.message.text = getattr(ctx, "raw_text", "")
+            await self.handle_message(fake_update, fake_context)
+
+        router.register("__message__", _message_handler)

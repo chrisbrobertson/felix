@@ -120,20 +120,18 @@ class SlackTransportAdapter:
         async def noop_typing() -> None:
             pass
 
-        ctx = CommandContext(
-            args=[],
-            user_id=self._authorized_user_id,
-            reply=reply,
-            send_typing=noop_typing,
-        )
-
         if text.startswith("!"):
             # !command args  →  dispatch_command
             parts = text[1:].split()
             if not parts:
                 return
             command = parts[0].lower()
-            ctx.args = parts[1:]
+            ctx = CommandContext(
+                args=parts[1:],
+                user_id=self._authorized_user_id,
+                reply=reply,
+                send_typing=noop_typing,
+            )
             handled = await self._router.dispatch_command(ctx, command)
             if not handled:
                 await reply(
@@ -142,4 +140,11 @@ class SlackTransportAdapter:
                 )
         else:
             # Free-text → LLM chat
+            ctx = CommandContext(
+                args=[],
+                user_id=self._authorized_user_id,
+                reply=reply,
+                send_typing=noop_typing,
+                raw_text=text,
+            )
             await self._router.handle_message(ctx, text)

@@ -4254,3 +4254,112 @@ async def test_cmd_keep_dismisses_pair(handler, brain_dir, tmp_path):
     assert len(state["candidates"]) == 0
     assert len(state["dismissed"]) == 1
     assert state["dismissed"][0] == candidate
+
+
+# ── register_with_router (Phase 3 bridge) ────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_register_with_router_registers_all_cmd_methods(handler):
+    """register_with_router must register every cmd_* method in the router."""
+    import inspect
+    from command_core import CommandRouter
+
+    router = CommandRouter()
+    handler.register_with_router(router)
+
+    # Every cmd_* method should appear (minus the "cmd_" prefix)
+    expected = {
+        name[4:] for name, _ in inspect.getmembers(handler, predicate=inspect.ismethod)
+        if name.startswith("cmd_")
+    }
+    registered = set(router._cmd_handlers.keys()) - {"__message__"}
+    assert expected == registered
+
+
+@pytest.mark.asyncio
+async def test_register_with_router_registers_message_handler(handler):
+    """register_with_router must register a __message__ handler."""
+    from command_core import CommandRouter
+
+    router = CommandRouter()
+    handler.register_with_router(router)
+
+    assert "__message__" in router._cmd_handlers
+
+
+@pytest.mark.asyncio
+async def test_register_with_router_command_receives_args(handler, brain_dir):
+    """A command dispatched through the router receives ctx.args correctly."""
+    from command_core import CommandRouter
+    from transport import CommandContext
+
+    router = CommandRouter()
+    handler.register_with_router(router)
+
+    replies = []
+
+    async def capture_reply(text: str) -> None:
+        replies.append(text)
+
+    async def noop_typing() -> None:
+        pass
+
+    # /readings with args=["5"] — expects to return a listing
+    with patch.object(ch, "BRAIN_DIR", brain_dir):
+        ctx = CommandContext(args=["5"], user_id="test-user",
+                             reply=capture_reply, send_typing=noop_typing)
+        handled = await router.dispatch_command(ctx, "readings")
+
+    assert handled is True
+    # At least one reply must have been sent
+    assert len(replies) >= 1
+
+
+@pytest.mark.asyncio
+async def test_register_with_router_unknown_command_returns_false(handler):
+    """An unregistered command name returns False from dispatch_command."""
+    from command_core import CommandRouter
+    from transport import CommandContext
+
+    router = CommandRouter()
+    handler.register_with_router(router)
+
+    replies = []
+
+    async def capture_reply(text: str) -> None:
+        replies.append(text)
+
+    async def noop_typing() -> None:
+        pass
+
+    ctx = CommandContext(args=[], user_id="test-user",
+                         reply=capture_reply, send_typing=noop_typing)
+    handled = await router.dispatch_command(ctx, "nonexistent_cmd_xyz")
+    assert handled is False
+    assert replies == []
+
+
+@pytest.mark.asyncio
+async def test_register_with_router_fake_auth_passes(handler):
+    """Fake update always passes _check_auth (auth done at adapter boundary)."""
+    from command_core import CommandRouter
+    from transport import CommandContext
+
+    router = CommandRouter()
+    handler.register_with_router(router)
+
+    replies = []
+
+    async def capture_reply(text: str) -> None:
+        replies.append(text)
+
+    async def noop_typing() -> None:
+        pass
+
+    # Send a command from a different user_id — auth check should still pass
+    # because fake update uses handler.allowed_user_id, not ctx.user_id
+    ctx = CommandContext(args=[], user_id="slack-U9999",
+                         reply=capture_reply, send_typing=noop_typing)
+    handled = await router.dispatch_command(ctx, "version")
+    assert handled is True
+    assert len(replies) >= 1

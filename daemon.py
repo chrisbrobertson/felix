@@ -94,8 +94,11 @@ def _build_slack_adapter(config: dict, chat):
         from slack_adapter import SlackTransportAdapter
         from command_core import CommandRouter
         router = CommandRouter()
-        # Phase 2 stub: no commands registered yet — Slack can only send !help
-        # (Phase 3 migrates TelegramChatHandler commands into CommandRouter)
+        # Phase 3: register all TelegramChatHandler commands with the router via bridge
+        if chat is not None:
+            chat.register_with_router(router)
+            log.info("Slack adapter: registered %d commands from TelegramChatHandler",
+                     len(router._cmd_handlers))
         return SlackTransportAdapter(
             router=router,
             bot_token=bot_token,
@@ -177,9 +180,21 @@ async def main():
         chat = TelegramChatHandler(scanners=scanners_dict)
         await chat.start()
 
-        # Instantiate notification manager and wire up cross-references
+        # ── Slack chat adapter (Phase 3+4) — built before notification_mgr ─────
+        slack_adapter = _build_slack_adapter(config, chat)
+
+        # Instantiate notification manager with all active transports (Phase 4)
         DEPLOY_DIR = deploy_dir  # set at top of main() for _configure_logging
-        notification_mgr = NotificationManager(bot=chat.app.bot, deploy_dir=DEPLOY_DIR)
+        from telegram_adapter import TelegramAdapter
+        tg_adapter = TelegramAdapter(chat)
+        active_transports = [tg_adapter]
+        if slack_adapter is not None:
+            active_transports.append(slack_adapter)
+        notification_mgr = NotificationManager(
+            bot=chat.app.bot,
+            deploy_dir=DEPLOY_DIR,
+            transports=active_transports,
+        )
         chat.notification_manager = notification_mgr
         goal_agent.notification_callback = notification_mgr.send_message
 
@@ -203,9 +218,6 @@ async def main():
             deploy_dir=DEPLOY_DIR,
         )
         chat.report_scheduler = report_scheduler
-
-        # ── Slack chat adapter (Phase 2) ──────────────────────────────────────
-        slack_adapter = _build_slack_adapter(config, chat)
 
         tasks += [
             chat.poll_loop,

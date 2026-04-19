@@ -12,6 +12,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **TelegramAdapter** — `telegram_adapter.py` wraps `TelegramChatHandler` as a `TransportAdapter`, enabling multi-transport notification dispatch
 - **Multi-transport NotificationManager** — `notification_manager.py` now accepts an optional `transports` list; `send_message` routes to all active adapters when set, falling back to the legacy `bot=` path
 - **SlackClient** — `slack_client.py` extracts shared Slack API infrastructure (rate-limit-aware `api_call`, `resolve_user` with cache, `list_channels`, `post_message`) from the scanner into a reusable client; scanner and future chat adapter both use it
+- **Full command bridge (Phase 3)** — `TelegramChatHandler.register_with_router()` wraps all 90+ `cmd_*` methods in fake Telegram objects so every command works over Slack DM without touching existing handlers; `CommandContext.raw_text` added to carry free-text for LLM chat delegation
+- **Multi-transport notifications (Phase 4)** — `daemon.py` now builds a `TelegramAdapter` + optional `SlackTransportAdapter` and passes both to `NotificationManager` at startup; briefings, alerts, and goal notifications are now delivered to both Telegram and Slack simultaneously when both transports are configured
 
 ## [1.4.1] — 2026-04-18
 

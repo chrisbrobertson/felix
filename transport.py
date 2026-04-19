@@ -11,6 +11,7 @@ class CommandContext:
     user_id: str                                         # Transport-specific user identifier
     reply: Callable[[str], Awaitable[None]]              # Send text back to user
     send_typing: Callable[[], Awaitable[None]]           # Show typing indicator (no-op ok)
+    raw_text: str = ""                                   # Original free-text message (non-command)
 
 
 @runtime_checkable
