@@ -173,3 +173,19 @@ async def test_start_accepts_stop_event(adapter):
 
     # start() returned after stop_event fired — connect_async was called once
     mock_handler.connect_async.assert_awaited_once()
+
+
+# ── get_chat_id ───────────────────────────────────────────────────────────────
+
+def test_get_chat_id_returns_none_before_first_message(adapter):
+    assert adapter.get_chat_id() is None
+
+
+@pytest.mark.asyncio
+async def test_get_chat_id_returns_dm_channel_after_first_message(adapter):
+    async def noop(ctx):
+        await ctx.reply("ok")
+    adapter._router.register("ping", noop)
+    event = {"user": "U001", "channel": "D999", "text": "!ping"}
+    await adapter._on_message(event, say=None)
+    assert adapter.get_chat_id() == "D999"

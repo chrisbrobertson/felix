@@ -70,7 +70,7 @@ class TelegramAdapter:
         if bot is None:
             return
         try:
-            from telegram import ChatAction
+            from telegram.constants import ChatAction
             await bot.send_chat_action(chat_id=int(chat_id), action=ChatAction.TYPING)
         except Exception as e:
             log.debug("TelegramAdapter.send_typing failed: %s", e)
@@ -88,7 +88,7 @@ class TelegramAdapter:
             return getattr(app, "bot", None)
         return None
 
-    def get_chat_id(self) -> str | None:
+    def get_chat_id(self) -> "str | None":  # str | None requires Python 3.10+; keep as string annotation
         """Return the authorised user's chat_id as a string, or None."""
         handler = self._handler
         chat_id = getattr(handler, "_chat_id", None)
