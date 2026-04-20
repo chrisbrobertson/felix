@@ -192,7 +192,7 @@ async def test_process_url_adds_to_seen_set(infra):
                side_effect=lambda: mw.MemoryWriter()):
 
         w = bw.BrowserWatcher(role="full")
-        w.seen_urls = set()
+        w.seen_urls = {}  # dict, not set (maintains insertion order for FIFO eviction)
 
         # Bypass HTTP — inject content directly
         async def fake_fetch(url):
@@ -222,7 +222,7 @@ async def test_process_url_skips_short_content(infra):
                side_effect=lambda: mw.MemoryWriter()):
 
         w = bw.BrowserWatcher(role="full")
-        w.seen_urls = set()
+        w.seen_urls = {}  # dict, not set (maintains insertion order for FIFO eviction)
 
         async def fetch_short(url):
             return "short"  # < 500 chars
@@ -282,7 +282,7 @@ async def test_skip_command_persists_and_watcher_ignores_domain(
 
     with patch.object(bw, "SEEN_URLS_FILE", infra["seen"]):
         w = bw.BrowserWatcher(role="full")
-        w.seen_urls = set()
+        w.seen_urls = {}  # dict, not set (maintains insertion order for FIFO eviction)
         should = w._should_process(entry, config)
 
     assert should is False
