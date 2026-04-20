@@ -167,11 +167,15 @@ fi
 echo ""
 if [ -n "$EXISTING_ROLE" ]; then
     ROLE="$EXISTING_ROLE"
-    skip "Role: $ROLE  (from existing config — press Enter to keep, or type to change)"
-    read -r -p "  Role [$ROLE]: " NEW_ROLE
-    [ -n "$NEW_ROLE" ] && ROLE="$NEW_ROLE"
-    [[ "$ROLE" == "full" || "$ROLE" == "watcher" ]] || die "Role must be 'full' or 'watcher'."
-    ok "Role: $ROLE"
+    if [ "$NONINTERACTIVE" = "1" ]; then
+        ok "Role: $ROLE  (from existing config, NONINTERACTIVE)"
+    else
+        skip "Role: $ROLE  (from existing config — press Enter to keep, or type to change)"
+        read -r -p "  Role [$ROLE]: " NEW_ROLE
+        [ -n "$NEW_ROLE" ] && ROLE="$NEW_ROLE"
+        [[ "$ROLE" == "full" || "$ROLE" == "watcher" ]] || die "Role must be 'full' or 'watcher'."
+        ok "Role: $ROLE"
+    fi
 else
     echo "  Deployment role:"
     echo "    watcher  browser watcher only — captures pages you read (laptop)"
@@ -193,8 +197,12 @@ printf "    claude  Claude only (higher quality; no Gemini key needed)\n"
 printf "    both    Prefer Claude, fall back to Gemini on errors (recommended)\n"
 echo ""
 DEFAULT_PROVIDER="${EXISTING_PROVIDER:-both}"
-read -r -p "  Provider [$DEFAULT_PROVIDER]: " PROVIDER
-PROVIDER="${PROVIDER:-$DEFAULT_PROVIDER}"
+if [ "$NONINTERACTIVE" = "1" ]; then
+    PROVIDER="$DEFAULT_PROVIDER"
+else
+    read -r -p "  Provider [$DEFAULT_PROVIDER]: " PROVIDER
+    PROVIDER="${PROVIDER:-$DEFAULT_PROVIDER}"
+fi
 [[ "$PROVIDER" == "gemini" || "$PROVIDER" == "claude" || "$PROVIDER" == "both" ]] \
     || die "Provider must be 'gemini', 'claude', or 'both'."
 ok "Provider: $PROVIDER"
