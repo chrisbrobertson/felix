@@ -22,21 +22,29 @@ FIREFOX_HISTORY = Path.home() / "Library/Application Support/Firefox/Profiles"
 SEEN_URLS_FILE = DEPLOY_DIR / "seen-urls"
 CONFIG_PATH = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain/config.yaml"
 
+# Security (H4): bound seen_urls to prevent unbounded memory/disk growth
+_MAX_SEEN_URLS = 50_000
+
 
 class BrowserWatcher:
     def __init__(self, role: str = "full"):
         self._executor_pool: dict[str, SkillExecutor] = {}
         self._default_executor = SkillExecutor("summarize-webpage", role=role)
         self.writer = MemoryWriter()
-        self.seen_urls: set = self._load_seen_urls()
+        self.seen_urls: dict = self._load_seen_urls()
         # References set by daemon.py after construction
         self.skill_creator = None   # SkillCreator instance
         self.skill_optimizer = None  # SkillOptimizer instance
 
-    def _load_seen_urls(self) -> set:
+    def _load_seen_urls(self) -> dict:
+        """Load seen URLs from file, keeping only the last _MAX_SEEN_URLS entries.
+        Uses dict (not set) to maintain insertion order for FIFO eviction."""
         if SEEN_URLS_FILE.exists():
-            return set(SEEN_URLS_FILE.read_text().splitlines())
-        return set()
+            all_lines = SEEN_URLS_FILE.read_text().splitlines()
+            # Keep only the last N (most recent) URLs
+            recent_lines = all_lines[-_MAX_SEEN_URLS:]
+            return {url: None for url in recent_lines}
+        return {}
 
     def _get_executor(self, skill_name: str) -> SkillExecutor:
         """Return cached SkillExecutor for skill_name, creating it if needed.
@@ -55,10 +63,17 @@ class BrowserWatcher:
             return self._default_executor
 
     def save_seen_urls(self):
-        # Called on shutdown — persists seen set so restarts don't reprocess
+        """Persist seen URLs to disk, evicting oldest entries if over limit."""
         import os as _os
+        # If over limit, keep only the last _MAX_SEEN_URLS (most recent)
+        if len(self.seen_urls) > _MAX_SEEN_URLS:
+            # dict maintains insertion order; keep last N
+            items = list(self.seen_urls.items())[-_MAX_SEEN_URLS:]
+            self.seen_urls = dict(items)
+            log.info(f"Evicted {len(items)} oldest URLs; keeping {_MAX_SEEN_URLS}")
+        # Atomic tmp+rename to prevent partial iCloud sync on crash mid-write
         tmp = SEEN_URLS_FILE.with_suffix(".tmp")
-        tmp.write_text("\n".join(self.seen_urls))
+        tmp.write_text("\n".join(self.seen_urls.keys()))
         _os.rename(tmp, SEEN_URLS_FILE)
         log.info(f"Persisted {len(self.seen_urls)} seen URLs")
 
@@ -229,12 +244,12 @@ class BrowserWatcher:
 
         if not in_probation:
             await self.writer.write(entry, memory_body, depth=depth)
-            self.seen_urls.add(entry["url"])
+            self.seen_urls[entry["url"]] = None
             self.save_seen_urls()
             log.info(f"Memory written: {entry['title'][:60]} [{content_type}, {depth}]")
         else:
             # Still mark as seen so we don't re-process on next cycle
-            self.seen_urls.add(entry["url"])
+            self.seen_urls[entry["url"]] = None
             self.save_seen_urls()
 
     async def backfill(self, days: int) -> dict:
@@ -259,7 +274,7 @@ class BrowserWatcher:
 
             # Remove from seen_urls so _should_process will return True
             if url in self.seen_urls:
-                self.seen_urls.discard(url)
+                del self.seen_urls[url]
 
             # Now check if we should process (domain filter, etc.)
             if not self._should_process(entry, config):

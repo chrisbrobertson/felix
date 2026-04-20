@@ -22,7 +22,7 @@ def watcher(seen_file):
          patch("browser_watcher.SkillExecutor"), \
          patch("browser_watcher.MemoryWriter"):
         w = bw.BrowserWatcher(role="full")
-        w.seen_urls = set()
+        w.seen_urls = {}  # dict, not set (maintains insertion order for FIFO eviction)
         yield w
 
 
@@ -34,7 +34,7 @@ def test_accepts_new_http_url(watcher):
 
 
 def test_rejects_seen_url(watcher):
-    watcher.seen_urls.add("https://example.com/article")
+    watcher.seen_urls["https://example.com/article"] = None
     entry = {"url": "https://example.com/article", "title": "Test"}
     assert watcher._should_process(entry, {}) is False
 
@@ -263,7 +263,7 @@ async def test_fetch_content_returns_none_on_non_200(watcher):
 # --- save_seen_urls / load_seen_urls ---
 
 def test_save_seen_urls_persists_to_file(watcher, seen_file):
-    watcher.seen_urls = {"https://a.com", "https://b.com"}
+    watcher.seen_urls = {"https://a.com": None, "https://b.com": None}
     watcher.save_seen_urls()
     lines = set(seen_file.read_text().splitlines())
     assert lines == {"https://a.com", "https://b.com"}
@@ -285,7 +285,7 @@ def test_load_seen_urls_returns_empty_set_when_file_missing(tmp_path):
          patch("browser_watcher.SkillExecutor"), \
          patch("browser_watcher.MemoryWriter"):
         w = bw.BrowserWatcher(role="full")
-    assert w.seen_urls == set()
+    assert w.seen_urls == {}
 
 
 # --- backfill ---
@@ -293,7 +293,7 @@ def test_load_seen_urls_returns_empty_set_when_file_missing(tmp_path):
 async def test_backfill_reprocesses_urls_in_window(watcher, tmp_path):
     """backfill() removes URLs from seen_urls and calls process_url for each."""
     url = "https://example.com/article"
-    watcher.seen_urls.add(url)
+    watcher.seen_urls[url] = None
 
     db = tmp_path / "History"
     now = datetime.now()
@@ -386,3 +386,65 @@ def test_fetch_recent_urls_cleans_up_temp_files(watcher, tmp_path):
 
     # Temp file should be cleaned up
     assert not temp_db_created.exists()
+
+
+# --- Security (H4): bounded seen_urls ---
+
+def test_seen_urls_loads_only_last_N(tmp_path):
+    """When seen-urls file exceeds _MAX_SEEN_URLS, load keeps only the last N."""
+    seen = tmp_path / "seen"
+    # Write 60,000 URLs
+    lines = [f"https://example.com/{i}" for i in range(60_000)]
+    seen.write_text("\n".join(lines))
+
+    with patch.object(bw, "SEEN_URLS_FILE", seen), \
+         patch.object(bw, "_MAX_SEEN_URLS", 50_000), \
+         patch("browser_watcher.SkillExecutor"), \
+         patch("browser_watcher.MemoryWriter"):
+        w = bw.BrowserWatcher(role="full")
+
+    # Should have loaded only the last 50k
+    assert len(w.seen_urls) == 50_000
+    # The LAST line should be present
+    assert "https://example.com/59999" in w.seen_urls
+    # The FIRST line should NOT be present
+    assert "https://example.com/0" not in w.seen_urls
+
+
+def test_seen_urls_evicts_oldest_on_save(tmp_path):
+    """When seen_urls exceeds _MAX_SEEN_URLS, save keeps only the last N."""
+    seen = tmp_path / "seen"
+
+    with patch.object(bw, "SEEN_URLS_FILE", seen), \
+         patch.object(bw, "_MAX_SEEN_URLS", 50_000), \
+         patch("browser_watcher.SkillExecutor"), \
+         patch("browser_watcher.MemoryWriter"):
+        w = bw.BrowserWatcher(role="full")
+
+        # Add 50,100 URLs (100 over the limit)
+        for i in range(50_100):
+            w.seen_urls[f"https://example.com/{i}"] = None
+
+        # Save should evict the oldest 100
+        w.save_seen_urls()
+
+    # Reload and verify
+    with patch.object(bw, "SEEN_URLS_FILE", seen), \
+         patch.object(bw, "_MAX_SEEN_URLS", 50_000), \
+         patch("browser_watcher.SkillExecutor"), \
+         patch("browser_watcher.MemoryWriter"):
+        w2 = bw.BrowserWatcher(role="full")
+
+    assert len(w2.seen_urls) == 50_000
+    # Oldest 100 should be gone
+    assert "https://example.com/0" not in w2.seen_urls
+    assert "https://example.com/99" not in w2.seen_urls
+    # Newest should be present
+    assert "https://example.com/50099" in w2.seen_urls
+
+
+def test_seen_urls_membership_works_with_dict(watcher):
+    """Verify 'url in seen_urls' still works after changing from set to dict."""
+    watcher.seen_urls["https://example.com"] = None
+    assert "https://example.com" in watcher.seen_urls
+    assert "https://other.com" not in watcher.seen_urls
