@@ -6,6 +6,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-04-19
+
+Security release closing 19 of 20 findings from `specs/security-scan.md` (5 Critical, 4 High, 9 Medium; M3 N/A). See the spec for per-finding commit hashes.
+
 ### Fixed
 - **Install: preserve existing plist secrets on non-interactive deploy** — `install.sh` no longer overwrites existing secrets when prompts receive empty input; added `NONINTERACTIVE=1` env var for scripted deploys; prevents the Phase 3 deploy mishap where piped blank responses wiped SLACK_USER_TOKEN, GITHUB_PAT, and GEMINI_API_KEY
 - **Security (H4) Bound seen_urls to 50k entries** — `browser_watcher.py` `seen_urls` is now a dict (insertion-order) capped at 50,000 entries with FIFO eviction on save; prevents unbounded memory/disk growth after a year of active browsing
