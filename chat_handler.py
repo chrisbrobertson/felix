@@ -1,4 +1,5 @@
 import asyncio
+import fcntl
 import hashlib
 import json
 import logging
@@ -544,22 +545,27 @@ class TelegramChatHandler:
         """Add or remove a domain from browser_watcher.skip_domains in config.yaml.
 
         Returns an error/info string if no change was made, or None on success.
-        Writes atomically to avoid corrupting the iCloud-synced config file.
+        Writes atomically with exclusive flock to serialize concurrent writes.
         """
         config_path = BRAIN_DIR / "config.yaml"
-        config = yaml.safe_load(config_path.read_text())
-        domains = config.setdefault("browser_watcher", {}).setdefault("skip_domains", [])
-        if action == "add":
-            if domain in domains:
-                return f"{domain} is already on the skip list."
-            domains.append(domain)
-        elif action == "remove":
-            if domain not in domains:
-                return f"{domain} was not on the skip list."
-            domains.remove(domain)
-        tmp = config_path.with_suffix(".tmp")
-        tmp.write_text(yaml.dump(config, default_flow_style=False))
-        os.rename(tmp, config_path)
+        # Security (M4): acquire exclusive lock before read-modify-write
+        with open(config_path, "r+") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            config = yaml.safe_load(f.read())
+            domains = config.setdefault("browser_watcher", {}).setdefault("skip_domains", [])
+            if action == "add":
+                if domain in domains:
+                    return f"{domain} is already on the skip list."
+                domains.append(domain)
+            elif action == "remove":
+                if domain not in domains:
+                    return f"{domain} was not on the skip list."
+                domains.remove(domain)
+            # Atomic tmp→rename inside the lock
+            tmp = config_path.with_suffix(".tmp")
+            tmp.write_text(yaml.dump(config, default_flow_style=False))
+            os.rename(tmp, config_path)
+            # flock released on close (end of with block)
         return None
 
     def _url_matches_domain(self, url: str, domain: str) -> bool:
