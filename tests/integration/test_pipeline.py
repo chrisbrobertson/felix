@@ -1609,7 +1609,7 @@ async def test_calendar_scanner_writes_memory_for_event(tmp_path):
          patch.object(cs, "STATE_FILE", state_file), \
          patch.object(cs, "CONFIG_PATH", tmp_path / "config.yaml"), \
          patch.object(CalendarCacheSource, "_find_db_path", return_value=db_path), \
-         patch.object(CalendarCacheSource, "_copy_db", return_value=db_path), \
+         patch.object(CalendarCacheSource, "_copy_db", return_value=(db_path, [])), \
          patch("calendar_scanner.acompletion", new=AsyncMock(
              return_value=MagicMock(
                  choices=[MagicMock(message=MagicMock(

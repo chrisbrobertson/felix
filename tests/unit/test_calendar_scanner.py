@@ -24,7 +24,6 @@ from calendar_scanner import (
     _event_hash,
     _parse_frontmatter,
     CORE_DATA_EPOCH_OFFSET,
-    CALENDAR_CACHE_TMP,
 )
 
 
@@ -193,7 +192,7 @@ def test_events_within_window_included(tmp_path):
     start_date = now - timedelta(days=7)
     end_date = now + timedelta(days=7)
 
-    with patch.object(source, '_copy_db', return_value=db_path):
+    with patch.object(source, '_copy_db', return_value=(db_path, [])):
         events = source.get_events(start_date, end_date, set())
 
     assert len(events) == 1
@@ -242,7 +241,7 @@ def test_events_outside_window_excluded(tmp_path):
     start_date = now - timedelta(days=7)
     end_date = now + timedelta(days=7)
 
-    with patch.object(source, '_copy_db', return_value=db_path):
+    with patch.object(source, '_copy_db', return_value=(db_path, [])):
         events = source.get_events(start_date, end_date, set())
 
     assert len(events) == 0
@@ -290,7 +289,7 @@ def test_declined_events_excluded(tmp_path):
     start_date = now - timedelta(days=7)
     end_date = now + timedelta(days=7)
 
-    with patch.object(source, '_copy_db', return_value=db_path):
+    with patch.object(source, '_copy_db', return_value=(db_path, [])):
         events = source.get_events(start_date, end_date, set())
 
     assert len(events) == 0
@@ -337,7 +336,7 @@ def test_all_day_event_detection(tmp_path):
     start_date = now - timedelta(days=7)
     end_date = now + timedelta(days=7)
 
-    with patch.object(source, '_copy_db', return_value=db_path):
+    with patch.object(source, '_copy_db', return_value=(db_path, [])):
         events = source.get_events(start_date, end_date, set())
 
     assert len(events) == 1
@@ -385,7 +384,7 @@ def test_recurring_event_flag(tmp_path):
     start_date = now - timedelta(days=7)
     end_date = now + timedelta(days=7)
 
-    with patch.object(source, '_copy_db', return_value=db_path):
+    with patch.object(source, '_copy_db', return_value=(db_path, [])):
         events = source.get_events(start_date, end_date, set())
 
     assert len(events) == 1
@@ -435,7 +434,7 @@ def test_attendee_extraction(tmp_path):
     start_date = now - timedelta(days=7)
     end_date = now + timedelta(days=7)
 
-    with patch.object(source, '_copy_db', return_value=db_path):
+    with patch.object(source, '_copy_db', return_value=(db_path, [])):
         events = source.get_events(start_date, end_date, set())
 
     assert len(events) == 1
@@ -486,7 +485,7 @@ def test_skip_calendars_filtered(tmp_path):
     start_date = now - timedelta(days=7)
     end_date = now + timedelta(days=7)
 
-    with patch.object(source, '_copy_db', return_value=db_path):
+    with patch.object(source, '_copy_db', return_value=(db_path, [])):
         events = source.get_events(start_date, end_date, {"birthdays"})
 
     assert len(events) == 0

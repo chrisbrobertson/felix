@@ -7,6 +7,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -157,16 +158,29 @@ class EnvelopeIndexSource(MailDataSource):
 
     def _copy_db(self) -> Path:
         """Copy to /tmp to avoid WAL lock issues while Mail.app is running."""
-        tmp = Path("/tmp") / "second-brain-envelope-index"
+        # Use unpredictable temp path to prevent symlink attacks
+        fd, tmp_path_str = tempfile.mkstemp(prefix="second-brain-", suffix="-envelope-index")
+        os.fchmod(fd, 0o600)
+        os.close(fd)
+        tmp = Path(tmp_path_str)
         try:
             shutil.copy2(str(self._db_path), str(tmp))
             # Also copy WAL/SHM files if present
             for ext in ("-wal", "-shm"):
                 src = self._db_path.with_name(self._db_path.name + ext)
                 if src.exists():
-                    shutil.copy2(str(src), str(tmp.with_name(tmp.name + ext)))
+                    # Create temp files for WAL/SHM with similar unpredictable names
+                    fd_aux, tmp_aux_str = tempfile.mkstemp(prefix="second-brain-", suffix=f"-envelope{ext}")
+                    os.fchmod(fd_aux, 0o600)
+                    os.close(fd_aux)
+                    shutil.copy2(str(src), tmp_aux_str)
         except Exception as e:
             log.warning("Failed to copy Envelope Index: %s", e)
+            # Clean up on failure
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
             raise
         return tmp
 

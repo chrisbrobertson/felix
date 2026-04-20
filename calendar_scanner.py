@@ -8,6 +8,7 @@ import shutil
 import socket
 import sqlite3
 import subprocess
+import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -26,9 +27,6 @@ STATE_FILE = DEPLOY_DIR / "calendar-scanner-state.json"
 # Seconds between 1970-01-01 and 2001-01-01 (Core Data epoch offset)
 CORE_DATA_EPOCH_OFFSET = 978307200
 
-# Calendar Cache temp path
-CALENDAR_CACHE_TMP = Path("/tmp/second-brain-calendar-cache")
-
 # Max events per scan cycle (rate limiting)
 MAX_EVENTS_PER_CYCLE = 50
 
@@ -38,6 +36,14 @@ MAX_STATE_ENTRIES = 5000
 
 def _hostname() -> str:
     return socket.gethostname().split(".")[0]
+
+
+def _make_calendar_cache_tmp() -> Path:
+    """Create an unpredictable temp file for Calendar Cache copy."""
+    fd, tmp_path_str = tempfile.mkstemp(prefix="second-brain-", suffix="-calendar-cache")
+    os.fchmod(fd, 0o600)
+    os.close(fd)
+    return Path(tmp_path_str)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -140,23 +146,43 @@ class CalendarCacheSource(CalendarDataSource):
             return None
         return cls(path)
 
-    def _copy_db(self) -> Path:
-        """Copy to /tmp to avoid WAL lock issues while Calendar.app is running."""
+    def _copy_db(self) -> tuple[Path, list[Path]]:
+        """Copy to /tmp to avoid WAL lock issues while Calendar.app is running.
+
+        Returns (main_db_path, [aux_file_paths]) where aux_file_paths are WAL/SHM copies.
+        """
+        tmp = _make_calendar_cache_tmp()
+        aux_files = []
         try:
-            shutil.copy2(str(self._db_path), str(CALENDAR_CACHE_TMP))
+            shutil.copy2(str(self._db_path), str(tmp))
             # Also copy WAL/SHM files if present
             for ext in ("-wal", "-shm"):
                 src = Path(str(self._db_path) + ext)
                 if src.exists():
-                    shutil.copy2(str(src), str(CALENDAR_CACHE_TMP) + ext)
+                    # Create temp file for WAL/SHM with unpredictable name
+                    fd_aux, tmp_aux_str = tempfile.mkstemp(prefix="second-brain-", suffix=f"-calendar{ext}")
+                    os.fchmod(fd_aux, 0o600)
+                    os.close(fd_aux)
+                    shutil.copy2(str(src), tmp_aux_str)
+                    aux_files.append(Path(tmp_aux_str))
         except Exception as e:
             log.warning("Failed to copy Calendar Cache: %s", e)
+            # Clean up on failure
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            for aux in aux_files:
+                try:
+                    os.unlink(aux)
+                except FileNotFoundError:
+                    pass
             raise
-        return CALENDAR_CACHE_TMP
+        return tmp, aux_files
 
     def get_events(self, start_date: datetime, end_date: datetime, skip_calendars: set):
         """Fetch events from ZCALENDARITEM within date range."""
-        tmp = self._copy_db()
+        tmp, aux_files = self._copy_db()
         try:
             conn = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
             conn.row_factory = None
@@ -242,12 +268,13 @@ class CalendarCacheSource(CalendarDataSource):
         finally:
             try:
                 tmp.unlink()
-                for ext in ("-wal", "-shm"):
-                    tmp_ext = Path(str(tmp) + ext)
-                    if tmp_ext.exists():
-                        tmp_ext.unlink()
             except Exception:
                 pass
+            for aux in aux_files:
+                try:
+                    aux.unlink()
+                except Exception:
+                    pass
 
 
 # ── EventKit (PyObjC) ─────────────────────────────────────────────────────────

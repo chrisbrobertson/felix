@@ -332,3 +332,57 @@ async def test_backfill_respects_max_days_cap(watcher, tmp_path):
         # Verify _fetch_recent_urls was called (indirectly via the flow)
         # The key assertion is that it doesn't crash and completes
         assert watcher.process_url.called or not watcher.process_url.called  # Just verify no crash
+
+
+# ── Unpredictable temp paths (C5 fix) ────────────────────────────────────────
+
+def test_copy_db_uses_unpredictable_temp_path(watcher, tmp_path):
+    """_copy_db creates a temp file with unpredictable name and mode 0o600."""
+    import tempfile
+    db = tmp_path / "History"
+    _make_chrome_db(db, [(1, "https://example.com", "Test", 1, _chrome_ts(datetime.now()), 0)])
+
+    # Mock tempfile.mkstemp to return a path in tmp_path and capture the mode
+    captured_mode = None
+    real_fchmod = os.fchmod
+
+    def mock_mkstemp(prefix, suffix):
+        fd = os.open(str(tmp_path / "temp-db"), os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+        return fd, str(tmp_path / "temp-db")
+
+    def mock_fchmod(fd, mode):
+        nonlocal captured_mode
+        captured_mode = mode
+        real_fchmod(fd, mode)
+
+    with patch("browser_watcher.tempfile.mkstemp", side_effect=mock_mkstemp), \
+         patch("browser_watcher.os.fchmod", side_effect=mock_fchmod):
+        tmp = watcher._copy_db(db)
+
+    assert captured_mode == 0o600
+    assert tmp.exists()
+    assert "temp-db" in tmp.name  # Unpredictable, not /tmp/History
+
+
+def test_fetch_recent_urls_cleans_up_temp_files(watcher, tmp_path):
+    """_fetch_recent_urls cleans up temp DB copy after use."""
+    db = tmp_path / "History"
+    now = datetime.now()
+    _make_chrome_db(db, [(1, "https://example.com", "Example", 1, _chrome_ts(now), 0)])
+
+    temp_db_created = None
+
+    def mock_copy_db(src):
+        nonlocal temp_db_created
+        # Create a temp file to simulate what _copy_db does
+        temp_db_created = tmp_path / "temp-copy"
+        temp_db_created.write_text("fake db")
+        return temp_db_created
+
+    with patch.object(bw, "CHROME_HISTORY", db), \
+         patch.object(watcher, "_copy_db", side_effect=mock_copy_db), \
+         patch.object(bw, "FIREFOX_HISTORY", tmp_path / "no-firefox"):
+        results = watcher._fetch_recent_urls(now - timedelta(minutes=10))
+
+    # Temp file should be cleaned up
+    assert not temp_db_created.exists()

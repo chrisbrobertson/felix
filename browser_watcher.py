@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import tempfile
 import yaml
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -77,9 +78,21 @@ class BrowserWatcher:
 
     def _copy_db(self, src: Path) -> Path:
         # Chrome locks its SQLite DB while running — must copy before reading
-        tmp = Path("/tmp") / src.name
-        shutil.copy2(src, tmp)
-        return tmp
+        # Use unpredictable temp path to prevent symlink attacks
+        fd, tmp_path_str = tempfile.mkstemp(prefix="second-brain-", suffix=f"-{src.name}")
+        os.fchmod(fd, 0o600)
+        os.close(fd)
+        tmp = Path(tmp_path_str)
+        try:
+            shutil.copy2(src, tmp)
+            return tmp
+        except Exception:
+            # Clean up on copy failure
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            raise
 
     def _get_firefox_history_db(self):
         profiles = list(FIREFOX_HISTORY.glob("*.default-release/places.sqlite"))
@@ -91,6 +104,7 @@ class BrowserWatcher:
 
         # Chrome (epoch: 1601-01-01, microseconds)
         if CHROME_HISTORY.exists():
+            tmp = None
             try:
                 tmp = self._copy_db(CHROME_HISTORY)
                 conn = sqlite3.connect(tmp)
@@ -106,11 +120,18 @@ class BrowserWatcher:
                                     "visit_count": visit_count, "browser": "chrome"})
             except Exception as e:
                 log.warning(f"Chrome history read failed: {e}")
+            finally:
+                if tmp:
+                    try:
+                        os.unlink(tmp)
+                    except FileNotFoundError:
+                        pass
 
         # Firefox (epoch: Unix, microseconds)
         ff_db = self._get_firefox_history_db()
         if ff_db:
             cutoff_ff = int(since.timestamp() * 1_000_000)
+            tmp = None
             try:
                 tmp = self._copy_db(ff_db)
                 conn = sqlite3.connect(tmp)
@@ -127,6 +148,12 @@ class BrowserWatcher:
                                     "visit_count": visit_count, "browser": "firefox"})
             except Exception as e:
                 log.warning(f"Firefox history read failed: {e}")
+            finally:
+                if tmp:
+                    try:
+                        os.unlink(tmp)
+                    except FileNotFoundError:
+                        pass
 
         return results
 
