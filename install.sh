@@ -341,6 +341,44 @@ if [ "$ROLE" = "full" ]; then
     fi
 fi
 
+# ── 4e. Store secrets in Keychain ────────────────────────────────────────────
+echo ""
+echo "Storing secrets in macOS Keychain..."
+
+_store_in_keychain() {
+    local key_name="$1"
+    local secret_value="$2"
+    if [ -z "$secret_value" ]; then
+        return
+    fi
+    # Check if already stored
+    if security find-generic-password -a "$USER" -s "secondbrain-${key_name}" -w >/dev/null 2>&1; then
+        # Update if value changed
+        local existing
+        existing="$(security find-generic-password -a "$USER" -s "secondbrain-${key_name}" -w 2>/dev/null || echo '')"
+        if [ "$existing" != "$secret_value" ]; then
+            security delete-generic-password -a "$USER" -s "secondbrain-${key_name}" >/dev/null 2>&1 || true
+            security add-generic-password -U -a "$USER" -s "secondbrain-${key_name}" -w "$secret_value" >/dev/null 2>&1
+            ok "Updated ${key_name} in Keychain"
+        else
+            skip "${key_name} already in Keychain"
+        fi
+    else
+        # Add new
+        security add-generic-password -U -a "$USER" -s "secondbrain-${key_name}" -w "$secret_value" >/dev/null 2>&1
+        ok "Stored ${key_name} in Keychain"
+    fi
+}
+
+[ -n "$GEMINI_KEY" ] && _store_in_keychain "gemini_api_key" "$GEMINI_KEY"
+[ -n "$ANTHROPIC_KEY" ] && _store_in_keychain "anthropic_api_key" "$ANTHROPIC_KEY"
+[ -n "$ZOOM_ACCOUNT_ID" ] && _store_in_keychain "zoom_account_id" "$ZOOM_ACCOUNT_ID"
+[ -n "$ZOOM_CLIENT_ID" ] && _store_in_keychain "zoom_client_id" "$ZOOM_CLIENT_ID"
+[ -n "$ZOOM_CLIENT_SECRET" ] && _store_in_keychain "zoom_client_secret" "$ZOOM_CLIENT_SECRET"
+[ -n "$TELEGRAM_TOKEN" ] && _store_in_keychain "telegram_bot_token" "$TELEGRAM_TOKEN"
+[ -n "$SLACK_USER_TOKEN" ] && _store_in_keychain "slack_user_token" "$SLACK_USER_TOKEN"
+[ -n "$GITHUB_PAT" ] && _store_in_keychain "github_pat" "$GITHUB_PAT"
+
 # ── 5. Deploy directory ───────────────────────────────────────────────────────
 echo ""
 echo "Setting up deploy directory..."
@@ -435,6 +473,7 @@ DAEMON_FILES=(
     project_inference_scanner.py
     goal_project_agent.py
     report_scheduler.py
+    secrets.py
     skill_creator.py
     skill_executor.py
     skill_optimizer.py

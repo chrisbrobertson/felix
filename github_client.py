@@ -4,6 +4,8 @@ import os
 from typing import Optional
 import httpx
 
+from secrets import get_secret_or_env
+
 log = logging.getLogger("github-client")
 
 # Standard labels for feature/bug lifecycle
@@ -29,7 +31,7 @@ class GitHubClient:
     BASE = "https://api.github.com"
 
     def __init__(self, repo: Optional[str] = None, pat: Optional[str] = None):
-        self.pat = pat or os.environ.get("GITHUB_PAT", "")
+        self.pat = pat or get_secret_or_env("github_pat", "GITHUB_PAT") or ""
         self.repo = repo or os.environ.get("GITHUB_REPO", "")
         self._client: Optional[httpx.AsyncClient] = None
 

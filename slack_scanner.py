@@ -12,6 +12,7 @@ from typing import Optional
 import yaml
 
 from llm_routes import resolve
+from secrets import get_secret_or_env
 from slack_client import SlackClient
 
 log = logging.getLogger("slack-scanner")
@@ -357,7 +358,7 @@ class SlackScanner:
             log.debug("Slack scanner skipped (role=%s)", self.role)
             return
 
-        token = os.environ.get("SLACK_USER_TOKEN")
+        token = get_secret_or_env("slack_user_token", "SLACK_USER_TOKEN")
         if not token:
             log.warning("SLACK_USER_TOKEN not set — Slack scanner disabled")
             return

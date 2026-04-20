@@ -22,6 +22,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **O(n×m) memory scan in scoring** — `_find_output_by_slug` read all memory files for every pending row (503 rows × ~1000 files = 503k iCloud reads per pass); `_score_pending_rows` now calls `_build_memory_index()` once per skill to load all memory files into memory, then matches via `_find_output_in_index()` in O(1) per row
 
 ### Added
+- **Security (H2) Keychain-first secret retrieval** — new `secrets.py` module provides `get_secret_or_env(name, env_var)` that reads from macOS Keychain (`secondbrain-{name}` service) first, falling back to environment variables; `install.sh` now stores all API keys and tokens in Keychain automatically; `zoom_scanner.py`, `slack_scanner.py`, and `github_client.py` updated to use Keychain retrieval; env-var fallback remains active so existing deployments continue working without interruption
 - **Adapter protocol** — `transport.py` defines `TransportAdapter` protocol and `CommandContext` dataclass; any future transport (Slack, MCP, REST) implements this interface without touching command logic
 - **CommandRouter** — `command_core.py` provides a transport-agnostic command dispatcher and moves `COMMAND_REGISTRY` to a single source of truth
 - **TelegramAdapter** — `telegram_adapter.py` wraps `TelegramChatHandler` as a `TransportAdapter`, enabling multi-transport notification dispatch

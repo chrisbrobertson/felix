@@ -14,6 +14,7 @@ import httpx
 import yaml
 
 from llm_routes import resolve
+from secrets import get_secret_or_env
 
 log = logging.getLogger("zoom-scanner")
 
@@ -101,9 +102,9 @@ class ZoomScanner:
     # ── OAuth ─────────────────────────────────────────────────────────────────
 
     def _get_credentials(self) -> tuple:
-        account_id = os.environ.get("ZOOM_ACCOUNT_ID", "")
-        client_id = os.environ.get("ZOOM_CLIENT_ID", "")
-        client_secret = os.environ.get("ZOOM_CLIENT_SECRET", "")
+        account_id = get_secret_or_env("zoom_account_id", "ZOOM_ACCOUNT_ID") or ""
+        client_id = get_secret_or_env("zoom_client_id", "ZOOM_CLIENT_ID") or ""
+        client_secret = get_secret_or_env("zoom_client_secret", "ZOOM_CLIENT_SECRET") or ""
         return account_id, client_id, client_secret
 
     async def _acquire_token(self) -> Optional[str]:

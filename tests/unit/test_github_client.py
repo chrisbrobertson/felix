@@ -13,7 +13,8 @@ async def test_enabled_when_pat_and_repo_set():
 
 @pytest.mark.asyncio
 async def test_disabled_when_pat_missing():
-    with patch.dict(os.environ, {}, clear=True):
+    with patch.dict(os.environ, {}, clear=True), \
+         patch("github_client.get_secret_or_env", return_value=None):
         client = GitHubClient(repo="owner/repo")
         assert client.enabled is False
 
