@@ -42,8 +42,9 @@ def _parse_frontmatter(text: str) -> dict:
 
 
 def _stable_commitment_id(source_url: str, description: str, owner: str) -> str:
+    """Generate stable commitment ID using SHA-256 (was SHA-1 through 2026-04-19)."""
     key = f"{source_url}:{description.lower().strip()}:{owner.lower().strip()}"
-    return hashlib.sha1(key.encode()).hexdigest()[:12]
+    return hashlib.sha256(key.encode()).hexdigest()[:12]
 
 
 def _slugify(text: str, max_len: int = 40) -> str:
@@ -417,7 +418,8 @@ class CommitmentTracker:
         source_note: str,
     ) -> Path:
         """Create a commitment file from manual /missed command (FR-12)."""
-        source_url = f"manual:{hashlib.sha1(description.encode()).hexdigest()[:12]}"
+        # SHA-256 for commitment IDs (was SHA-1 through 2026-04-19)
+        source_url = f"manual:{hashlib.sha256(description.encode()).hexdigest()[:12]}"
         stable_id = _stable_commitment_id(source_url, description, owner)
         commitment_path = self._commitment_path(description, stable_id)
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
