@@ -757,3 +757,52 @@ def test_existing_summary_includes_classification(tmp_path):
     assert summary == "Existing summary"
     assert "test" in tags
     assert classification == "automated"
+
+
+# ── AppleScript injection guard (C1 fix) ──────────────────────────────────────
+
+def test_applescript_escape_double_quote():
+    """_applescript_escape escapes double quotes to prevent injection."""
+    escaped = es._applescript_escape('Foo"Bar')
+    assert escaped == 'Foo\\"Bar'
+
+
+def test_applescript_escape_backslash():
+    """_applescript_escape escapes backslashes first to avoid double-escaping."""
+    escaped = es._applescript_escape('Foo\\Bar')
+    assert escaped == 'Foo\\\\Bar'
+
+
+def test_applescript_escape_combined():
+    """_applescript_escape handles backslash + quote in the same string."""
+    escaped = es._applescript_escape('Path: C:\\Program Files\\"App"')
+    assert escaped == 'Path: C:\\\\Program Files\\\\\\"App\\"'
+
+
+def test_applescript_injection_blocked():
+    """Mailbox name containing injection payload is escaped in AppleScript."""
+    source = es.AppleScriptSource()
+    malicious_mailbox = 'Foo"; do shell script "rm -rf ~'
+    excluded = {malicious_mailbox}
+    since = datetime(2026, 4, 1)
+
+    # Call _fetch_messages_raw to generate the AppleScript
+    # We'll mock _run_osascript to capture the script
+    captured_script = None
+
+    def capture_osascript(script):
+        nonlocal captured_script
+        captured_script = script
+        return ""
+
+    with patch.object(source, "_run_osascript", side_effect=capture_osascript):
+        source._fetch_messages_raw(since, excluded)
+
+    # The mailbox name should appear escaped in the script
+    assert captured_script is not None
+    # After .title() the malicious string becomes 'Foo"; Do Shell Script "Rm -Rf ~'
+    # With escaping applied first, it becomes 'Foo\"; Do Shell Script \"Rm -Rf ~'
+    # Check that backslashes are present before the double-quotes
+    assert 'Foo\\"; Do Shell Script \\"Rm -Rf ~' in captured_script
+    # Ensure the unescaped version (with .title() applied) is NOT in the script
+    assert 'Foo"; Do Shell Script "Rm -Rf ~' not in captured_script

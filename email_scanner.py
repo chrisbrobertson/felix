@@ -25,6 +25,16 @@ STATE_FILE = DEPLOY_DIR / "email-scanner-state.json"
 # Seconds between 1970-01-01 and 2001-01-01 (Core Data epoch offset)
 CORE_DATA_EPOCH_OFFSET = 978307200
 
+def _applescript_escape(s: str) -> str:
+    """Escape a string for safe interpolation into AppleScript string literals.
+
+    AppleScript string literals use backslash escaping like C:
+    - Backslash must be escaped first (to avoid double-escaping)
+    - Double-quote must be escaped
+    """
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
 # RE:/FW: prefix patterns to strip for subject normalization
 _RE_FW_PATTERN = re.compile(
     r'^(re|fw|fwd|aw|r|sv|vs|antw)\s*:\s*',
@@ -329,7 +339,7 @@ class AppleScriptSource(MailDataSource):
     def _fetch_messages_raw(self, since: datetime, excluded_mailboxes: set) -> str:
         since_str = since.strftime("%m/%d/%Y %H:%M:%S")
         exclude_check = " and ".join(
-            f'mbName is not "{mb.title()}"'
+            f'mbName is not "{_applescript_escape(mb.title())}"'
             for mb in sorted(excluded_mailboxes)[:8]  # AppleScript has string length limits
         ) or "true"
 
