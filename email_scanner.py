@@ -290,8 +290,8 @@ class EnvelopeIndexSource(MailDataSource):
         finally:
             try:
                 tmp.unlink()
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("Failed to unlink tmp SQLite copy: %s", tmp, exc_info=True)
         return self._rows_to_threads(rows, excluded_mailboxes)
 
     def get_threads_updated_since(self, since: datetime, high_water_rowid: int, excluded_mailboxes: set):
@@ -308,8 +308,8 @@ class EnvelopeIndexSource(MailDataSource):
         finally:
             try:
                 tmp.unlink()
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("Failed to unlink tmp SQLite copy: %s", tmp, exc_info=True)
         return self._rows_to_threads(rows, excluded_mailboxes)
 
 
@@ -506,8 +506,8 @@ class EmailScanner:
         if STATE_FILE.exists():
             try:
                 return json.loads(STATE_FILE.read_text())
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("Failed to load state file, using defaults", exc_info=True)
         return {"high_water_rowid": 0, "last_scan_time": None, "data_source": None}
 
     def _save_state(self, state: dict):
@@ -795,8 +795,8 @@ class EmailScanner:
             log.exception("Failed to write %s", memory_path)
             try:
                 tmp_path.unlink()
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("Failed to unlink tmp memory file: %s", tmp_path, exc_info=True)
 
     async def backfill(self, days: int) -> dict:
         """Reprocess email threads from the last N days (max 90). Returns dict with counts."""
