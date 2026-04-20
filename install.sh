@@ -504,6 +504,7 @@ if os.environ.get('TELEGRAM_USER_ID'):
     text = text.replace('YOUR_TELEGRAM_USER_ID', os.environ['TELEGRAM_USER_ID'])
 open(path, 'w').write(text)
 PYEOF
+    chmod 600 "$CONFIG_DEST"
     ok "Created $CONFIG_DEST"
 fi
 
@@ -556,6 +557,7 @@ router_settings:
     - summarize: [local]
     - chat: [local]
 LITELLM_EOF
+    chmod 600 "$LITELLM_CONFIG"
     ok "Created $LITELLM_CONFIG"
 fi
 
@@ -620,6 +622,7 @@ if [ -f "$PLIST_DEST" ] && cmp -s "$PLIST_TMP" "$PLIST_DEST"; then
     rm "$PLIST_TMP"
 else
     mv "$PLIST_TMP" "$PLIST_DEST"
+    chmod 600 "$PLIST_DEST"
     ok "Wrote $PLIST_DEST"
     PLIST_CHANGED=true
 fi
