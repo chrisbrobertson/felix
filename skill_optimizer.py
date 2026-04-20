@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -19,6 +20,22 @@ BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-b
 SKILLS_DIR = BRAIN_DIR / "skills"
 MEMORIES_DIR = BRAIN_DIR / "memories"
 DEPLOY_DIR = Path.home() / "secondbrain"
+
+
+def update_skill_checksum(skill_path: Path) -> None:
+    """Rewrite the checksum for skill_path in the manifest. Called after a successful rewrite."""
+    checksum_file = DEPLOY_DIR / "skill-checksums.json"
+    if not checksum_file.exists():
+        return
+    try:
+        manifest = json.loads(checksum_file.read_text())
+    except Exception:
+        return
+    skill_name = skill_path.stem
+    manifest[skill_name] = hashlib.sha256(skill_path.read_bytes()).hexdigest()
+    tmp = checksum_file.with_suffix(".tmp")
+    tmp.write_text(json.dumps(manifest, indent=2))
+    tmp.rename(checksum_file)
 
 
 class SkillOptimizer:
@@ -845,6 +862,8 @@ Respond with JSON only:
 
         # Write
         self._atomic_write(skill_path, new_text)
+        # Update checksum manifest after successful rewrite
+        update_skill_checksum(skill_path)
         log.info(f"Optimized {skill_name} — new version {new_fm['version']}")
 
     async def _rotate_backups(self, skill_path: Path):

@@ -32,6 +32,8 @@ log = logging.getLogger("skill-executor")
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
 SKILLS_DIR = BRAIN_DIR / "skills"
+DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
+_CHECKSUM_FILE = DEPLOY_DIR / "skill-checksums.json"
 
 # Security (C2): Untrusted input delimiters
 # Skill inputs contain external content (webpages, emails, slack threads, VTT transcripts).
@@ -51,6 +53,28 @@ def _format_inputs(inputs: dict) -> str:
     return "\n".join(parts)
 
 
+def _verify_skill_checksum(skill_name: str, content: bytes) -> bool:
+    """Check skill file against stored checksum. Returns True if match or no checksum stored."""
+    if not _CHECKSUM_FILE.exists():
+        return True  # no manifest yet, allow
+    try:
+        manifest = json.loads(_CHECKSUM_FILE.read_text())
+    except Exception:
+        log.warning("Could not read skill checksum manifest; allowing load")
+        return True
+    expected = manifest.get(skill_name)
+    if expected is None:
+        return True  # not in manifest, allow
+    actual = hashlib.sha256(content).hexdigest()
+    if actual != expected:
+        log.warning(
+            "Skill %s checksum mismatch (expected %s, got %s) — refusing to execute",
+            skill_name, expected[:12], actual[:12]
+        )
+        return False
+    return True
+
+
 class SkillExecutor:
     def __init__(self, skill_name: str, role: str = "full"):
         self.skill_name = skill_name
@@ -60,7 +84,10 @@ class SkillExecutor:
         self._mtime = self.skill_path.stat().st_mtime if self.skill_path.exists() else 0
 
     def _load(self) -> dict:
-        text = self.skill_path.read_text()
+        file_bytes = self.skill_path.read_bytes()
+        if not _verify_skill_checksum(self.skill_name, file_bytes):
+            raise RuntimeError(f"Skill {self.skill_name} failed checksum verification")
+        text = file_bytes.decode('utf-8')
         parts = text.split("---", 2)
         meta = yaml.safe_load(parts[1])
         body = parts[2]

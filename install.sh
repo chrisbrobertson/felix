@@ -566,6 +566,31 @@ echo "Applying LLM provider preference to skill files..."
 PROVIDER="$PROVIDER" "$VENV/bin/python3" "$REPO_DIR/scripts/apply_skill_provider.py" \
     "$BRAIN_DIR/skills"
 
+# ── 12c. Generate skill file checksums ───────────────────────────────────────
+echo ""
+echo "Generating skill file checksums..."
+CHECKSUM_FILE="$DEPLOY_DIR/skill-checksums.json"
+"$VENV/bin/python3" - "$BRAIN_DIR/skills" "$CHECKSUM_FILE" << 'PYEOF'
+import json
+import hashlib
+import sys
+from pathlib import Path
+
+skills_dir = Path(sys.argv[1])
+checksum_file = Path(sys.argv[2])
+manifest = {}
+
+for skill_file in skills_dir.glob('*.md'):
+    skill_name = skill_file.stem
+    manifest[skill_name] = hashlib.sha256(skill_file.read_bytes()).hexdigest()
+
+tmp = checksum_file.with_suffix('.tmp')
+tmp.write_text(json.dumps(manifest, indent=2))
+tmp.rename(checksum_file)
+print(f"  ✓  Wrote skill checksums ({len(manifest)} skills)")
+PYEOF
+chmod 600 "$CHECKSUM_FILE"
+
 # ── 13. LiteLLM config ────────────────────────────────────────────────────────
 echo ""
 echo "Setting up LiteLLM config..."

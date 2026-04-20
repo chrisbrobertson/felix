@@ -1160,3 +1160,85 @@ async def test_rewrite_missing_instructions_logs_preview(optimizer, skills_dir, 
     assert result is None
     assert any("missing Instructions section" in r.message for r in caplog.records)
     assert any("response preview" in r.message for r in caplog.records)
+
+
+# --- Checksum update after rewrite (M6) ---
+
+async def test_rewrite_updates_skill_checksum(tmp_path):
+    """Checksum manifest is updated after successful skill rewrite."""
+    import hashlib
+    from unittest.mock import AsyncMock, patch, MagicMock
+    import json
+    import asyncio
+    import skill_optimizer as so
+    
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+    
+    skill_content = """\
+---
+name: test-skill
+version: 1
+preferred_model: gemini/gemini-2.0-flash
+success_rate: 0.5
+---
+
+## Instructions
+
+Old instructions.
+
+## Execution History
+
+| date | input_slug | model | score | notes |
+|------|-----------|-------|-------|-------|
+| 2026-01-01 | test-abc123 | gemini/gemini-2.0-flash | 0.3 | |
+| 2026-01-02 | test-def456 | gemini/gemini-2.0-flash | 0.4 | |
+"""
+    skill_path = skills_dir / "test-skill.md"
+    skill_path.write_text(skill_content)
+    
+    # Create initial checksum manifest
+    old_checksum = hashlib.sha256(skill_content.encode()).hexdigest()
+    manifest = {"test-skill": old_checksum}
+    checksum_file = deploy_dir / "skill-checksums.json"
+    checksum_file.write_text(json.dumps(manifest, indent=2))
+    
+    # Prepare optimizer
+    optimizer = so.SkillOptimizer({})
+    
+    # Mock the critique and rewrite methods directly
+    mock_critique = {"root_cause": "too vague", "failure_patterns": ["p1"], "suggested_focus": "be specific"}
+    
+    new_skill_text = """\
+---
+name: test-skill
+version: 2
+preferred_model: gemini/gemini-2.0-flash
+success_rate: 0.5
+---
+
+## Instructions
+
+New improved instructions that are more specific.
+"""
+    
+    with patch.object(so, "SKILLS_DIR", skills_dir), \
+         patch.object(so, "DEPLOY_DIR", deploy_dir), \
+         patch.object(optimizer, "_generate_critique", new=AsyncMock(return_value=mock_critique)), \
+         patch.object(optimizer, "_rewrite_skill", new=AsyncMock(return_value=new_skill_text)), \
+         patch.object(optimizer, "_add_auto_exemplars", new=AsyncMock(return_value=new_skill_text)):
+        await optimizer._optimize_skill(skill_path, asyncio.Event())
+    
+    # Read the updated checksum manifest
+    updated_manifest = json.loads(checksum_file.read_text())
+    new_checksum = updated_manifest["test-skill"]
+    
+    # Checksum should have changed
+    assert new_checksum != old_checksum
+    
+    # New checksum should match the rewritten skill file
+    rewritten_bytes = skill_path.read_bytes()
+    expected_checksum = hashlib.sha256(rewritten_bytes).hexdigest()
+    assert new_checksum == expected_checksum

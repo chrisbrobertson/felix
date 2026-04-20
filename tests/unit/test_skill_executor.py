@@ -595,3 +595,74 @@ async def test_run_original_skill_instructions_unchanged(executor_full):
     assert original_instructions in system_msg
     # System message should also contain the untrusted input warning prefix
     assert "untrusted-input" in system_msg.lower()
+
+# --- Checksum verification (M6) ---
+
+def test_skill_load_succeeds_when_checksum_matches(skills_dir, tmp_path):
+    """Skill loads successfully when checksum in manifest matches."""
+    import hashlib
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+    
+    skill_file = skills_dir / "summarize-webpage.md"
+    skill_bytes = skill_file.read_bytes()
+    checksum = hashlib.sha256(skill_bytes).hexdigest()
+    
+    manifest = {"summarize-webpage": checksum}
+    checksum_file = deploy_dir / "skill-checksums.json"
+    checksum_file.write_text(json.dumps(manifest))
+    
+    with patch.object(se, "SKILLS_DIR", skills_dir), \
+         patch.object(se, "_CHECKSUM_FILE", checksum_file):
+        executor = se.SkillExecutor("summarize-webpage", role="full")
+    
+    # Should load without error
+    assert "long-term memory entry" in executor._skill["instructions"]
+
+
+def test_skill_load_fails_when_checksum_mismatches(skills_dir, tmp_path):
+    """Skill load raises RuntimeError when checksum doesn't match."""
+    import hashlib
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+    
+    # Store a different checksum
+    manifest = {"summarize-webpage": "0" * 64}
+    checksum_file = deploy_dir / "skill-checksums.json"
+    checksum_file.write_text(json.dumps(manifest))
+    
+    with patch.object(se, "SKILLS_DIR", skills_dir), \
+         patch.object(se, "_CHECKSUM_FILE", checksum_file):
+        with pytest.raises(RuntimeError, match="failed checksum verification"):
+            se.SkillExecutor("summarize-webpage", role="full")
+
+
+def test_skill_load_succeeds_when_no_manifest(skills_dir, tmp_path):
+    """Skill loads when checksum manifest file doesn't exist."""
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+    checksum_file = deploy_dir / "skill-checksums.json"
+    # File does not exist
+    
+    with patch.object(se, "SKILLS_DIR", skills_dir), \
+         patch.object(se, "_CHECKSUM_FILE", checksum_file):
+        executor = se.SkillExecutor("summarize-webpage", role="full")
+    
+    assert "long-term memory entry" in executor._skill["instructions"]
+
+
+def test_skill_load_succeeds_when_skill_not_in_manifest(skills_dir, tmp_path):
+    """Skill loads when manifest exists but doesn't include this skill."""
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir()
+    
+    # Manifest has other skills but not this one
+    manifest = {"other-skill": "abc123"}
+    checksum_file = deploy_dir / "skill-checksums.json"
+    checksum_file.write_text(json.dumps(manifest))
+    
+    with patch.object(se, "SKILLS_DIR", skills_dir), \
+         patch.object(se, "_CHECKSUM_FILE", checksum_file):
+        executor = se.SkillExecutor("summarize-webpage", role="full")
+    
+    assert "long-term memory entry" in executor._skill["instructions"]
