@@ -7,6 +7,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- **Security (C2) Prompt injection guard for skill inputs** — `skill_executor.py` now wraps each value in the `inputs` dict with `<untrusted-input name="...">…</untrusted-input>` delimiters and prepends a system-message note telling the model to treat tagged content as data, not instructions; closes the remaining prompt-injection surface (chat context was already protected in v1.4.1).
 - **Security (C3) SSRF guard** — `content_fetcher.py` now validates URLs before fetching to block private IPs (127.0.0.1, 10.0.0.0/8, 169.254.0.0/16, etc.), non-HTTP schemes (file://, gopher://), and DNS resolution failures; prevents SSRF attacks against internal network resources
 - **Security (C4) Zoom token in Authorization header** — `zoom_scanner.py` now passes the OAuth bearer token via `Authorization: Bearer` header instead of `?access_token=` URL query parameter when downloading recording files; prevents token exposure in server logs and HTTP Referer headers
 - **Security (C1) AppleScript injection guard** — `email_scanner.py` now escapes double-quotes and backslashes in mailbox names from config before interpolating into AppleScript string literals; prevents arbitrary code execution via malicious mailbox names in excluded_mailboxes config
