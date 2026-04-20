@@ -2,7 +2,11 @@
 # install.sh — idempotent setup for second-brain on a new machine
 # Safe to run multiple times. Reads existing configuration and skips
 # steps that are already up to date.
+#
+# NONINTERACTIVE=1 ./install.sh — skip all prompts, use existing values
 set -euo pipefail
+
+NONINTERACTIVE="${NONINTERACTIVE:-0}"
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_DIR="$HOME/secondbrain"
@@ -208,10 +212,18 @@ if [ "$PROVIDER" != "claude" ]; then
     elif [ -n "$EXISTING_GEMINI_KEY" ]; then
         ok "Gemini API key (from existing config)"
         GEMINI_KEY="$EXISTING_GEMINI_KEY"
+    elif [ "$NONINTERACTIVE" = "1" ]; then
+        die "NONINTERACTIVE mode requires existing Gemini API key or GEMINI_API_KEY env var"
     else
         echo "  Get one at: https://aistudio.google.com/app/apikey"
         read -r -p "  Gemini API key: " GEMINI_KEY
-        [ -z "$GEMINI_KEY" ] && die "Gemini API key is required for provider '$PROVIDER'."
+        # Preserve existing value if user presses Enter with no input
+        if [ -z "$GEMINI_KEY" ] && [ -n "$EXISTING_GEMINI_KEY" ]; then
+            GEMINI_KEY="$EXISTING_GEMINI_KEY"
+            ok "Gemini API key (kept existing)"
+        elif [ -z "$GEMINI_KEY" ]; then
+            die "Gemini API key is required for provider '$PROVIDER'."
+        fi
     fi
 fi
 
@@ -223,10 +235,18 @@ if [ "$PROVIDER" != "gemini" ]; then
     elif [ -n "$EXISTING_ANTHROPIC_KEY" ]; then
         ok "Anthropic API key (from existing config)"
         ANTHROPIC_KEY="$EXISTING_ANTHROPIC_KEY"
+    elif [ "$NONINTERACTIVE" = "1" ]; then
+        die "NONINTERACTIVE mode requires existing Anthropic API key or ANTHROPIC_API_KEY env var"
     else
         echo "  Get one at: https://console.anthropic.com/"
         read -r -p "  Anthropic API key: " ANTHROPIC_KEY
-        [ -z "$ANTHROPIC_KEY" ] && die "Anthropic API key is required for provider '$PROVIDER'."
+        # Preserve existing value if user presses Enter with no input
+        if [ -z "$ANTHROPIC_KEY" ] && [ -n "$EXISTING_ANTHROPIC_KEY" ]; then
+            ANTHROPIC_KEY="$EXISTING_ANTHROPIC_KEY"
+            ok "Anthropic API key (kept existing)"
+        elif [ -z "$ANTHROPIC_KEY" ]; then
+            die "Anthropic API key is required for provider '$PROVIDER'."
+        fi
     fi
 fi
 
@@ -243,6 +263,12 @@ if [ "$ROLE" = "full" ]; then
     elif [ -n "${ZOOM_ACCOUNT_ID:-}" ] && [ -n "${ZOOM_CLIENT_ID:-}" ]; then
         ok "Zoom credentials (from environment)"
         ZOOM_CLIENT_SECRET="${ZOOM_CLIENT_SECRET:-}"
+    elif [ "$NONINTERACTIVE" = "1" ]; then
+        # Optional in NONINTERACTIVE: use existing or leave empty
+        ZOOM_ACCOUNT_ID="${EXISTING_ZOOM_ACCOUNT_ID:-}"
+        ZOOM_CLIENT_ID="${EXISTING_ZOOM_CLIENT_ID:-}"
+        ZOOM_CLIENT_SECRET="${EXISTING_ZOOM_CLIENT_SECRET:-}"
+        [ -n "$ZOOM_ACCOUNT_ID" ] && ok "Zoom credentials (from existing config)" || skip "Zoom credentials skipped (NONINTERACTIVE)"
     else
         echo ""
         echo "Zoom (optional — leave blank to skip Zoom transcript scanning)"
@@ -251,7 +277,13 @@ if [ "$ROLE" = "full" ]; then
         echo "  Required scopes: recording:read:admin, meeting:read:admin, user:read:admin"
         echo ""
         read -r -p "  Zoom Account ID (Enter to skip): " ZOOM_ACCOUNT_ID
-        if [ -n "$ZOOM_ACCOUNT_ID" ]; then
+        # Preserve existing on empty input
+        if [ -z "$ZOOM_ACCOUNT_ID" ] && [ -n "$EXISTING_ZOOM_ACCOUNT_ID" ]; then
+            ZOOM_ACCOUNT_ID="$EXISTING_ZOOM_ACCOUNT_ID"
+            ZOOM_CLIENT_ID="$EXISTING_ZOOM_CLIENT_ID"
+            ZOOM_CLIENT_SECRET="$EXISTING_ZOOM_CLIENT_SECRET"
+            ok "Zoom credentials (kept existing)"
+        elif [ -n "$ZOOM_ACCOUNT_ID" ]; then
             read -r -p "  Zoom Client ID: " ZOOM_CLIENT_ID
             read -r -p "  Zoom Client Secret: " ZOOM_CLIENT_SECRET
             ok "Zoom credentials configured"
@@ -270,6 +302,8 @@ if [ "$ROLE" = "full" ]; then
         ok "Telegram user ID: $EXISTING_TELEGRAM_USER_ID (from existing config)"
         TELEGRAM_TOKEN="$EXISTING_TELEGRAM_TOKEN"
         TELEGRAM_USER_ID="$EXISTING_TELEGRAM_USER_ID"
+    elif [ "$NONINTERACTIVE" = "1" ]; then
+        die "NONINTERACTIVE mode requires existing Telegram credentials for full role"
     else
         echo ""
         echo "Telegram"
@@ -278,9 +312,20 @@ if [ "$ROLE" = "full" ]; then
         echo "  User ID:    message @userinfobot"
         echo ""
         read -r -p "  Bot token: " TELEGRAM_TOKEN
-        [ -z "$TELEGRAM_TOKEN" ] && die "Telegram bot token is required for the full role."
+        # Preserve existing if empty input
+        if [ -z "$TELEGRAM_TOKEN" ] && [ -n "$EXISTING_TELEGRAM_TOKEN" ]; then
+            TELEGRAM_TOKEN="$EXISTING_TELEGRAM_TOKEN"
+            ok "Telegram bot token (kept existing)"
+        elif [ -z "$TELEGRAM_TOKEN" ]; then
+            die "Telegram bot token is required for the full role."
+        fi
         read -r -p "  Your numeric user ID: " TELEGRAM_USER_ID
-        [ -z "$TELEGRAM_USER_ID" ] && die "Telegram user ID is required for the full role."
+        if [ -z "$TELEGRAM_USER_ID" ] && [ -n "$EXISTING_TELEGRAM_USER_ID" ]; then
+            TELEGRAM_USER_ID="$EXISTING_TELEGRAM_USER_ID"
+            ok "Telegram user ID (kept existing)"
+        elif [ -z "$TELEGRAM_USER_ID" ]; then
+            die "Telegram user ID is required for the full role."
+        fi
     fi
 fi
 
@@ -298,6 +343,10 @@ if [ "$FORCE_SLACK_PROMPT" = "false" ] && [ -n "$EXISTING_SLACK_USER_TOKEN" ]; t
     SLACK_USER_TOKEN="$EXISTING_SLACK_USER_TOKEN"
 elif [ "$FORCE_SLACK_PROMPT" = "false" ] && [ -n "${SLACK_USER_TOKEN:-}" ]; then
     ok "Slack user token (from environment)"
+elif [ "$NONINTERACTIVE" = "1" ]; then
+    # Optional in NONINTERACTIVE: use existing or leave empty
+    SLACK_USER_TOKEN="${EXISTING_SLACK_USER_TOKEN:-}"
+    [ -n "$SLACK_USER_TOKEN" ] && ok "Slack user token (from existing config)" || skip "Slack credentials skipped (NONINTERACTIVE)"
 else
     echo ""
     echo "Slack (optional — leave blank to skip Slack thread scanning)"
@@ -307,7 +356,11 @@ else
     echo "                        groups:read, users:read"
     echo ""
     read -r -p "  Slack User Token (xoxp-..., Enter to skip): " SLACK_USER_TOKEN
-    if [ -n "$SLACK_USER_TOKEN" ]; then
+    # Preserve existing on empty input
+    if [ -z "$SLACK_USER_TOKEN" ] && [ -n "$EXISTING_SLACK_USER_TOKEN" ]; then
+        SLACK_USER_TOKEN="$EXISTING_SLACK_USER_TOKEN"
+        ok "Slack user token (kept existing)"
+    elif [ -n "$SLACK_USER_TOKEN" ]; then
         ok "Slack credentials configured"
     else
         skip "Slack credentials skipped — thread scanning disabled"
@@ -324,6 +377,11 @@ if [ "$ROLE" = "full" ]; then
         GITHUB_REPO="$EXISTING_GITHUB_REPO"
     elif [ -n "${GITHUB_PAT:-}" ] && [ -n "${GITHUB_REPO:-}" ]; then
         ok "GitHub credentials (from environment)"
+    elif [ "$NONINTERACTIVE" = "1" ]; then
+        # Optional in NONINTERACTIVE: use existing or leave empty
+        GITHUB_PAT="${EXISTING_GITHUB_PAT:-}"
+        GITHUB_REPO="${EXISTING_GITHUB_REPO:-}"
+        [ -n "$GITHUB_PAT" ] && ok "GitHub credentials (from existing config)" || skip "GitHub credentials skipped (NONINTERACTIVE)"
     else
         echo ""
         echo "GitHub (optional — leave blank to keep using local files)"
@@ -332,7 +390,12 @@ if [ "$ROLE" = "full" ]; then
         echo "  Required scope: repo (full control of private repositories)"
         echo ""
         read -r -p "  Personal access token with 'repo' scope (Enter to skip): " GITHUB_PAT
-        if [ -n "$GITHUB_PAT" ]; then
+        # Preserve existing on empty input
+        if [ -z "$GITHUB_PAT" ] && [ -n "$EXISTING_GITHUB_PAT" ]; then
+            GITHUB_PAT="$EXISTING_GITHUB_PAT"
+            GITHUB_REPO="$EXISTING_GITHUB_REPO"
+            ok "GitHub credentials (kept existing)"
+        elif [ -n "$GITHUB_PAT" ]; then
             read -r -p "  Repository (owner/name, e.g. chrisrobertson/secondbrain): " GITHUB_REPO
             ok "GitHub credentials configured"
         else
