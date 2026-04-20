@@ -950,3 +950,37 @@ async def test_watcher_role_skips_zoom_scanner_updated():
         await scanner.run_loop(stop_event)
 
     mock_scan.assert_not_called()
+
+
+# ── Authorization header (C4 fix) ─────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_download_transcript_uses_auth_header_not_query_param():
+    """_download_transcript passes token via Authorization header, not URL param."""
+    scanner = ZoomScanner(role="full")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = "WEBVTT\n\n1\n00:00:00.000 --> 00:00:05.000\nTest text"
+
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=None)
+    mock_client.get = AsyncMock(return_value=mock_resp)
+
+    with patch.object(scanner, "_get_token", new=AsyncMock(return_value="test-token")), \
+         patch("zoom_scanner.httpx.AsyncClient", return_value=mock_client):
+        vtt = await scanner._download_transcript("https://zoom.us/rec/download/xyz")
+
+    # Assert the httpx get was called
+    assert mock_client.get.called
+    call_args = mock_client.get.call_args
+
+    # Check that Authorization header is present
+    assert "headers" in call_args.kwargs
+    assert call_args.kwargs["headers"]["Authorization"] == "Bearer test-token"
+
+    # Check that access_token is NOT in query params
+    assert "params" not in call_args.kwargs or "access_token" not in call_args.kwargs.get("params", {})
+
+    assert vtt is not None

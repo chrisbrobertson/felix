@@ -801,10 +801,11 @@ class ZoomScanner:
         if not token:
             return None
         try:
+            headers = {"Authorization": f"Bearer {token}"}
             async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
                 resp = await client.get(
                     download_url,
-                    params={"access_token": token},
+                    headers=headers,
                 )
                 if resp.status_code == 429:
                     retry_after = int(resp.headers.get("Retry-After", 60))
@@ -812,7 +813,7 @@ class ZoomScanner:
                     await asyncio.sleep(retry_after)
                     resp = await client.get(
                         download_url,
-                        params={"access_token": token},
+                        headers=headers,
                     )
                 resp.raise_for_status()
                 return resp.text
