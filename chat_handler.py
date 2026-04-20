@@ -25,7 +25,8 @@ log = logging.getLogger("chat-handler")
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
 DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
-MAX_CONTEXT_CHARS = 80_000
+MAX_CONTEXT_CHARS = 80_000  # Deprecated; kept for fallback only
+MAX_CONTEXT_TOKENS = 150_000  # Security (M9): token-aware budget (75% of 200k context window)
 TG_MAX_CHARS = 4096  # Telegram hard limit per message
 
 # COMMAND_REGISTRY is the single source of truth for all commands.
@@ -484,24 +485,29 @@ class TelegramChatHandler:
         return "\n".join(lines) if lines else ""
 
     def _load_context(self, query: str, history: list = None) -> str:
-        """Load memory files into context with relevance sorting and hard char budget."""
+        """Load memory files into context with relevance sorting and token-aware budget."""
         parts = []
-        budget = MAX_CONTEXT_CHARS
+        budget_tokens = MAX_CONTEXT_TOKENS
+        total_tokens = 0
 
         index_path = BRAIN_DIR / "index.md"
         if index_path.exists():
             try:
                 chunk = f"# Memory Index\n{index_path.read_text()}"
+                chunk_tokens = self._count_tokens(chunk)
                 parts.append(chunk)
-                budget -= len(chunk)
+                budget_tokens -= chunk_tokens
+                total_tokens += chunk_tokens
             except OSError:
                 pass
 
         # FR-7: Inject active goals and projects before keyword-matched memories
         goal_context = self._build_goal_project_context()
         if goal_context:
+            goal_tokens = self._count_tokens(goal_context)
             parts.append(goal_context)
-            budget -= len(goal_context)
+            budget_tokens -= goal_tokens
+            total_tokens += goal_tokens
 
         memory_files = list((BRAIN_DIR / "memories").glob("*.md"))
 
@@ -524,22 +530,38 @@ class TelegramChatHandler:
         )
 
         for f in scored:
-            if budget <= 0:
-                log.debug(f"Context budget exhausted after {len(parts) - 1} memory files")
+            if budget_tokens <= 0:
+                log.info(f"Chat context assembled: {len(parts)} files, ~{total_tokens} tokens")
                 break
             try:
                 text = f.read_text()
             except OSError:
                 continue
-            if len(text) > budget:
-                text = text[:budget] + "\n[truncated]"
+            text_tokens = self._count_tokens(text)
+            if text_tokens > budget_tokens:
+                # Truncate proportionally to fit remaining budget
+                truncate_ratio = budget_tokens / text_tokens
+                text = text[:int(len(text) * truncate_ratio)] + "\n[truncated]"
+                text_tokens = budget_tokens
             parts.append(text)
-            budget -= len(text)
+            budget_tokens -= text_tokens
+            total_tokens += text_tokens
 
+        log.info(f"Chat context assembled: {len(parts)} files, ~{total_tokens} tokens")
         if not parts:
             return ""
         inner = "\n\n---\n\n".join(parts)
         return f"<memory-context>\n{inner}\n</memory-context>"
+
+    def _count_tokens(self, text: str) -> int:
+        """Count tokens using litellm.token_counter, fallback to char/4 heuristic."""
+        try:
+            import litellm
+            return litellm.token_counter(model=self.model, text=text)
+        except Exception as e:
+            # Fallback: rough heuristic of 1 token ≈ 4 chars
+            log.debug(f"Token counter failed, using char/4 fallback: {e}")
+            return len(text) // 4
 
     def _edit_skip_domains(self, action: str, domain: str):
         """Add or remove a domain from browser_watcher.skip_domains in config.yaml.
