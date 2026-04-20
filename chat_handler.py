@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -5762,7 +5763,10 @@ class TelegramChatHandler:
 
         query = update.message.text
         chat_id = update.effective_chat.id
-        log.info(f"Processing query: {query[:80]!r}")
+        # Security (M2): log hash+length at INFO, full query at DEBUG to avoid leaking sensitive content
+        query_hash = hashlib.sha256(query.encode()).hexdigest()[:8]
+        log.info(f"Processing query: hash={query_hash} len={len(query)}")
+        log.debug(f"Query content: {query[:200]!r}")
 
         # Serialise per-chat to preserve turn ordering
         lock = self._chat_history_locks.setdefault(chat_id, asyncio.Lock())

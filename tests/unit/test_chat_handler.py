@@ -4401,3 +4401,54 @@ async def test_register_with_router_no_shared_state_between_calls(handler):
     assert len(replies_b) >= 1
     # replies must not have landed in the wrong list
     assert replies_a is not replies_b
+
+
+# --- Security (M2): demoted query logging ---
+
+async def test_query_logging_does_not_leak_content_at_info(handler, brain_dir, caplog):
+    """At INFO level, query content should not be logged (only hash+length)."""
+    import logging
+    caplog.set_level(logging.INFO)
+
+    handler.executor = MagicMock()
+    handler.executor.run_with_tools = AsyncMock(return_value="response")
+
+    mock_update = MagicMock()
+    mock_update.message.text = "secret query with sensitive data"
+    mock_update.effective_chat.id = 12345
+    mock_update.effective_user.id = 12345
+    mock_update.message = AsyncMock()
+    mock_update.message.text = "secret query with sensitive data"
+
+    await handler.handle_message(mock_update, MagicMock())
+
+    # At INFO level, "secret" should NOT appear
+    info_logs = [r.message for r in caplog.records if r.levelno == logging.INFO]
+    has_hash_log = any("hash=" in msg and "len=" in msg for msg in info_logs)
+    has_secret = any("secret" in msg for msg in info_logs)
+    
+    assert has_hash_log, f"Expected hash= and len= in INFO log. Logs: {info_logs}"
+    assert not has_secret, f"Query content 'secret' leaked to INFO log. Logs: {info_logs}"
+
+
+async def test_query_logging_includes_content_at_debug(handler, brain_dir, caplog):
+    """At DEBUG level, query content should be logged."""
+    import logging
+    caplog.set_level(logging.DEBUG)
+
+    handler.executor = MagicMock()
+    handler.executor.run_with_tools = AsyncMock(return_value="response")
+
+    mock_update = MagicMock()
+    mock_update.effective_chat.id = 12345
+    mock_update.effective_user.id = 12345
+    mock_update.message = AsyncMock()
+    mock_update.message.text = "debug test query"
+
+    await handler.handle_message(mock_update, MagicMock())
+
+    # At DEBUG level, the query content should appear
+    debug_logs = [r.message for r in caplog.records if r.levelno == logging.DEBUG]
+    has_content = any("debug test query" in msg for msg in debug_logs)
+    
+    assert has_content, f"Query content missing from DEBUG log. Logs: {debug_logs}"
