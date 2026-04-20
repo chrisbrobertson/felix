@@ -1,6 +1,9 @@
 """Shared URL content fetcher used by browser_watcher and on-demand /remember."""
 import io
+import ipaddress
 import logging
+import socket
+from urllib.parse import urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -9,6 +12,55 @@ log = logging.getLogger("content-fetcher")
 
 _NOISE_TAGS = ["script", "style", "nav", "footer", "header", "aside", "form"]
 _MAX_CONTENT_CHARS = 8000
+_MAX_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+def _is_safe_url(url: str) -> tuple[bool, str]:
+    """Validate URL against SSRF policy.
+
+    Returns (True, "") if safe, (False, reason) if unsafe.
+    Rejects:
+    - Non-HTTP(S) schemes
+    - Private, loopback, link-local, reserved, multicast IPs
+    - DNS resolution failures
+    """
+    try:
+        parsed = urlparse(url)
+
+        # Reject non-HTTP schemes
+        if parsed.scheme not in {"http", "https"}:
+            return False, f"scheme {parsed.scheme!r} not allowed"
+
+        hostname = parsed.hostname
+        if not hostname:
+            return False, "missing hostname"
+
+        # Resolve all IPs for hostname
+        try:
+            addr_info = socket.getaddrinfo(hostname, None)
+        except socket.gaierror:
+            return False, "DNS resolution failed"
+
+        # Check each resolved IP
+        for family, _, _, _, sockaddr in addr_info:
+            ip_str = sockaddr[0]
+            try:
+                ip = ipaddress.ip_address(ip_str)
+                if any([
+                    ip.is_private,
+                    ip.is_loopback,
+                    ip.is_link_local,
+                    ip.is_reserved,
+                    ip.is_multicast,
+                ]):
+                    return False, f"IP {ip_str} is non-public"
+            except ValueError:
+                # Invalid IP format — reject
+                return False, f"invalid IP {ip_str!r}"
+
+        return True, ""
+    except Exception as e:
+        return False, f"validation error: {e}"
 
 
 def _extract_pdf(data: bytes, url: str) -> tuple:
@@ -48,15 +100,18 @@ def _extract_pdf(data: bytes, url: str) -> tuple:
         return "", ""
 
 
-_MAX_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB
-
-
 async def fetch_url_content(url: str) -> tuple:
     """Fetch a URL and return (title, cleaned_text).
 
     Returns ("", "") on failure rather than raising, so callers can
     decide how to handle a fetch failure without try/except boilerplate.
     """
+    # SSRF guard — block private IPs and non-HTTP schemes
+    safe, reason = _is_safe_url(url)
+    if not safe:
+        log.warning("fetch_url_content: URL blocked by SSRF policy (%s): %s", reason, url)
+        return "", ""
+
     try:
         async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
             async with client.stream("GET", url, headers={"User-Agent": "Mozilla/5.0"}) as r:

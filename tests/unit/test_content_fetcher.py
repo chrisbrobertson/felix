@@ -34,13 +34,19 @@ def _make_client_mock(stream_ctx):
     return mock_client
 
 
+def _public_ip_getaddrinfo(host, port):
+    # Mock resolver returning a public IP (93.184.216.34 = example.com)
+    return [(2, 1, 6, "", ("93.184.216.34", 80))]
+
+
 @pytest.mark.asyncio
 async def test_fetch_returns_title_and_text():
     html = "<html><head><title>Hello World</title></head><body><p>Useful content here.</p></body></html>"
     stream_ctx = _make_stream_ctx(200, html)
     mock_client = _make_client_mock(stream_ctx)
 
-    with patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
+    with patch("content_fetcher.socket.getaddrinfo", side_effect=_public_ip_getaddrinfo), \
+         patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
         title, text = await cf.fetch_url_content("https://example.com/article")
 
     assert title == "Hello World"
@@ -59,7 +65,8 @@ async def test_fetch_strips_noise_tags():
     stream_ctx = _make_stream_ctx(200, html)
     mock_client = _make_client_mock(stream_ctx)
 
-    with patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
+    with patch("content_fetcher.socket.getaddrinfo", side_effect=_public_ip_getaddrinfo), \
+         patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
         _, text = await cf.fetch_url_content("https://example.com/")
 
     assert "Real content" in text
@@ -72,7 +79,8 @@ async def test_fetch_non_200_returns_empty():
     stream_ctx = _make_stream_ctx(404, "")
     mock_client = _make_client_mock(stream_ctx)
 
-    with patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
+    with patch("content_fetcher.socket.getaddrinfo", side_effect=_public_ip_getaddrinfo), \
+         patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
         title, text = await cf.fetch_url_content("https://example.com/missing")
 
     assert title == ""
@@ -86,7 +94,8 @@ async def test_fetch_network_error_returns_empty():
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.stream = MagicMock(side_effect=Exception("Connection refused"))
 
-    with patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
+    with patch("content_fetcher.socket.getaddrinfo", side_effect=_public_ip_getaddrinfo), \
+         patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
         title, text = await cf.fetch_url_content("https://unreachable.example.com/")
 
     assert title == ""
@@ -100,7 +109,8 @@ async def test_fetch_truncates_to_max_chars():
     stream_ctx = _make_stream_ctx(200, html)
     mock_client = _make_client_mock(stream_ctx)
 
-    with patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
+    with patch("content_fetcher.socket.getaddrinfo", side_effect=_public_ip_getaddrinfo), \
+         patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
         _, text = await cf.fetch_url_content("https://example.com/huge")
 
     assert len(text) <= cf._MAX_CONTENT_CHARS
@@ -131,8 +141,83 @@ async def test_fetch_truncates_oversized_response():
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.stream = MagicMock(return_value=mock_stream_ctx)
 
-    with patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
+    with patch("content_fetcher.socket.getaddrinfo", side_effect=_public_ip_getaddrinfo), \
+         patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
         title, text = await cf.fetch_url_content("https://example.com/huge")
 
     # Should not crash; content is truncated
     assert len(text) <= cf._MAX_CONTENT_CHARS
+
+
+# ── SSRF guard tests ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_ssrf_blocks_localhost():
+    title, text = await cf.fetch_url_content("http://localhost/admin")
+    assert title == ""
+    assert text == ""
+
+
+@pytest.mark.asyncio
+async def test_ssrf_blocks_loopback_ip():
+    title, text = await cf.fetch_url_content("http://127.0.0.1/secret")
+    assert title == ""
+    assert text == ""
+
+
+@pytest.mark.asyncio
+async def test_ssrf_blocks_link_local():
+    # AWS metadata service
+    title, text = await cf.fetch_url_content("http://169.254.169.254/latest/meta-data/")
+    assert title == ""
+    assert text == ""
+
+
+@pytest.mark.asyncio
+async def test_ssrf_blocks_private_ip():
+    title, text = await cf.fetch_url_content("http://10.0.0.1/internal")
+    assert title == ""
+    assert text == ""
+
+
+@pytest.mark.asyncio
+async def test_ssrf_blocks_file_scheme():
+    title, text = await cf.fetch_url_content("file:///etc/passwd")
+    assert title == ""
+    assert text == ""
+
+
+@pytest.mark.asyncio
+async def test_ssrf_blocks_gopher_scheme():
+    title, text = await cf.fetch_url_content("gopher://example.com/")
+    assert title == ""
+    assert text == ""
+
+
+@pytest.mark.asyncio
+async def test_ssrf_allows_public_url():
+    html = "<html><head><title>Public Page</title></head><body><p>Public content</p></body></html>"
+    stream_ctx = _make_stream_ctx(200, html)
+    mock_client = _make_client_mock(stream_ctx)
+
+    with patch("content_fetcher.socket.getaddrinfo", side_effect=_public_ip_getaddrinfo), \
+         patch("content_fetcher.httpx.AsyncClient", return_value=mock_client):
+        title, text = await cf.fetch_url_content("https://example.com/article")
+
+    assert title == "Public Page"
+    assert "Public content" in text
+
+
+@pytest.mark.asyncio
+async def test_ssrf_dns_failure_blocks():
+    import socket
+
+    def mock_getaddrinfo(host, port):
+        raise socket.gaierror("Name or service not known")
+
+    with patch("content_fetcher.socket.getaddrinfo", side_effect=mock_getaddrinfo):
+        title, text = await cf.fetch_url_content("https://nonexistent.invalid/")
+
+    assert title == ""
+    assert text == ""
