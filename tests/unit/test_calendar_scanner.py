@@ -1238,6 +1238,29 @@ def test_cleanup_skips_file_without_date_pattern(tmp_path, caplog):
     assert any("no date pattern" in r.message for r in caplog.records)
 
 
+def test_eventkit_logs_warning_on_zero_events(caplog):
+    """EventKitSource.get_events warns with calendar count when predicate yields zero events."""
+    from calendar_scanner import EventKitSource
+
+    mock_store = MagicMock()
+    mock_store.eventsMatchingPredicate_.return_value = []
+    # Three visible calendars, but the predicate returned nothing.
+    mock_store.calendarsForEntityType_.return_value = [MagicMock(), MagicMock(), MagicMock()]
+    # predicateForEventsWithStartDate_endDate_calendars_ can return any sentinel.
+    mock_store.predicateForEventsWithStartDate_endDate_calendars_.return_value = object()
+
+    src = EventKitSource(mock_store)
+    start = datetime(2026, 4, 14)
+    end = datetime(2026, 4, 28)
+
+    with caplog.at_level("WARNING", logger="calendar-scanner"):
+        events = src.get_events(start, end, set())
+
+    assert events == []
+    msgs = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any("0 events" in m and "3 calendars" in m for m in msgs), msgs
+
+
 def test_load_state_prunes_stacked_hostname_keys(tmp_path):
     """Keys with duplicated hostname tokens are pruned on load; single test-host keys are kept."""
     memories_dir = tmp_path / "memories"

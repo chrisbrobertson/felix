@@ -117,7 +117,11 @@ class CalendarDataSource:
         log.debug("Calendar Cache unavailable — trying EventKit")
         src = EventKitSource.create()
         if src:
-            log.info("Calendar data source: EventKit")
+            try:
+                cal_count = len(src._store.calendarsForEntityType_(0) or [])
+                log.info("Calendar data source: EventKit (%d calendars available)", cal_count)
+            except Exception:
+                log.info("Calendar data source: EventKit")
             return src
         log.warning(
             "Calendar Cache and EventKit unavailable — falling back to AppleScript. "
@@ -392,6 +396,31 @@ class EventKitSource(CalendarDataSource):
             ns_start, ns_end, None
         )
         ek_events = self._store.eventsMatchingPredicate_(predicate) or []
+
+        # Diagnostic: enumerate visible calendars so zero-event scans are
+        # distinguishable from genuine empty windows.
+        try:
+            cals = self._store.calendarsForEntityType_(0) or []
+            cal_count = len(cals)
+        except Exception:
+            cal_count = -1
+        span_days = max(1, int((end_date - start_date).total_seconds() // 86400))
+
+        if len(ek_events) == 0:
+            log.warning(
+                "EventKit returned 0 events in ±%d-day window (%s → %s); "
+                "%d calendars visible — grant may be partial, predicate may be filtering, "
+                "or the window may be genuinely empty",
+                span_days // 2 if span_days > 1 else span_days,
+                start_date.isoformat(),
+                end_date.isoformat(),
+                cal_count,
+            )
+        else:
+            log.debug(
+                "EventKit: %d calendars enumerated, %d events matched predicate in [%s .. %s]",
+                cal_count, len(ek_events), start_date.isoformat(), end_date.isoformat(),
+            )
 
         skip_lower = {c.lower() for c in skip_calendars}
         events = []
