@@ -6,6 +6,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Calendar scanner: hostname stacking in filenames and state keys** — `_migrate_calendar_filenames` previously re-ran on every `__init__` and used a fragile `startswith(f"{my_hostname}-")` idempotency check. Because `socket.gethostname()` is not stable on macOS (it flips between values like `Chriss-Air` and `Chriss-MacBook-Air` depending on network state), the check repeatedly missed and re-prefixed already-migrated files, producing stems with 6–7 stacked hostname segments. State keys drifted out of sync with on-disk filenames, causing the scanner to treat every event as new, silently failing to write memory files for ~10 days on the live daemon. The migration is now a one-shot cleanup gated by a `.calendar-migration-hostname-v2.done` sentinel next to `calendar-scanner-state.json`: it extracts the canonical `YYYY-MM-DD-*` tail via regex, trusts the frontmatter `hostname` field as authoritative (stamping it when absent via atomic write), deletes stacked duplicates when a canonical file already exists, and remaps state keys to canonical form. Additionally, `_load_state` now prunes any state key whose hostname prefix has a duplicated token (stacking fingerprint).
+
 ## [1.5.0] — 2026-04-19
 
 Security release closing 19 of 20 findings from `specs/security-scan.md` (5 Critical, 4 High, 9 Medium; M3 N/A). See the spec for per-finding commit hashes.

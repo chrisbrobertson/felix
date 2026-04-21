@@ -1032,3 +1032,189 @@ def test_migrate_calendar_filenames_idempotent(tmp_path):
     assert scoped.exists()
     # No duplicate or double-prefixed file
     assert len(list(memories_dir.glob("calendar-event-*.md"))) == 1
+
+
+# ── Hostname-stacking cleanup (v1.6.0) ────────────────────────────────────────
+
+def test_cleanup_collapses_stacked_hostname_to_canonical(tmp_path):
+    """Stacked-hostname filename collapses to canonical once frontmatter hostname exists."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+
+    stacked = memories_dir / (
+        "calendar-event-host-host-test-host-host-2026-04-11-meeting-abc123.md"
+    )
+    stacked.write_text("---\nhostname: host\ntype: calendar_event\n---\n\n## Details\n")
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "STATE_FILE", state_file), \
+         patch.object(cs, "_hostname", return_value="host"):
+        CalendarScanner()
+
+    canonical = memories_dir / "calendar-event-host-2026-04-11-meeting-abc123.md"
+    assert canonical.exists()
+    assert not stacked.exists()
+
+
+def test_cleanup_stamps_missing_hostname_in_frontmatter(tmp_path):
+    """Legacy file without hostname frontmatter gets hostname stamped during cleanup."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+
+    legacy = memories_dir / "calendar-event-2026-04-11-standup-abc12345.md"
+    legacy.write_text("---\ntype: calendar_event\n---\n\n## Details\n")
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "STATE_FILE", state_file), \
+         patch.object(cs, "_hostname", return_value="current-host"):
+        CalendarScanner()
+
+    canonical = memories_dir / "calendar-event-current-host-2026-04-11-standup-abc12345.md"
+    assert canonical.exists()
+    fm = _parse_frontmatter(canonical.read_text())
+    assert fm.get("hostname") == "current-host"
+
+
+def test_cleanup_deletes_stacked_duplicate_when_canonical_exists(tmp_path):
+    """When both stacked and canonical names exist on disk, stacked is deleted."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+
+    canonical = memories_dir / "calendar-event-host-2026-04-11-meeting-abc123.md"
+    canonical.write_text("---\nhostname: host\ntype: calendar_event\n---\n\n## canonical\n")
+    stacked = memories_dir / "calendar-event-host-host-2026-04-11-meeting-abc123.md"
+    stacked.write_text("---\nhostname: host\ntype: calendar_event\n---\n\n## stacked\n")
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "STATE_FILE", state_file), \
+         patch.object(cs, "_hostname", return_value="host"):
+        CalendarScanner()
+
+    assert canonical.exists()
+    assert not stacked.exists()
+    # Canonical content preserved (not overwritten)
+    assert "canonical" in canonical.read_text()
+
+
+def test_cleanup_respects_foreign_host_frontmatter(tmp_path):
+    """Frontmatter hostname wins over runtime hostname during rename."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+
+    # Stacked filename, but frontmatter says otherhost owns it.
+    stacked = memories_dir / "calendar-event-otherhost-otherhost-2026-04-11-meeting-abc123.md"
+    stacked.write_text("---\nhostname: otherhost\ntype: calendar_event\n---\n\n## Details\n")
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "STATE_FILE", state_file), \
+         patch.object(cs, "_hostname", return_value="currenthost"):
+        CalendarScanner()
+
+    # Canonical uses the frontmatter hostname, not the runtime hostname.
+    canonical = memories_dir / "calendar-event-otherhost-2026-04-11-meeting-abc123.md"
+    assert canonical.exists()
+    # Current-host name must NOT be created
+    assert not (memories_dir / "calendar-event-currenthost-2026-04-11-meeting-abc123.md").exists()
+
+
+def test_cleanup_sentinel_makes_migration_idempotent(tmp_path):
+    """Second __init__ is a no-op: does not open, rename, or touch any file."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+
+    canonical = memories_dir / "calendar-event-host-2026-04-11-meeting-abc123.md"
+    canonical.write_text("---\nhostname: host\ntype: calendar_event\n---\n\n## Details\n")
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "STATE_FILE", state_file), \
+         patch.object(cs, "_hostname", return_value="host"):
+        CalendarScanner()  # first run stamps sentinel
+        # Sentinel should now exist next to the state file
+        sentinel = state_file.parent / cs.MIGRATION_SENTINEL_NAME
+        assert sentinel.exists()
+
+        # Corrupt the canonical file so that any re-entry into the migration
+        # loop would raise. A no-op second __init__ must never read the file.
+        canonical.write_bytes(b"\x00\x01\x02 not valid yaml")
+
+        CalendarScanner()  # second run: no-op, must not touch canonical
+
+        # File still holds the corrupted bytes — proof nothing was rewritten.
+        assert canonical.read_bytes() == b"\x00\x01\x02 not valid yaml"
+
+
+def test_cleanup_remaps_state_keys_to_canonical(tmp_path):
+    """State keys for stacked filenames are remapped to canonical form."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+
+    stacked_name = "calendar-event-host-host-2026-04-11-meeting-abc123.md"
+    stacked = memories_dir / stacked_name
+    stacked.write_text("---\nhostname: host\ntype: calendar_event\n---\n\n## Details\n")
+
+    state_file.write_text(json.dumps({"processed": {stacked_name: "2026-04-11T09:00:00"}}))
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "STATE_FILE", state_file), \
+         patch.object(cs, "_hostname", return_value="host"):
+        CalendarScanner()
+
+    state = json.loads(state_file.read_text())
+    canonical_name = "calendar-event-host-2026-04-11-meeting-abc123.md"
+    assert canonical_name in state["processed"]
+    assert stacked_name not in state["processed"]
+    assert state["processed"][canonical_name] == "2026-04-11T09:00:00"
+
+
+def test_cleanup_skips_file_without_date_pattern(tmp_path, caplog):
+    """Malformed calendar-event filename is left on disk and logged as warning."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+
+    malformed = memories_dir / "calendar-event-nothing-recognisable.md"
+    malformed.write_text("---\ntype: calendar_event\n---\n\n## Details\n")
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "STATE_FILE", state_file), \
+         patch.object(cs, "_hostname", return_value="host"), \
+         caplog.at_level("WARNING", logger="calendar-scanner"):
+        CalendarScanner()
+
+    assert malformed.exists()
+    assert any("no date pattern" in r.message for r in caplog.records)
+
+
+def test_load_state_prunes_stacked_hostname_keys(tmp_path):
+    """Keys with duplicated hostname tokens are pruned on load; single test-host keys are kept."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+
+    # Mix of keys: legitimate, stacked (bogus), and literal test-host (kept).
+    state_file.write_text(json.dumps({
+        "processed": {
+            "calendar-event-Chriss-MacBook-Air-2026-04-11-meeting-abc123.md": "t1",
+            "calendar-event-Chriss-Air-Chriss-Air-2026-04-11-meeting-def456.md": "t2",
+            "calendar-event-host-host-test-host-host-2026-04-11-x-ghi789.md": "t3",
+            "calendar-event-test-host-2026-04-11-legit-test-jkl012.md": "t4",
+        }
+    }))
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "STATE_FILE", state_file), \
+         patch.object(cs, "_hostname", return_value="host"):
+        scanner = CalendarScanner()
+        loaded = scanner._load_state()
+
+    keys = set(loaded["processed"].keys())
+    assert "calendar-event-Chriss-MacBook-Air-2026-04-11-meeting-abc123.md" in keys
+    assert "calendar-event-test-host-2026-04-11-legit-test-jkl012.md" in keys
+    assert "calendar-event-Chriss-Air-Chriss-Air-2026-04-11-meeting-def456.md" not in keys
+    assert "calendar-event-host-host-test-host-host-2026-04-11-x-ghi789.md" not in keys

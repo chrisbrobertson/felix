@@ -23,6 +23,22 @@ MEMORIES_DIR = BRAIN_DIR / "memories"
 CONFIG_PATH = BRAIN_DIR / "config.yaml"
 DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
 STATE_FILE = DEPLOY_DIR / "calendar-scanner-state.json"
+MIGRATION_SENTINEL_NAME = ".calendar-migration-hostname-v2.done"
+
+# Regex to extract the canonical "YYYY-MM-DD-{tail}" suffix from a (possibly
+# hostname-stacked) calendar-event stem. The tail captures everything from the
+# first ISO-date segment onward, which is the part _memory_path() puts after
+# the hostname.
+_CALENDAR_TAIL_RE = re.compile(r"(\d{4}-\d{2}-\d{2}-.+)$")
+
+
+def _migration_sentinel_path() -> Path:
+    """Path to the one-shot migration sentinel.
+
+    Derived from ``STATE_FILE`` at call time so tests that patch ``STATE_FILE``
+    redirect the sentinel with it.
+    """
+    return STATE_FILE.parent / MIGRATION_SENTINEL_NAME
 
 # Seconds between 1970-01-01 and 2001-01-01 (Core Data epoch offset)
 CORE_DATA_EPOCH_OFFSET = 978307200
@@ -524,49 +540,151 @@ class CalendarScanner:
         self._migrate_calendar_filenames()
 
     def _migrate_calendar_filenames(self):
-        """Migrate calendar-event-*.md to calendar-event-{hostname}-*.md for this node's files.
+        """One-shot cleanup of stacked/polluted calendar-event filenames.
 
-        Mirrors the project_scanner.py hostname-scoping migration so events from
-        different machines are distinguishable and never silently overwrite each other.
+        Earlier builds prefixed filenames with ``socket.gethostname()`` on every
+        ``__init__`` using a naive ``startswith`` idempotency check. Because
+        ``socket.gethostname()`` is not stable on macOS (it flips between values
+        like ``Chriss-Air`` and ``Chriss-MacBook-Air`` depending on network
+        state), the check missed and the migration re-prefixed already-migrated
+        files — stacking hostname segments on every flip.
+
+        This implementation is gated by a one-shot sentinel. On first run it
+        collapses stacked/polluted filenames to canonical form
+        ``calendar-event-{hostname}-{YYYY-MM-DD}-{tail}.md`` by trusting the
+        frontmatter ``hostname`` field (authoritative), stamping it if missing,
+        and deleting stacked duplicates where the canonical file already exists.
+        Corresponding state keys are remapped to canonical form. After the first
+        successful run the sentinel is written and subsequent calls return
+        immediately.
         """
-        if not MEMORIES_DIR.exists():
+        sentinel = _migration_sentinel_path()
+        if sentinel.exists():
             return
+        if not MEMORIES_DIR.exists():
+            # Still stamp the sentinel so we don't re-scan an absent dir forever.
+            try:
+                sentinel.parent.mkdir(parents=True, exist_ok=True)
+                sentinel.touch()
+            except Exception:
+                log.exception("Failed to write calendar migration sentinel")
+            return
+
         my_hostname = _hostname()
-        migrated = 0
-        state = self._load_state()
+        renamed = 0
+        deleted = 0
+        stamped = 0
+        skipped = 0
+        # Load raw state here — we explicitly WANT to see the stacked keys so
+        # we can remap them to canonical form before the usual _load_state
+        # prune hides them.
+        if STATE_FILE.exists():
+            try:
+                state = json.loads(STATE_FILE.read_text())
+            except Exception:
+                state = {"last_scan_time": None, "processed": {}}
+        else:
+            state = {"last_scan_time": None, "processed": {}}
         processed = state.get("processed", {})
 
         for path in MEMORIES_DIR.glob("calendar-event-*.md"):
             try:
                 stem = path.stem
                 rest = stem[len("calendar-event-"):]
-                # Already hostname-scoped for this host?
-                if rest.startswith(f"{my_hostname}-"):
+                m = _CALENDAR_TAIL_RE.search(rest)
+                if not m:
+                    log.warning(
+                        "Calendar cleanup: no date pattern in filename, skipping: %s",
+                        path.name,
+                    )
+                    skipped += 1
                     continue
-                # Read frontmatter to check which host owns this file
+                canonical_tail = m.group(1)
+
                 text = path.read_text()
                 fm = _parse_frontmatter(text)
                 fm_hostname = fm.get("hostname", "")
-                # Claim the file if frontmatter hostname matches ours, or if it's a
-                # legacy file with no hostname (assume written by the current machine).
-                if fm_hostname == my_hostname or not fm_hostname:
-                    new_name = f"calendar-event-{my_hostname}-{rest}.md"
-                    new_path = path.parent / new_name
-                    path.rename(new_path)
-                    # Remap the state entry so the scanner doesn't re-process it
+
+                # Authoritative hostname: frontmatter wins. If absent, assume
+                # the current host wrote it and stamp the frontmatter below.
+                needs_stamp = False
+                if fm_hostname:
+                    canonical_host = fm_hostname
+                else:
+                    canonical_host = my_hostname
+                    needs_stamp = True
+
+                canonical_name = f"calendar-event-{canonical_host}-{canonical_tail}.md"
+                canonical_path = path.parent / canonical_name
+
+                # If file is already canonical, optionally stamp missing hostname
+                # in frontmatter and move on.
+                if path.name == canonical_name:
+                    if needs_stamp:
+                        self._stamp_hostname_in_frontmatter(path, canonical_host)
+                        stamped += 1
+                    continue
+
+                # Stacked duplicate where canonical already exists — drop it.
+                if canonical_path.exists():
+                    path.unlink()
                     if path.name in processed:
-                        processed[new_name] = processed.pop(path.name)
-                    migrated += 1
-                # If hostname is a different machine, leave it — that node will handle it
+                        processed.pop(path.name, None)
+                    deleted += 1
+                    continue
+
+                # Rename to canonical form; stamp hostname into frontmatter if
+                # it was missing so future runs (and other readers) can trust it.
+                if needs_stamp:
+                    self._stamp_hostname_in_frontmatter(path, canonical_host)
+                    stamped += 1
+                path.rename(canonical_path)
+                if path.name in processed:
+                    processed[canonical_name] = processed.pop(path.name)
+                renamed += 1
             except (OSError, FileNotFoundError):
                 pass
             except Exception:
-                log.exception("Calendar filename migration failed for %s", path)
+                log.exception("Calendar filename cleanup failed for %s", path)
 
-        if migrated:
+        if renamed or deleted or stamped:
             state["processed"] = processed
             self._save_state(state)
-            log.info("Migrated %d calendar-event files to hostname-scoped filenames", migrated)
+            log.info(
+                "Calendar filename cleanup: renamed=%d deleted=%d stamped=%d skipped=%d",
+                renamed, deleted, stamped, skipped,
+            )
+
+        # Mark migration complete so future __init__ calls are no-ops.
+        try:
+            sentinel.parent.mkdir(parents=True, exist_ok=True)
+            sentinel.touch()
+        except Exception:
+            log.exception("Failed to write calendar migration sentinel")
+
+    @staticmethod
+    def _stamp_hostname_in_frontmatter(path: Path, hostname: str):
+        """Atomically rewrite ``path`` with ``hostname`` added to its YAML frontmatter.
+
+        No-op if the file has no frontmatter delimiters or already contains a
+        hostname field. Uses write-tmp-then-rename for atomicity.
+        """
+        text = path.read_text()
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            return
+        try:
+            fm = yaml.safe_load(parts[1]) or {}
+        except Exception:
+            return
+        if fm.get("hostname"):
+            return
+        fm["hostname"] = hostname
+        new_fm = yaml.dump(fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
+        new_text = f"---\n{new_fm}---{parts[2]}"
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(new_text)
+        os.rename(str(tmp), str(path))
 
     def _load_config(self) -> dict:
         if CONFIG_PATH.exists():
@@ -579,10 +697,44 @@ class CalendarScanner:
     def _load_state(self) -> dict:
         if STATE_FILE.exists():
             try:
-                return json.loads(STATE_FILE.read_text())
+                state = json.loads(STATE_FILE.read_text())
             except Exception:
-                pass
+                return {"last_scan_time": None, "processed": {}}
+            state["processed"] = self._prune_stacked_state_keys(state.get("processed", {}))
+            return state
         return {"last_scan_time": None, "processed": {}}
+
+    @staticmethod
+    def _prune_stacked_state_keys(processed: dict) -> dict:
+        """Drop state keys whose filename prefix has a duplicated hostname token.
+
+        Targets the specific pre-v1.6.0 failure mode where
+        ``_migrate_calendar_filenames`` repeatedly re-prefixed the hostname
+        because ``socket.gethostname()`` flipped across runs, producing stems
+        like ``calendar-event-Chriss-MacBook-Air-Chriss-Air-test-host-…`` with
+        repeated tokens before the ``YYYY-MM-DD`` tail. These keys no longer
+        correspond to any canonical on-disk file.
+
+        Conservative: a key with a single (possibly hyphenated) hostname — even
+        literal ``test-host`` from a mock — is retained, because that shape is
+        identical to what legitimate tests write.
+        """
+        if not processed:
+            return processed
+        pruned = {}
+        for k, v in processed.items():
+            stem = k[:-3] if k.endswith(".md") else k
+            if stem.startswith("calendar-event-"):
+                rest = stem[len("calendar-event-"):]
+                m = _CALENDAR_TAIL_RE.search(rest)
+                if m:
+                    prefix = rest[: m.start()].rstrip("-")
+                    tokens = [t for t in prefix.split("-") if t]
+                    # Repeated token in the hostname prefix = stacked migration.
+                    if tokens and len(tokens) != len(set(tokens)):
+                        continue
+            pruned[k] = v
+        return pruned
 
     def _save_state(self, state: dict):
         """Save state atomically."""
