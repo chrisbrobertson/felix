@@ -51,7 +51,8 @@ def scanner_with_client(scanner):
 @pytest.mark.asyncio
 async def test_missing_token_logs_warning_and_exits(scanner, tmp_path):
     """No SLACK_USER_TOKEN → WARNING logged, loop exits cleanly."""
-    with patch.dict(os.environ, {}, clear=True):
+    with patch.dict(os.environ, {}, clear=True), \
+         patch("slack_scanner.get_secret_or_env", return_value=None):
         stop = asyncio.Event()
         with patch("slack_scanner.log") as mock_log:
             await scanner.run_loop(stop)

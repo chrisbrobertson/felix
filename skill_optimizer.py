@@ -23,7 +23,12 @@ DEPLOY_DIR = Path.home() / "secondbrain"
 
 
 def update_skill_checksum(skill_path: Path) -> None:
-    """Rewrite the checksum for skill_path in the manifest. Called after a successful rewrite."""
+    """Rewrite the checksum for skill_path in the manifest. Called after a successful rewrite.
+
+    Must match the canonicalisation in `skill_executor._canonicalize_skill`:
+    hash only the frontmatter + instructions, not the mutable Execution History.
+    """
+    from skill_executor import _canonicalize_skill
     checksum_file = DEPLOY_DIR / "skill-checksums.json"
     if not checksum_file.exists():
         return
@@ -32,7 +37,7 @@ def update_skill_checksum(skill_path: Path) -> None:
     except Exception:
         return
     skill_name = skill_path.stem
-    manifest[skill_name] = hashlib.sha256(skill_path.read_bytes()).hexdigest()
+    manifest[skill_name] = hashlib.sha256(_canonicalize_skill(skill_path.read_bytes())).hexdigest()
     tmp = checksum_file.with_suffix(".tmp")
     tmp.write_text(json.dumps(manifest, indent=2))
     tmp.rename(checksum_file)

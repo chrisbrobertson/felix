@@ -651,9 +651,17 @@ skills_dir = Path(sys.argv[1])
 checksum_file = Path(sys.argv[2])
 manifest = {}
 
+def canonicalize(content: bytes) -> bytes:
+    """Strip mutable `## Execution History` section — must match skill_executor._canonicalize_skill."""
+    text = content.decode('utf-8', errors='replace')
+    idx = text.find('\n## Execution History')
+    if idx >= 0:
+        text = text[:idx]
+    return text.encode('utf-8')
+
 for skill_file in skills_dir.glob('*.md'):
     skill_name = skill_file.stem
-    manifest[skill_name] = hashlib.sha256(skill_file.read_bytes()).hexdigest()
+    manifest[skill_name] = hashlib.sha256(canonicalize(skill_file.read_bytes())).hexdigest()
 
 tmp = checksum_file.with_suffix('.tmp')
 tmp.write_text(json.dumps(manifest, indent=2))

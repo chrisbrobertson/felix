@@ -53,6 +53,21 @@ def _format_inputs(inputs: dict) -> str:
     return "\n".join(parts)
 
 
+def _canonicalize_skill(content: bytes) -> bytes:
+    """Strip the mutable `## Execution History` section before hashing.
+
+    Skill files are self-logging — each run appends a row to the execution
+    history table. Hashing the whole file would make every skill fail
+    verification on its second run. Only the frontmatter + instructions
+    matter for integrity; the run log is operational data.
+    """
+    text = content.decode("utf-8", errors="replace")
+    idx = text.find("\n## Execution History")
+    if idx >= 0:
+        text = text[:idx]
+    return text.encode("utf-8")
+
+
 def _verify_skill_checksum(skill_name: str, content: bytes) -> bool:
     """Check skill file against stored checksum. Returns True if match or no checksum stored."""
     if not _CHECKSUM_FILE.exists():
@@ -65,7 +80,7 @@ def _verify_skill_checksum(skill_name: str, content: bytes) -> bool:
     expected = manifest.get(skill_name)
     if expected is None:
         return True  # not in manifest, allow
-    actual = hashlib.sha256(content).hexdigest()
+    actual = hashlib.sha256(_canonicalize_skill(content)).hexdigest()
     if actual != expected:
         log.warning(
             "Skill %s checksum mismatch (expected %s, got %s) — refusing to execute",

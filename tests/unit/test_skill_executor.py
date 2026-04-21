@@ -606,7 +606,7 @@ def test_skill_load_succeeds_when_checksum_matches(skills_dir, tmp_path):
     
     skill_file = skills_dir / "summarize-webpage.md"
     skill_bytes = skill_file.read_bytes()
-    checksum = hashlib.sha256(skill_bytes).hexdigest()
+    checksum = hashlib.sha256(se._canonicalize_skill(skill_bytes)).hexdigest()
     
     manifest = {"summarize-webpage": checksum}
     checksum_file = deploy_dir / "skill-checksums.json"

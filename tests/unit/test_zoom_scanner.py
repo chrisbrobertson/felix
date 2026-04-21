@@ -198,7 +198,7 @@ async def test_missing_credentials_logs_warning(scanner, caplog):
         "ZOOM_ACCOUNT_ID": "",
         "ZOOM_CLIENT_ID": "",
         "ZOOM_CLIENT_SECRET": "",
-    }):
+    }), patch("zoom_scanner.get_secret_or_env", return_value=None):
         with caplog.at_level(logging.WARNING, logger="zoom-scanner"):
             token = await scanner._acquire_token()
 
