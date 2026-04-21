@@ -2,7 +2,7 @@
 import hashlib
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -103,7 +103,7 @@ class GoalManager:
         self._validate_due_date(due_date)
 
         # Generate stable ID and filename
-        created = datetime.utcnow().isoformat(timespec="seconds")
+        created = datetime.now(timezone.utc).isoformat(timespec="seconds")
         stable_id = self._stable_id(title, created)
         slug = self._slug(title)
         filename = f"goal-{slug}-{stable_id}.md"
@@ -233,7 +233,7 @@ class GoalManager:
         self._validate_due_date(due_date)
 
         # Generate stable ID and filename
-        created = datetime.utcnow().isoformat(timespec="seconds")
+        created = datetime.now(timezone.utc).isoformat(timespec="seconds")
         stable_id = self._stable_id(title, created)
         slug = self._slug(title)
         filename = f"project-{category}-{slug}-{stable_id}.md"
@@ -558,7 +558,7 @@ class GoalManager:
         rejected_data["rejected"].append({
             "source_title": fm.get("source_title", ""),
             "evidence": fm.get("evidence", []),
-            "rejected_at": datetime.utcnow().isoformat(timespec="seconds"),
+            "rejected_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         })
 
         # Atomic write of rejected JSON

@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -56,7 +56,7 @@ def _normalize_name(name: str) -> str:
 
 def _relationship_score(interactions: list) -> float:
     """Recency-weighted interaction count. interaction_timestamps are ISO strings."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     score = 0.0
     for ts_str in interactions:
         try:

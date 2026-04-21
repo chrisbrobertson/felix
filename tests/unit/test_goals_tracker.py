@@ -141,7 +141,7 @@ def test_create_goal_stable_id_dedup(manager, memories_dir):
 
     # Second call with same title (created timestamp will be same due to stable ID)
     # Note: This test relies on the stable ID being generated from title+timestamp.
-    # Since we can't control datetime.utcnow(), we'll patch create_goal to reuse
+    # Since we can't control datetime.now(timezone.utc), we'll patch create_goal to reuse
     # the same created timestamp.
     with patch("goals_tracker.datetime") as mock_dt:
         # Extract created timestamp from first file
@@ -149,8 +149,8 @@ def test_create_goal_stable_id_dedup(manager, memories_dir):
         fm = yaml.safe_load(fm_text)
         created_iso = fm["created"]
 
-        # Mock utcnow to return the same timestamp
-        mock_dt.utcnow.return_value.isoformat.return_value = created_iso
+        # Mock datetime.now() to return the same timestamp
+        mock_dt.now.return_value.isoformat.return_value = created_iso
         path2 = manager.create_goal(title="Duplicate Test", category="work")
 
     assert path1 == path2

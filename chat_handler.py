@@ -7,7 +7,7 @@ import os
 import re
 import socket
 import yaml
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -974,7 +974,7 @@ class TelegramChatHandler:
 
         import hashlib
         watchlist_id = hashlib.sha1(
-            f"{topic}{person or ''}{watch_type}{datetime.utcnow().isoformat()}".encode()
+            f"{topic}{person or ''}{watch_type}{datetime.now(timezone.utc).isoformat()}".encode()
         ).hexdigest()[:6]
 
         slug = re.sub(r'[^a-z0-9]+', '-', topic.lower())[:40].strip('-')
@@ -986,7 +986,7 @@ class TelegramChatHandler:
             "status": "active",
             "topic": topic,
             "watch_type": watch_type,
-            "created": datetime.utcnow().isoformat(),
+            "created": datetime.now(timezone.utc).isoformat(),
             "expires": None,
         }
         if person:

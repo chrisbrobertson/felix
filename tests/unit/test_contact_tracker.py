@@ -5,7 +5,7 @@ All external access (LiteLLM, filesystem) is mocked.
 """
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -228,7 +228,7 @@ def test_collision_handling(mock_config, mock_state_file, mock_memories, tmp_pat
 
 def test_relationship_score_recent_higher():
     """Contact with 3 recent interactions > contact with 5 old interactions."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     recent = [
         (now - timedelta(days=1)).isoformat(),
         (now - timedelta(days=2)).isoformat(),
@@ -246,7 +246,7 @@ def test_relationship_score_recent_higher():
 
 def test_relationship_score_decays():
     """Score lower when all interactions are 30+ days old."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     old = [(now - timedelta(days=30)).isoformat()]
     assert _relationship_score(old) < 1.0
 
@@ -270,7 +270,7 @@ def test_interaction_timestamps_capped_at_100(mock_config, mock_state_file, mock
 
     state_file = tmp_path / "state.json"
     # Pre-populate state with 100 interactions
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     existing_timestamps = [
         (now - timedelta(days=i)).isoformat() for i in range(100)
     ]
