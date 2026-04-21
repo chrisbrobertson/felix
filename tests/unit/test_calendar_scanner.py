@@ -136,6 +136,53 @@ def test_find_calendar_cache_missing_returns_none(tmp_path):
         assert result is None
 
 
+def test_find_db_path_prefers_calendar_sqlitedb(tmp_path):
+    """Modern macOS `Calendar.sqlitedb` takes precedence over legacy candidates."""
+    with patch.object(Path, 'home', return_value=tmp_path):
+        cal_dir = tmp_path / "Library" / "Calendars"
+        cal_dir.mkdir(parents=True)
+        sqlitedb = cal_dir / "Calendar.sqlitedb"
+        sqlitedb.touch()
+        # Legacy names also present — new name must win.
+        legacy = cal_dir / "Calendar Cache"
+        legacy.touch()
+
+        result = CalendarCacheSource._find_db_path()
+        assert result == sqlitedb
+
+
+def test_sqlite_source_falls_back_when_table_missing(tmp_path):
+    """`create()` returns None when expected ZCALENDARITEM table is absent."""
+    with patch.object(Path, 'home', return_value=tmp_path):
+        cal_dir = tmp_path / "Library" / "Calendars"
+        cal_dir.mkdir(parents=True)
+        sqlitedb = cal_dir / "Calendar.sqlitedb"
+        # Create a valid SQLite DB but without the legacy schema table.
+        conn = sqlite3.connect(str(sqlitedb))
+        conn.execute("CREATE TABLE CalendarItem (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        result = CalendarCacheSource.create()
+        assert result is None
+
+
+def test_sqlite_source_created_when_legacy_schema_present(tmp_path):
+    """`create()` returns a CalendarCacheSource when ZCALENDARITEM table exists."""
+    with patch.object(Path, 'home', return_value=tmp_path):
+        cal_dir = tmp_path / "Library" / "Calendars"
+        cal_dir.mkdir(parents=True)
+        sqlitedb = cal_dir / "Calendar.sqlitedb"
+        conn = sqlite3.connect(str(sqlitedb))
+        conn.execute("CREATE TABLE ZCALENDARITEM (Z_PK INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+
+        result = CalendarCacheSource.create()
+        assert result is not None
+        assert result._db_path == sqlitedb
+
+
 # ── Event filtering ───────────────────────────────────────────────────────────
 
 def test_events_within_window_included(tmp_path):

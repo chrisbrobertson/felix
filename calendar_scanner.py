@@ -138,8 +138,13 @@ class CalendarCacheSource(CalendarDataSource):
 
     @classmethod
     def _find_db_path(cls):
-        """Find Calendar Cache database among candidates."""
+        """Find Calendar Cache database among candidates.
+
+        `Calendar.sqlitedb` is the actual filename on modern macOS (Sonoma+);
+        the legacy `Calendar Cache` names are retained for older releases.
+        """
         candidates = [
+            Path.home() / "Library" / "Calendars" / "Calendar.sqlitedb",
             Path.home() / "Library" / "Calendars" / "Calendar Cache",
             Path.home() / "Library" / "Group Containers" / "group.com.apple.calendar" / "Calendar Cache",
         ]
@@ -150,7 +155,13 @@ class CalendarCacheSource(CalendarDataSource):
 
     @classmethod
     def create(cls):
-        """Return a CalendarCacheSource if DB is accessible, else None."""
+        """Return a CalendarCacheSource if DB is accessible and uses the known schema.
+
+        Probes for the ``ZCALENDARITEM`` table; if it is absent (e.g. a modern
+        macOS build where `Calendar.sqlitedb` uses a different schema) we return
+        ``None`` so ``CalendarDataSource.detect`` cleanly falls through to
+        EventKit rather than attempting a query that will fail at runtime.
+        """
         path = cls._find_db_path()
         if not path:
             log.debug("No Calendar Cache found")
@@ -159,6 +170,28 @@ class CalendarCacheSource(CalendarDataSource):
             path.stat()
         except Exception as e:
             log.debug("Calendar Cache not accessible: %s", e)
+            return None
+        # Schema probe: cheap read-only check for the expected table.
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+            try:
+                row = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='ZCALENDARITEM'"
+                ).fetchone()
+            finally:
+                conn.close()
+            if not row:
+                log.info(
+                    "Calendar SQLite at %s has no ZCALENDARITEM table "
+                    "(likely a modern macOS schema) — falling through to EventKit",
+                    path,
+                )
+                return None
+        except sqlite3.OperationalError as e:
+            log.debug("Calendar SQLite schema probe failed: %s — falling through", e)
+            return None
+        except Exception as e:
+            log.debug("Calendar SQLite schema probe errored: %s — falling through", e)
             return None
         return cls(path)
 
