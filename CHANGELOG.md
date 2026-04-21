@@ -6,6 +6,12 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-04-21
+
+Calendar ingestion reliability release. Fixes a ~10-day silent outage on the
+live daemon caused by three compounding bugs in `calendar_scanner.py` and adds
+a staleness alert so similar outages become visible within 24 hours.
+
 ### Added
 - **Calendar staleness alert in Notification Manager** — new `_check_calendar_staleness` fires a Telegram warning when no `calendar-event-*.md` file has been written in more than 24 hours, so a silent outage like the 10-day calendar ingestion failure in April 2026 is visible the next morning instead of going undetected. Dedup keyed by local date so at most one alert fires per day; decays after 7 days via `_prune_sent_alerts`. Uses the standard state-before-send pattern with rollback on send failure.
 
