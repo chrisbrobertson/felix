@@ -6,6 +6,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Calendar staleness alert in Notification Manager** — new `_check_calendar_staleness` fires a Telegram warning when no `calendar-event-*.md` file has been written in more than 24 hours, so a silent outage like the 10-day calendar ingestion failure in April 2026 is visible the next morning instead of going undetected. Dedup keyed by local date so at most one alert fires per day; decays after 7 days via `_prune_sent_alerts`. Uses the standard state-before-send pattern with rollback on send failure.
+
 ### Fixed
 - **EventKit zero-event scans now logged at WARNING with diagnostics** — a predicate returning zero events was previously indistinguishable from a successful empty window. `EventKitSource.get_events` now enumerates visible calendars and logs a WARNING that includes both the window boundaries and the calendar count when zero events are returned, so silent failures (partial grant, predicate filtering all calendars, etc.) are visible in the log stream instead of hiding behind an INFO line. The `Calendar data source: EventKit` detect log line now also reports the calendar count.
 - **Calendar SQLite path and schema probe** — `CalendarCacheSource._find_db_path` now prefers `~/Library/Calendars/Calendar.sqlitedb` (the actual filename on modern macOS) ahead of the legacy `Calendar Cache` names, restoring SQLite as the primary path per the CLAUDE.md precedence spec. `CalendarCacheSource.create()` additionally probes for the expected `ZCALENDARITEM` table via a cheap read-only `sqlite_master` query and returns `None` when absent, so `CalendarDataSource.detect` cleanly falls through to EventKit on modern macOS builds that use a different schema rather than failing at query time.

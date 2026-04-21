@@ -49,6 +49,7 @@ def _load_state() -> dict:
         "sent_pre_meeting": [],
         "sent_goal_alerts": [],
         "sent_project_alerts": [],
+        "sent_calendar_staleness_alerts": [],
     }
 
 
@@ -243,6 +244,19 @@ class NotificationManager:
                 pass  # Invalid timestamp — discard
 
         state["sent_pre_meeting"] = pruned_meetings
+
+        # Prune calendar staleness alerts older than 7 days — keep the list
+        # bounded without losing same-day dedup.
+        pruned_cal = []
+        cutoff = today - timedelta(days=7)
+        for date_str in state.get("sent_calendar_staleness_alerts", []):
+            try:
+                d = datetime.fromisoformat(date_str).date()
+            except Exception:
+                continue
+            if d >= cutoff:
+                pruned_cal.append(date_str)
+        state["sent_calendar_staleness_alerts"] = pruned_cal
 
     async def _check_daily_briefing(self, state: dict):
         """Check if daily briefing should be sent."""
@@ -749,6 +763,76 @@ class NotificationManager:
         state["sent_pre_meeting"] = list(sent_meetings)
         _save_state(state)
 
+    async def _check_calendar_staleness(self, state: dict):
+        """Warn via Telegram when no calendar-event file has been written in >24h.
+
+        Silent 10-day outages shouldn't be possible — if the scanner loop is
+        running but producing no files (EventKit grant revoked, SQLite schema
+        mismatch, predicate bug, etc.), this surfaces it. Dedup key is the local
+        date so at most one alert fires per day.
+        """
+        config = self._notification_config()
+        if not config.get("enabled", True):
+            return
+
+        cal_files = list(MEMORIES_DIR.glob("calendar-event-*.md"))
+        if not cal_files:
+            # No files ever written — could be a fresh install; stay silent.
+            return
+
+        try:
+            most_recent = max(f.stat().st_mtime for f in cal_files)
+        except Exception:
+            return
+
+        now = self._get_local_now()
+        hours_stale = (now.timestamp() - most_recent) / 3600.0
+        if hours_stale < 24:
+            return
+
+        today_str = now.date().isoformat()
+        sent = state.get("sent_calendar_staleness_alerts", []) or []
+        if today_str in sent:
+            return
+
+        last_seen = datetime.fromtimestamp(most_recent).strftime("%Y-%m-%d %H:%M")
+        msg = (
+            "⚠️ Calendar ingestion is stale\n\n"
+            f"No calendar-event files have been written in {hours_stale:.0f} hours "
+            f"(last seen {last_seen}).\n\n"
+            "Possible causes:\n"
+            "• EventKit Calendar grant revoked or partial\n"
+            "• SQLite Calendar.sqlitedb schema mismatch\n"
+            "• Predicate filtering all calendars\n"
+            "• Genuinely no events in ±7-day window\n\n"
+            "Check ~/secondbrain/logs/out.log for zero-event warnings."
+        )
+
+        # State-before-send dedup: record today's date, save, then send. Roll
+        # back on send failure so a transient Telegram outage doesn't eat the
+        # next day's alert too.
+        sent.append(today_str)
+        state["sent_calendar_staleness_alerts"] = sent
+        try:
+            _save_state(state)
+        except Exception:
+            # If we can't persist the dedup, skip the send to avoid an
+            # unbounded alert storm.
+            log.exception("Failed to save calendar-staleness dedup; skipping send")
+            sent.remove(today_str)
+            state["sent_calendar_staleness_alerts"] = sent
+            return
+        try:
+            await self.send_message(msg)
+        except Exception:
+            log.exception("Failed to send calendar staleness alert; rolling back dedup")
+            sent.remove(today_str)
+            state["sent_calendar_staleness_alerts"] = sent
+            try:
+                _save_state(state)
+            except Exception:
+                log.exception("Failed to roll back staleness dedup")
+
     def _assemble_pre_meeting_context(self, event_fm: dict, start_time: datetime) -> str:
         """Assemble pre-meeting context from event and related files."""
         title = event_fm.get("source_title") or event_fm.get("title") or "(no title)"
@@ -851,6 +935,7 @@ class NotificationManager:
         await self._check_project_alerts(state)
         _save_state(state)
         await self._check_pre_meeting_alerts(state)
+        await self._check_calendar_staleness(state)
 
     async def run_loop(self, stop_event: asyncio.Event):
         """Main notification scheduling loop."""

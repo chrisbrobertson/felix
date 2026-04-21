@@ -1707,3 +1707,192 @@ async def test_send_message_no_double_delivery_when_adapter_sends(tmp_path):
 
     a1.send_text.assert_awaited_once()
     bot_mock.send_message.assert_not_awaited()
+
+
+# ── Calendar staleness alert ─────────────────────────────────────────────────
+
+def _stale_config() -> str:
+    return (
+        "user:\n  timezone: America/Los_Angeles\n"
+        "notifications:\n  enabled: true\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_calendar_staleness_alert_fires_after_24h(tmp_path):
+    """File mtime 26h ago → alert fires once, today's date recorded."""
+    import os
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({
+        "chat_id": 123, "muted": False, "sent_calendar_staleness_alerts": []
+    }))
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(_stale_config())
+
+    evt = make_calendar_event(memories_dir, "evt1", "Old", "2026-04-11T09:00:00")
+    now = datetime(2026, 4, 21, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    stale_ts = now.timestamp() - 26 * 3600
+    os.utime(evt, (stale_ts, stale_ts))
+
+    bot_mock = AsyncMock()
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock)
+        with patch.object(mgr, "_get_local_now", return_value=now):
+            state = nm._load_state()
+            await mgr._check_calendar_staleness(state)
+
+    bot_mock.send_message.assert_called_once()
+    text = bot_mock.send_message.call_args[1]["text"]
+    assert "stale" in text.lower()
+    saved = json.loads(state_file.read_text())
+    assert "2026-04-21" in saved["sent_calendar_staleness_alerts"]
+
+
+@pytest.mark.asyncio
+async def test_calendar_staleness_alert_deduped_same_day(tmp_path):
+    """State already contains today → no send."""
+    import os
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({
+        "chat_id": 123, "muted": False,
+        "sent_calendar_staleness_alerts": ["2026-04-21"]
+    }))
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(_stale_config())
+
+    evt = make_calendar_event(memories_dir, "evt1", "Old", "2026-04-11T09:00:00")
+    now = datetime(2026, 4, 21, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    stale_ts = now.timestamp() - 48 * 3600
+    os.utime(evt, (stale_ts, stale_ts))
+
+    bot_mock = AsyncMock()
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock)
+        with patch.object(mgr, "_get_local_now", return_value=now):
+            state = nm._load_state()
+            await mgr._check_calendar_staleness(state)
+
+    bot_mock.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_calendar_staleness_alert_not_fired_when_recent(tmp_path):
+    """File mtime 2h ago → no alert."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({
+        "chat_id": 123, "muted": False, "sent_calendar_staleness_alerts": []
+    }))
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(_stale_config())
+
+    # Fresh mtime (default from write_text is "now")
+    make_calendar_event(memories_dir, "evt1", "New", "2026-04-21T09:00:00")
+    now = datetime.now(ZoneInfo("America/Los_Angeles"))
+
+    bot_mock = AsyncMock()
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock)
+        with patch.object(mgr, "_get_local_now", return_value=now):
+            state = nm._load_state()
+            await mgr._check_calendar_staleness(state)
+
+    bot_mock.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_calendar_staleness_alert_not_fired_when_no_files(tmp_path):
+    """Empty memories dir → silent (fresh-install case, not stale)."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({
+        "chat_id": 123, "muted": False, "sent_calendar_staleness_alerts": []
+    }))
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(_stale_config())
+
+    now = datetime(2026, 4, 21, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    bot_mock = AsyncMock()
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock)
+        with patch.object(mgr, "_get_local_now", return_value=now):
+            state = nm._load_state()
+            await mgr._check_calendar_staleness(state)
+
+    bot_mock.send_message.assert_not_called()
+
+
+def test_calendar_staleness_alert_prunes_state_after_7_days(tmp_path):
+    """Entries older than 7 days are dropped by _prune_sent_alerts."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+    # 8-day-old entry (should be pruned) + fresh entry (should survive)
+    state_file.write_text(json.dumps({
+        "chat_id": 123, "muted": False,
+        "sent_calendar_staleness_alerts": ["2026-04-13", "2026-04-21"],
+        "sent_commitment_alerts": [],
+        "sent_pre_meeting": [],
+    }))
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(_stale_config())
+
+    now = datetime(2026, 4, 21, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    bot_mock = AsyncMock()
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock)
+        with patch.object(mgr, "_get_local_now", return_value=now):
+            state = nm._load_state()
+            mgr._prune_sent_alerts(state)
+
+    assert "2026-04-13" not in state["sent_calendar_staleness_alerts"]
+    assert "2026-04-21" in state["sent_calendar_staleness_alerts"]
+
+
+@pytest.mark.asyncio
+async def test_calendar_staleness_send_failure_rolls_back_state(tmp_path):
+    """If send_message raises, today's date must not remain in state."""
+    import os
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({
+        "chat_id": 123, "muted": False, "sent_calendar_staleness_alerts": []
+    }))
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(_stale_config())
+
+    evt = make_calendar_event(memories_dir, "evt1", "Old", "2026-04-11T09:00:00")
+    now = datetime(2026, 4, 21, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    stale_ts = now.timestamp() - 30 * 3600
+    os.utime(evt, (stale_ts, stale_ts))
+
+    bot_mock = AsyncMock()
+    bot_mock.send_message.side_effect = RuntimeError("telegram down")
+
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock)
+        with patch.object(mgr, "_get_local_now", return_value=now):
+            state = nm._load_state()
+            await mgr._check_calendar_staleness(state)
+
+    saved = json.loads(state_file.read_text())
+    assert "2026-04-21" not in saved["sent_calendar_staleness_alerts"]
