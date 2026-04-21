@@ -27,6 +27,20 @@ from calendar_scanner import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_calendar_state_file(monkeypatch, tmp_path_factory):
+    """Redirect calendar_scanner.STATE_FILE to a per-test tmp path.
+
+    Test pollution of the production state file (observed April 2026: 28
+    orphan keys with literal `test-host` hostname) is prevented at the
+    fixture layer rather than relying on every test to remember to patch
+    STATE_FILE. Tests that set STATE_FILE explicitly via `patch.object` still
+    work because their inner patch supersedes this outer autouse patch.
+    """
+    ghost = tmp_path_factory.mktemp("calendar-state") / "calendar-scanner-state.json"
+    monkeypatch.setattr(cs, "STATE_FILE", ghost, raising=False)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def make_event(
@@ -1259,6 +1273,42 @@ def test_eventkit_logs_warning_on_zero_events(caplog):
     assert events == []
     msgs = [r.message for r in caplog.records if r.levelname == "WARNING"]
     assert any("0 events" in m and "3 calendars" in m for m in msgs), msgs
+
+
+def test_production_state_file_never_written_during_tests(tmp_path):
+    """Meta-test: the production STATE_FILE must not be created or modified.
+
+    A test that forgets to redirect STATE_FILE has historically leaked 28
+    orphan `test-host` keys into the live daemon's state (April 2026). The
+    autouse `_isolate_calendar_state_file` fixture should make that
+    impossible. This test snapshots the production path's mtime before and
+    after constructing a CalendarScanner and confirms it is unchanged.
+    """
+    # Resolve the production path independent of any patching — we hardcode
+    # the same expression as the module-level constant.
+    import os as _os
+    from pathlib import Path as _Path
+    prod_state = _Path(
+        _os.environ.get("SECOND_BRAIN_DIR", str(_Path.home() / "secondbrain"))
+    ) / "calendar-scanner-state.json"
+
+    before_mtime = prod_state.stat().st_mtime if prod_state.exists() else None
+    before_size = prod_state.stat().st_size if prod_state.exists() else None
+
+    # Construct and exercise a scanner under the autouse redirection. If any
+    # code path still writes to the production file this will be flagged.
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "_hostname", return_value="test-host"):
+        scanner = CalendarScanner()
+        scanner._save_state({"last_scan_time": None, "processed": {"x": "y"}})
+
+    after_mtime = prod_state.stat().st_mtime if prod_state.exists() else None
+    after_size = prod_state.stat().st_size if prod_state.exists() else None
+
+    assert before_mtime == after_mtime, "Production STATE_FILE mtime changed"
+    assert before_size == after_size, "Production STATE_FILE size changed"
 
 
 def test_load_state_prunes_stacked_hostname_keys(tmp_path):
