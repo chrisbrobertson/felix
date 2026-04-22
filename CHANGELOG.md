@@ -6,6 +6,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Test isolation: autouse fixture now redirects `MEMORIES_DIR` as well as `STATE_FILE`** — v1.6.0's fixture only isolated `STATE_FILE`. `test_filename_format` patched `_hostname="test-host"` but not `MEMORIES_DIR`, so a pytest run under v1.6.1's (now-working) migration renamed 27 real calendar-event files in iCloud to a `test-host-` prefix. Autouse fixture now redirects both; added a meta-test that snapshots real production `MEMORIES_DIR` calendar-event filenames+mtimes and asserts no mutation after `CalendarScanner()` is constructed under `_hostname="test-host"`.
+
 ## [1.6.1] — 2026-04-22
 
 ### Fixed
