@@ -695,15 +695,19 @@ class CalendarScanner:
                     deleted += 1
                     continue
 
-                # Rename to canonical form; stamp hostname into frontmatter if
-                # it was missing so future runs (and other readers) can trust it.
-                if needs_stamp:
-                    self._stamp_hostname_in_frontmatter(path, canonical_host)
-                    stamped += 1
+                # Rename to canonical form FIRST, then stamp frontmatter.
+                # Stacked filenames can be 250+ chars; `_stamp_hostname_in_frontmatter`
+                # writes to a `.md.tmp` sibling which would push the component
+                # over the APFS 255-byte limit and raise OSError(63). Renaming
+                # first shortens the name before any tmp-sibling write.
+                old_name = path.name
                 path.rename(canonical_path)
-                if path.name in processed:
-                    processed[canonical_name] = processed.pop(path.name)
+                if old_name in processed:
+                    processed[canonical_name] = processed.pop(old_name)
                 renamed += 1
+                if needs_stamp:
+                    self._stamp_hostname_in_frontmatter(canonical_path, canonical_host)
+                    stamped += 1
             except (OSError, FileNotFoundError):
                 pass
             except Exception:

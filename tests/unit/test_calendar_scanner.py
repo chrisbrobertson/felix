@@ -1118,6 +1118,40 @@ def test_cleanup_collapses_stacked_hostname_to_canonical(tmp_path):
     assert not stacked.exists()
 
 
+def test_cleanup_handles_overlong_stacked_filename(tmp_path):
+    """Stacked filenames near the 255-byte component limit must still collapse.
+
+    Regression: before the reorder fix, the cleanup called
+    ``_stamp_hostname_in_frontmatter`` on the stacked path BEFORE renaming it
+    to canonical form. That helper writes a ``.md.tmp`` sibling whose filename
+    is 4 chars longer than the source, pushing any ~252+ char stacked name
+    past the APFS 255-byte per-component limit → ``OSError(63, 'File name too
+    long')`` → silently swallowed → file remained stacked forever.
+    """
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+
+    # Build a 252-char stacked filename (matches the real production shape).
+    stacked_stem = "calendar-event-" + ("test-host-Chriss-MacBook-Air-" * 7) + "2026-04-10-meeting-abc12345"
+    stacked_name = stacked_stem + ".md"
+    assert 248 <= len(stacked_name) <= 255
+    stacked = memories_dir / stacked_name
+    # No hostname in frontmatter → forces the stamp-then-rename code path.
+    stacked.write_text("---\ntype: calendar_event\n---\n\n## Details\n")
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "STATE_FILE", state_file), \
+         patch.object(cs, "_hostname", return_value="Chriss-MacBook-Air"):
+        CalendarScanner()
+
+    canonical = memories_dir / "calendar-event-Chriss-MacBook-Air-2026-04-10-meeting-abc12345.md"
+    assert canonical.exists(), "canonical file should exist after cleanup"
+    assert not stacked.exists(), "stacked file should have been renamed away"
+    fm = _parse_frontmatter(canonical.read_text())
+    assert fm.get("hostname") == "Chriss-MacBook-Air"
+
+
 def test_cleanup_stamps_missing_hostname_in_frontmatter(tmp_path):
     """Legacy file without hostname frontmatter gets hostname stamped during cleanup."""
     memories_dir = tmp_path / "memories"

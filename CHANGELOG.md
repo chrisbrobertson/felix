@@ -6,6 +6,11 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.6.1] — 2026-04-22
+
+### Fixed
+- **Calendar migration silently skipped stacked files on APFS** — the v1.6.0 migration called `_stamp_hostname_in_frontmatter` on the stacked path before renaming it to canonical form. That helper writes a `.md.tmp` sibling whose filename is 4 chars longer than the source, so any stacked filename ≥252 chars pushed the `.tmp` sibling past the APFS 255-byte per-component limit → `OSError(63, 'File name too long')` → swallowed by the `except (OSError, FileNotFoundError): pass` block. Result: on the live daemon, 11 of 12 stacked files remained untouched after the v1.6.0 deploy (only the one sub-252-char stacked file was stamped, and even it failed to rename). The cleanup now renames to the canonical path FIRST (which shortens the name well under the limit) and then stamps the hostname into frontmatter. Added a regression test covering a 252+ char stacked stem without `hostname` in frontmatter.
+
 ## [1.6.0] — 2026-04-21
 
 Calendar ingestion reliability release. Fixes a ~10-day silent outage on the
