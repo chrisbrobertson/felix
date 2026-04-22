@@ -15,6 +15,25 @@ import code_scanner as cs
 from code_scanner import CodeScanner, _parse_frontmatter
 
 
+@pytest.fixture(autouse=True)
+def _isolate_code_scanner_paths(monkeypatch, tmp_path_factory):
+    """Redirect code_scanner.MEMORIES_DIR and DEPLOY_DIR to per-test tmp paths.
+
+    Test pollution of the production memories directory (observed April 2026:
+    474 `project-candidate-*.md` files mangled into `project-{hostname}-candidate-*.md`
+    form, the majority of damage caused by pytest runs where tests instantiated
+    `CodeScanner()` without patching MEMORIES_DIR — triggering the overly-greedy
+    `_migrate_project_filenames` against the real iCloud dir) is prevented at
+    the fixture layer rather than relying on every test to remember both
+    patches. Tests that set either constant explicitly via `patch.object` still
+    work because their inner patch supersedes this outer autouse patch.
+    """
+    ghost_memories = tmp_path_factory.mktemp("code-memories")
+    ghost_deploy = tmp_path_factory.mktemp("code-deploy")
+    monkeypatch.setattr(cs, "MEMORIES_DIR", ghost_memories, raising=False)
+    monkeypatch.setattr(cs, "DEPLOY_DIR", ghost_deploy, raising=False)
+
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def make_git_repo(base: Path, name: str, commits: int = 1) -> Path:

@@ -19,6 +19,21 @@ from project_inference_scanner import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_project_inference_paths(monkeypatch, tmp_path_factory):
+    """Redirect project_inference_scanner.MEMORIES_DIR and DEPLOY_DIR to per-test tmp paths.
+
+    Prevents test pollution of the production memories directory at the
+    fixture layer. Tests that set either constant explicitly via
+    `patch.object` still work because their inner patch supersedes this
+    outer autouse patch.
+    """
+    ghost_memories = tmp_path_factory.mktemp("pis-memories")
+    ghost_deploy = tmp_path_factory.mktemp("pis-deploy")
+    monkeypatch.setattr(pis, "MEMORIES_DIR", ghost_memories, raising=False)
+    monkeypatch.setattr(pis, "DEPLOY_DIR", ghost_deploy, raising=False)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def make_memory_file(memories_dir, filename, type_, source_title, summary="Test summary"):
