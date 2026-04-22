@@ -6,6 +6,7 @@ newly-created or updated content, calls LLM to infer what projects the user
 is working on, and writes project-candidate-*.md files for human confirmation.
 """
 import asyncio
+import errno
 import hashlib
 import json
 import logging
@@ -26,6 +27,11 @@ CONFIG_PATH = BRAIN_DIR / "config.yaml"
 DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
 
 MAX_FILES_PER_CYCLE = 20
+
+UNMANGLE_SENTINEL_NAME = ".project-candidate-unmangle-v1.done"
+# Extracts the canonical `candidate-{slug}-{id}` suffix from a possibly-
+# hostname-mangled stem like `project-Chriss-MacBook-Air-Chriss-Air-candidate-foo-abc123`.
+_CANDIDATE_TAIL_RE = re.compile(r"(candidate-.+)$")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -77,6 +83,145 @@ class ProjectInferenceScanner:
         self.SOURCE_TYPES = ["email_thread", "meeting_transcript", "slack_thread"]
         self.STATE_FILE = DEPLOY_DIR / "project-inference-state.json"
         self.REJECTED_FILE = DEPLOY_DIR / "rejected-candidates.json"
+        self._unmangle_candidate_filenames()
+
+    def _unmangle_candidate_filenames(self):
+        """One-shot cleanup of candidate files mangled by code_scanner's greedy migration.
+
+        Before v1.6.2, ``code_scanner._migrate_project_filenames`` globbed
+        ``project-*.md`` and re-prefixed any file that didn't start with the
+        current hostname — including candidate files owned by this scanner.
+        Combined with macOS's unstable ``socket.gethostname()`` (which flips
+        between values like ``Chriss-Air`` and ``Chriss-MacBook-Air``), this
+        stacked 1–3 hostname segments onto every ``project-candidate-*.md``
+        filename. April 2026: 474 of 474 candidate files on disk were
+        mangled; zero canonical remained.
+
+        This is a one-shot sentinel-gated cleanup. On first run it extracts
+        the canonical ``candidate-{slug}-{id}`` tail via regex, renames to
+        ``project-{tail}.md``, and resolves collisions by keeping the newer
+        (by frontmatter ``created`` field, falling back to mtime). Wraps all
+        file I/O in try/except for OSError to survive iCloud transient
+        errors (EDEADLK on placeholder reads) — any file that fails this
+        cycle simply retries on the next scanner boot.
+
+        After the first successful pass the sentinel is written and
+        subsequent calls return immediately.
+        """
+        sentinel = self.STATE_FILE.parent / UNMANGLE_SENTINEL_NAME
+        if sentinel.exists():
+            return
+        if not MEMORIES_DIR.exists():
+            try:
+                sentinel.parent.mkdir(parents=True, exist_ok=True)
+                sentinel.touch()
+            except Exception:
+                log.exception("Failed to write project-candidate unmangle sentinel")
+            return
+
+        renamed = 0
+        deleted_dups = 0
+        skipped = 0
+        transient = 0
+
+        # Match only mangled forms: `project-{something}-candidate-*.md`. The
+        # canonical `project-candidate-*.md` shape is excluded by the negative
+        # lookahead on the first segment.
+        for path in MEMORIES_DIR.glob("project-*-candidate-*.md"):
+            try:
+                stem = path.stem  # e.g. "project-Chriss-MacBook-Air-candidate-foo-abc123"
+                rest = stem[len("project-"):]
+                m = _CANDIDATE_TAIL_RE.search(rest)
+                if not m:
+                    log.warning(
+                        "Project-candidate unmangle: no candidate- pattern in %s, skipping",
+                        path.name,
+                    )
+                    skipped += 1
+                    continue
+                canonical_tail = m.group(1)
+                canonical_name = f"project-{canonical_tail}.md"
+                canonical_path = path.parent / canonical_name
+
+                if path.name == canonical_name:
+                    # Already canonical — glob shouldn't match this, but guard.
+                    continue
+
+                if canonical_path.exists():
+                    # Collision: keep whichever is "newer" by frontmatter
+                    # `created` field (falling back to mtime if absent). The
+                    # `status` field also matters — a `confirmed` or
+                    # `rejected` record trumps `pending_confirmation`.
+                    winner, loser = self._pick_candidate_winner(path, canonical_path)
+                    if loser.exists():
+                        loser.unlink()
+                        deleted_dups += 1
+                    if winner != canonical_path:
+                        # Winner is the mangled path; rename it onto canonical.
+                        winner.rename(canonical_path)
+                        renamed += 1
+                    continue
+
+                path.rename(canonical_path)
+                renamed += 1
+            except OSError as e:
+                # iCloud EDEADLK (errno 11) and EAGAIN are transient — skip
+                # this file and let the next scanner boot retry. Do NOT treat
+                # as a hard failure that would crash migration.
+                if e.errno in (errno.EDEADLK, errno.EAGAIN):
+                    log.debug(
+                        "Project-candidate unmangle: transient OSError on %s (%s), retry next boot",
+                        path.name, e,
+                    )
+                    transient += 1
+                else:
+                    log.exception("Project-candidate unmangle failed for %s", path)
+            except Exception:
+                log.exception("Project-candidate unmangle failed for %s", path)
+
+        if renamed or deleted_dups:
+            log.info(
+                "Project-candidate unmangle: renamed=%d deleted_duplicates=%d skipped=%d transient=%d",
+                renamed, deleted_dups, skipped, transient,
+            )
+
+        # Only stamp the sentinel if there are no transient errors left —
+        # otherwise we want the next boot to retry those files.
+        if transient == 0:
+            try:
+                sentinel.parent.mkdir(parents=True, exist_ok=True)
+                sentinel.touch()
+            except Exception:
+                log.exception("Failed to write project-candidate unmangle sentinel")
+
+    @staticmethod
+    def _pick_candidate_winner(a: Path, b: Path) -> tuple:
+        """Return (winner, loser) tuple for two competing candidate paths.
+
+        Precedence (highest → lowest):
+        1. Any file with `status: confirmed` or `status: rejected` beats
+           `status: pending_confirmation` (user intent is authoritative).
+        2. Newer frontmatter `created` timestamp.
+        3. Newer file mtime (fallback when `created` is missing/malformed).
+        """
+        def _signal(path: Path) -> tuple:
+            try:
+                text = path.read_text()
+                fm = _parse_frontmatter(text)
+            except OSError:
+                fm = {}
+            status = str(fm.get("status", "pending_confirmation"))
+            status_rank = 1 if status in ("confirmed", "rejected") else 0
+            created = str(fm.get("created", "")) or ""
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                mtime = 0.0
+            return (status_rank, created, mtime)
+
+        if _signal(a) >= _signal(b):
+            return a, b
+        return b, a
 
     # ── Config ────────────────────────────────────────────────────────────────
 
