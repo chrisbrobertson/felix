@@ -29,16 +29,23 @@ from calendar_scanner import (
 
 @pytest.fixture(autouse=True)
 def _isolate_calendar_state_file(monkeypatch, tmp_path_factory):
-    """Redirect calendar_scanner.STATE_FILE to a per-test tmp path.
+    """Redirect calendar_scanner.STATE_FILE and MEMORIES_DIR to per-test tmp paths.
 
     Test pollution of the production state file (observed April 2026: 28
-    orphan keys with literal `test-host` hostname) is prevented at the
-    fixture layer rather than relying on every test to remember to patch
-    STATE_FILE. Tests that set STATE_FILE explicitly via `patch.object` still
-    work because their inner patch supersedes this outer autouse patch.
+    orphan keys with literal `test-host` hostname) and of the production
+    memories directory (observed April 2026: `test_filename_format`
+    instantiated CalendarScanner() with `_hostname="test-host"` but forgot
+    to patch MEMORIES_DIR, so after v1.6.1's migration fix the production
+    cleanup ran during pytest and renamed 11 real calendar-event files to a
+    `test-host-` prefix) is prevented at the fixture layer rather than
+    relying on every test to remember both patches. Tests that set either
+    constant explicitly via `patch.object` still work because their inner
+    patch supersedes this outer autouse patch.
     """
-    ghost = tmp_path_factory.mktemp("calendar-state") / "calendar-scanner-state.json"
-    monkeypatch.setattr(cs, "STATE_FILE", ghost, raising=False)
+    ghost_state = tmp_path_factory.mktemp("calendar-state") / "calendar-scanner-state.json"
+    ghost_memories = tmp_path_factory.mktemp("calendar-memories")
+    monkeypatch.setattr(cs, "STATE_FILE", ghost_state, raising=False)
+    monkeypatch.setattr(cs, "MEMORIES_DIR", ghost_memories, raising=False)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1343,6 +1350,37 @@ def test_production_state_file_never_written_during_tests(tmp_path):
 
     assert before_mtime == after_mtime, "Production STATE_FILE mtime changed"
     assert before_size == after_size, "Production STATE_FILE size changed"
+
+
+def test_production_memories_dir_never_touched_during_tests(tmp_path):
+    """Meta-test: the production MEMORIES_DIR must not be written or renamed-within.
+
+    Regression: `test_filename_format` historically patched `_hostname` to
+    "test-host" but forgot to patch `MEMORIES_DIR`, so the v1.6.1 migration
+    fix (rename-before-stamp) successfully renamed 11 real calendar-event
+    files in iCloud to a `test-host-` prefix during a pytest run. The
+    autouse fixture now redirects MEMORIES_DIR; this meta-test asserts no
+    calendar-event-*.md file in the real production MEMORIES_DIR is
+    created, deleted, or renamed when a CalendarScanner is constructed
+    under a `_hostname="test-host"` patch.
+    """
+    from pathlib import Path as _Path
+    prod = _Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "second-brain" / "memories"
+    if not prod.exists():
+        pytest.skip("Production memories dir not present on this machine")
+
+    before = sorted((f.name, f.stat().st_mtime) for f in prod.glob("calendar-event-*.md"))
+
+    # Reproduce exactly the shape of test_filename_format: patch _hostname
+    # but NOT MEMORIES_DIR. The autouse fixture must still isolate it.
+    with patch.object(cs, "_hostname", return_value="test-host"):
+        CalendarScanner()
+
+    after = sorted((f.name, f.stat().st_mtime) for f in prod.glob("calendar-event-*.md"))
+    assert before == after, (
+        "Production MEMORIES_DIR was mutated by a test. Filenames or "
+        "mtimes changed — likely the autouse fixture stopped isolating it."
+    )
 
 
 def test_load_state_prunes_stacked_hostname_keys(tmp_path):
