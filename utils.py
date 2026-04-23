@@ -1,4 +1,5 @@
 """Shared helpers for second-brain daemon."""
+import errno
 import logging
 import re
 import time
@@ -81,12 +82,12 @@ def load_config(config_path: Path) -> dict:
             _config_cache_mtime = mtime
             return parsed
         except OSError as e:
-            if e.errno == 11:  # EDEADLK — transient iCloud lock
+            if e.errno in (errno.EDEADLK, errno.EAGAIN):  # transient iCloud lock
                 if attempt < len(delays) - 1:
                     time.sleep(delay)
                     continue
                 log.warning(
-                    "config.yaml read hit iCloud EDEADLK after %d retries; "
+                    "config.yaml read hit iCloud EDEADLK/EAGAIN after %d retries; "
                     "serving cached config (may be stale)", len(delays),
                 )
             else:
@@ -132,12 +133,43 @@ def read_text_with_retry(
         try:
             return path.read_text(encoding=encoding)
         except OSError as e:
-            if e.errno == 11:  # EDEADLK
+            if e.errno in (errno.EDEADLK, errno.EAGAIN):  # transient iCloud lock
                 if attempt < len(delays) - 1:
                     time.sleep(delay)
                     continue
-                log.warning("read_text_with_retry: %s — iCloud EDEADLK after %d retries", path.name, len(delays))
+                log.warning("read_text_with_retry: %s — iCloud EDEADLK/EAGAIN after %d retries", path.name, len(delays))
             else:
                 log.warning("read_text_with_retry: %s — %s", path.name, e)
+            break
+    return default
+
+
+def read_bytes_with_retry(
+    path: Path,
+    *,
+    delays: tuple = (0.1, 0.5, 1.0),
+    default: Optional[bytes] = None,
+) -> Optional[bytes]:
+    """Read a binary file, retrying on iCloud EDEADLK/EAGAIN.
+
+    Mirror of read_text_with_retry for callers that need raw bytes
+    (e.g. skill_executor checksum verification). Returns `default`
+    (None by default) if the file doesn't exist or all retries fail —
+    callers should treat None as "file temporarily unavailable".
+    """
+    if not path.exists():
+        return default
+
+    for attempt, delay in enumerate(delays):
+        try:
+            return path.read_bytes()
+        except OSError as e:
+            if e.errno in (errno.EDEADLK, errno.EAGAIN):  # transient iCloud lock
+                if attempt < len(delays) - 1:
+                    time.sleep(delay)
+                    continue
+                log.warning("read_bytes_with_retry: %s — iCloud EDEADLK/EAGAIN after %d retries", path.name, len(delays))
+            else:
+                log.warning("read_bytes_with_retry: %s — %s", path.name, e)
             break
     return default
