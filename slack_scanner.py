@@ -29,6 +29,7 @@ SLACK_API_BASE = "https://slack.com/api"
 MAX_CHANNELS_PER_CYCLE = 20
 MAX_THREADS_PER_CHANNEL = 30
 MAX_TRANSCRIPT_LINES = 50
+MAX_SLACK_PAGES = 50
 
 
 class SlackScanner:
@@ -121,7 +122,7 @@ class SlackScanner:
 
         messages = []
         cursor = None
-        while True:
+        for _ in range(MAX_SLACK_PAGES):
             params = {"channel": channel_id, "oldest": oldest, "limit": 100, "inclusive": str(inclusive).lower()}
             if cursor:
                 params["cursor"] = cursor
@@ -133,6 +134,8 @@ class SlackScanner:
             if not cursor:
                 break
             await asyncio.sleep(1)
+        else:
+            log.warning("slack: hit %d-page limit fetching history for channel %s", MAX_SLACK_PAGES, channel_id)
         return messages
 
     # ── Thread retrieval ──────────────────────────────────────────────────────
@@ -141,7 +144,7 @@ class SlackScanner:
         """Return all messages in a thread (including root message)."""
         replies = []
         cursor = None
-        while True:
+        for _ in range(MAX_SLACK_PAGES):
             params = {"channel": channel_id, "ts": thread_ts, "limit": 100}
             if cursor:
                 params["cursor"] = cursor
@@ -153,6 +156,8 @@ class SlackScanner:
             if not cursor:
                 break
             await asyncio.sleep(1)
+        else:
+            log.warning("slack: hit %d-page limit fetching replies for thread %s", MAX_SLACK_PAGES, thread_ts)
         return replies
 
     # ── User identity resolution ──────────────────────────────────────────────

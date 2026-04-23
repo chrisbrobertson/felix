@@ -890,7 +890,7 @@ class CalendarScanner:
                 "notes": "No calendar data source available"
             }
 
-        events = source.get_events(start_date, end_date, skip_calendars)
+        events = await asyncio.to_thread(source.get_events, start_date, end_date, skip_calendars)
 
         # Deduplicate (same logic as _run_scan)
         dedup: dict = {}
@@ -974,7 +974,7 @@ class CalendarScanner:
             log.warning("No calendar data source available — skipping scan")
             return
 
-        events = source.get_events(start_date, end_date, skip_calendars)
+        events = await asyncio.to_thread(source.get_events, start_date, end_date, skip_calendars)
 
         # Deduplicate: same event on multiple calendars → one merged entry.
         # Key: (lowercase title, start truncated to minute).  This is stable

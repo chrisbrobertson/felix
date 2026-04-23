@@ -255,6 +255,9 @@ class ProjectInferenceScanner:
 
     def _save_state(self, state: dict) -> None:
         """Save state to STATE_FILE atomically."""
+        # Prune stale entries for files that no longer exist — keeps the state file lean
+        if "processed" in state:
+            state["processed"] = {k: v for k, v in state["processed"].items() if (MEMORIES_DIR / k).exists()}
         tmp = self.STATE_FILE.with_suffix(".tmp")
         try:
             tmp.write_text(json.dumps(state, indent=2))

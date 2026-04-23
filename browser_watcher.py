@@ -260,7 +260,7 @@ class BrowserWatcher:
 
         config = load_config(CONFIG_PATH)
 
-        entries = self._fetch_recent_urls(since)
+        entries = await asyncio.to_thread(self._fetch_recent_urls, since)
 
         processed = 0
         skipped = 0
@@ -304,7 +304,7 @@ class BrowserWatcher:
 
             try:
                 since = datetime.now() - timedelta(seconds=interval * 2)
-                entries = self._fetch_recent_urls(since)
+                entries = await asyncio.to_thread(self._fetch_recent_urls, since)
                 for entry in entries:
                     if self._should_process(entry, config):
                         await self.process_url(entry)
