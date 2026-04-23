@@ -10,6 +10,8 @@ from typing import Optional
 
 import yaml
 
+from utils import load_config
+
 log = logging.getLogger("contact-tracker")
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
@@ -77,9 +79,7 @@ class ContactTracker:
     # ── Config ────────────────────────────────────────────────────────────────
 
     def _load_config(self) -> dict:
-        if CONFIG_PATH.exists():
-            return yaml.safe_load(CONFIG_PATH.read_text()) or {}
-        return {}
+        return load_config(CONFIG_PATH)
 
     def _tracker_config(self) -> dict:
         return self._load_config().get("contact_tracker", {})

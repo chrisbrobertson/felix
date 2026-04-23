@@ -11,6 +11,7 @@ from typing import Optional
 import yaml
 
 from llm_routes import resolve
+from utils import load_config
 
 log = logging.getLogger("commitment-tracker")
 
@@ -169,9 +170,7 @@ class CommitmentTracker:
     # ── Config ────────────────────────────────────────────────────────────────
 
     def _load_config(self) -> dict:
-        if CONFIG_PATH.exists():
-            return yaml.safe_load(CONFIG_PATH.read_text()) or {}
-        return {}
+        return load_config(CONFIG_PATH)
 
     def _tracker_config(self) -> dict:
         return self._load_config().get("commitment_tracker", {})

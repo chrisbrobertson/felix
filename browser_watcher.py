@@ -13,6 +13,7 @@ from memory_writer import MemoryWriter
 from skill_executor import SkillExecutor
 from content_fetcher import fetch_url_content
 from skill_router import detect_content_type, get_skill_and_depth
+from utils import load_config
 
 log = logging.getLogger("browser-watcher")
 
@@ -257,11 +258,7 @@ class BrowserWatcher:
         days = min(days, 90)
         since = datetime.now() - timedelta(days=days)
 
-        try:
-            config = yaml.safe_load(CONFIG_PATH.read_text())
-        except Exception as e:
-            log.warning(f"Config read failed during backfill: {e}")
-            config = {}
+        config = load_config(CONFIG_PATH)
 
         entries = self._fetch_recent_urls(since)
 
@@ -301,11 +298,7 @@ class BrowserWatcher:
         while not stop_event.is_set():
             # Re-read config every iteration — picks up skip_domain edits, interval
             # changes, etc. without requiring a daemon restart. It's a tiny YAML file.
-            try:
-                config = yaml.safe_load(CONFIG_PATH.read_text())
-            except Exception as e:
-                log.warning(f"Config read failed, using defaults: {e}")
-                config = {}
+            config = load_config(CONFIG_PATH)
 
             interval = config.get("browser_watcher", {}).get("interval_seconds", 300)
 

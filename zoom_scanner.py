@@ -15,6 +15,7 @@ import yaml
 
 from llm_routes import resolve
 from secrets import get_secret_or_env
+from utils import load_config
 
 log = logging.getLogger("zoom-scanner")
 
@@ -44,9 +45,7 @@ class ZoomScanner:
     # ── Config ────────────────────────────────────────────────────────────────
 
     def _load_config(self) -> dict:
-        if CONFIG_PATH.exists():
-            return yaml.safe_load(CONFIG_PATH.read_text()) or {}
-        return {}
+        return load_config(CONFIG_PATH)
 
     def _scanner_config(self) -> dict:
         return self._load_config().get("zoom_scanner", {})

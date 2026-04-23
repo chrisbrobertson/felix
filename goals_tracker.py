@@ -7,6 +7,8 @@ from pathlib import Path
 
 import yaml
 
+from utils import read_text_with_retry
+
 # ── Module-level constants ────────────────────────────────────────────────────
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
 MEMORIES_DIR = BRAIN_DIR / "memories"
@@ -146,8 +148,9 @@ class GoalManager:
         filtered = []
         for path in goals:
             try:
-                with open(path) as f:
-                    content = f.read()
+                content = read_text_with_retry(path, default="")
+                if not content:
+                    continue
                 # Parse frontmatter
                 match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
                 if not match:
@@ -187,8 +190,9 @@ class GoalManager:
             raise ValueError(f"Invalid status '{new_status}'. Must be one of: {valid_statuses}")
 
         # Read current frontmatter
-        with open(path) as f:
-            content = f.read()
+        content = read_text_with_retry(path, default="")
+        if not content:
+            raise ValueError(f"Could not read file: {path}")
         match = re.match(r"^---\n(.*?)\n---\n\n(.*)$", content, re.DOTALL)
         if not match:
             raise ValueError(f"Invalid file format: {path}")
@@ -279,8 +283,9 @@ class GoalManager:
         filtered = []
         for path in projects:
             try:
-                with open(path) as f:
-                    content = f.read()
+                content = read_text_with_retry(path, default="")
+                if not content:
+                    continue
                 match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
                 if not match:
                     continue
@@ -324,8 +329,9 @@ class GoalManager:
             raise ValueError(f"Invalid status '{new_status}'. Must be one of: {valid_statuses}")
 
         # Read current frontmatter
-        with open(path) as f:
-            content = f.read()
+        content = read_text_with_retry(path, default="")
+        if not content:
+            raise ValueError(f"Could not read file: {path}")
         match = re.match(r"^---\n(.*?)\n---\n\n(.*)$", content, re.DOTALL)
         if not match:
             raise ValueError(f"Invalid file format: {path}")
@@ -364,8 +370,9 @@ class GoalManager:
     def add_milestone(self, project_path: Path, text: str) -> None:
         """Append a milestone to project's milestone list."""
         # Read current frontmatter
-        with open(project_path) as f:
-            content = f.read()
+        content = read_text_with_retry(project_path, default="")
+        if not content:
+            raise ValueError(f"Could not read file: {project_path}")
         match = re.match(r"^---\n(.*?)\n---\n\n(.*)$", content, re.DOTALL)
         if not match:
             raise ValueError(f"Invalid file format: {project_path}")
@@ -384,8 +391,9 @@ class GoalManager:
     def toggle_milestone(self, project_path: Path, milestone_index: int) -> None:
         """Toggle the 'done' status of a milestone (1-based index)."""
         # Read current frontmatter
-        with open(project_path) as f:
-            content = f.read()
+        content = read_text_with_retry(project_path, default="")
+        if not content:
+            raise ValueError(f"Could not read file: {project_path}")
         match = re.match(r"^---\n(.*?)\n---\n\n(.*)$", content, re.DOTALL)
         if not match:
             raise ValueError(f"Invalid file format: {project_path}")
@@ -413,16 +421,18 @@ class GoalManager:
     def link_goal_to_project(self, project_path: Path, goal_path: Path) -> None:
         """Link a project to a goal. Updates both files atomically with rollback."""
         # Read both frontmatters
-        with open(goal_path) as f:
-            goal_content = f.read()
+        goal_content = read_text_with_retry(goal_path, default="")
+        if not goal_content:
+            raise ValueError(f"Could not read goal file: {goal_path}")
         goal_match = re.match(r"^---\n(.*?)\n---\n\n(.*)$", goal_content, re.DOTALL)
         if not goal_match:
             raise ValueError(f"Invalid goal file format: {goal_path}")
         fm_goal = yaml.safe_load(goal_match.group(1))
         goal_body = goal_match.group(2)
 
-        with open(project_path) as f:
-            project_content = f.read()
+        project_content = read_text_with_retry(project_path, default="")
+        if not project_content:
+            raise ValueError(f"Could not read project file: {project_path}")
         project_match = re.match(r"^---\n(.*?)\n---\n\n(.*)$", project_content, re.DOTALL)
         if not project_match:
             raise ValueError(f"Invalid project file format: {project_path}")
@@ -455,8 +465,9 @@ class GoalManager:
     def unlink_goal_from_project(self, project_path: Path) -> None:
         """Unlink a project from its goal. Updates both files atomically."""
         # Read project frontmatter
-        with open(project_path) as f:
-            project_content = f.read()
+        project_content = read_text_with_retry(project_path, default="")
+        if not project_content:
+            raise ValueError(f"Could not read project file: {project_path}")
         project_match = re.match(r"^---\n(.*?)\n---\n\n(.*)$", project_content, re.DOTALL)
         if not project_match:
             raise ValueError(f"Invalid project file format: {project_path}")
@@ -473,21 +484,23 @@ class GoalManager:
 
         # Update goal file if it exists
         if goal_path.exists():
-            with open(goal_path) as f:
-                goal_content = f.read()
-            goal_match = re.match(r"^---\n(.*?)\n---\n\n(.*)$", goal_content, re.DOTALL)
-            if goal_match:
-                fm_goal = yaml.safe_load(goal_match.group(1))
-                goal_body = goal_match.group(2)
+            goal_content = read_text_with_retry(goal_path, default="")
+            if not goal_content:
+                pass  # Skip updating goal if we can't read it
+            else:
+                goal_match = re.match(r"^---\n(.*?)\n---\n\n(.*)$", goal_content, re.DOTALL)
+                if goal_match:
+                    fm_goal = yaml.safe_load(goal_match.group(1))
+                    goal_body = goal_match.group(2)
 
-                # Remove project from linked_projects
-                linked_projects = fm_goal.get("linked_projects", [])
-                if project_path.name in linked_projects:
-                    linked_projects.remove(project_path.name)
-                fm_goal["linked_projects"] = linked_projects
+                    # Remove project from linked_projects
+                    linked_projects = fm_goal.get("linked_projects", [])
+                    if project_path.name in linked_projects:
+                        linked_projects.remove(project_path.name)
+                    fm_goal["linked_projects"] = linked_projects
 
-                # Write goal
-                self._atomic_write(goal_path, fm_goal, goal_body)
+                    # Write goal
+                    self._atomic_write(goal_path, fm_goal, goal_body)
 
         # Clear linked_goal on project
         fm_project["linked_goal"] = None

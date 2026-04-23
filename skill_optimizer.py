@@ -13,6 +13,7 @@ from typing import Optional
 from litellm import acompletion
 
 from llm_routes import resolve
+from utils import load_config
 
 log = logging.getLogger("skill-optimizer")
 
@@ -78,11 +79,8 @@ class SkillOptimizer:
         """Main loop: schedule daily optimization passes at run_hour."""
         while not stop_event.is_set():
             # Reload config on each iteration to pick up changes
-            try:
-                config = yaml.safe_load((BRAIN_DIR / "config.yaml").read_text())
-                self.__init__(config)
-            except Exception as e:
-                log.warning(f"Config reload failed: {e}")
+            config = load_config(BRAIN_DIR / "config.yaml")
+            self.__init__(config)
 
             # Check if today's pass was missed (e.g. daemon restarted after run_hour)
             state_file = DEPLOY_DIR / "skill-optimizer-state.json"

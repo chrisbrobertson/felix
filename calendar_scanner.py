@@ -15,6 +15,7 @@ from pathlib import Path
 import yaml
 
 from llm_routes import resolve
+from utils import load_config
 
 log = logging.getLogger("calendar-scanner")
 
@@ -783,9 +784,7 @@ class CalendarScanner:
         os.rename(str(tmp), str(path))
 
     def _load_config(self) -> dict:
-        if CONFIG_PATH.exists():
-            return yaml.safe_load(CONFIG_PATH.read_text()) or {}
-        return {}
+        return load_config(CONFIG_PATH)
 
     def _scanner_config(self) -> dict:
         return self._load_config().get("calendar_scanner", {})

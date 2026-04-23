@@ -18,6 +18,7 @@ from typing import Optional
 import yaml
 
 from llm_routes import resolve
+from utils import load_config
 
 log = logging.getLogger("goal-agent")
 
@@ -82,9 +83,7 @@ class GoalProjectAgent:
 
     def _load_config(self) -> dict:
         """Load config from BRAIN_DIR/config.yaml."""
-        if CONFIG_PATH.exists():
-            return yaml.safe_load(CONFIG_PATH.read_text()) or {}
-        return {}
+        return load_config(CONFIG_PATH)
 
     def _agent_config(self) -> dict:
         """Return goal_agent section from config."""

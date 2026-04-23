@@ -15,6 +15,7 @@ import yaml
 
 from llm_routes import resolve
 from skill_executor import SkillExecutor
+from utils import load_config
 
 log = logging.getLogger("code-scanner")
 
@@ -300,9 +301,7 @@ class CodeScanner:
             log.exception("Failed to write code-scanner migration sentinel %s", path)
 
     def _load_config(self) -> dict:
-        if CONFIG_PATH.exists():
-            return yaml.safe_load(CONFIG_PATH.read_text()) or {}
-        return {}
+        return load_config(CONFIG_PATH)
 
     def _scanner_config(self) -> dict:
         cfg = self._load_config()

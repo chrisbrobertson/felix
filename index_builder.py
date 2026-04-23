@@ -8,6 +8,7 @@ from pathlib import Path
 
 from litellm import acompletion
 from llm_routes import resolve
+from utils import load_config
 
 log = logging.getLogger("index-builder")
 
@@ -133,11 +134,8 @@ class IndexBuilder:
 
     async def run_loop(self, stop_event: asyncio.Event):
         while not stop_event.is_set():
-            try:
-                config = yaml.safe_load((BRAIN_DIR / "config.yaml").read_text())
-                interval = config.get("memory", {}).get("index_rebuild_interval", 3600)
-            except Exception:
-                interval = 3600
+            config = load_config(BRAIN_DIR / "config.yaml")
+            interval = config.get("memory", {}).get("index_rebuild_interval", 3600)
             try:
                 await self._build()
             except Exception as e:
