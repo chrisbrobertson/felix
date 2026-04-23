@@ -1979,13 +1979,16 @@ def test_assemble_briefing_survives_icloud_edeadlk_on_memory_file(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
-    # One good calendar event and one "bad" one whose read always EDEADLKs.
-    good_event = memories_dir / "calendar-event-host-2026-04-22-standup-abc123.md"
+    # One good calendar event (today) and one "bad" one whose read always EDEADLKs.
+    # Use today's date dynamically so the briefing's "today-only" filter matches.
+    from datetime import date
+    today_str = date.today().strftime("%Y-%m-%d")
+    good_event = memories_dir / f"calendar-event-host-{today_str}-standup-abc123.md"
     good_event.write_text(
-        "---\ntype: calendar_event\nsource_title: Standup\n"
-        "start_time: '2026-04-22T09:00:00'\n---\n"
+        f"---\ntype: calendar_event\nsource_title: Standup\n"
+        f"start_time: '{today_str}T09:00:00'\n---\n"
     )
-    bad_event = memories_dir / "calendar-event-host-2026-04-22-broken-def456.md"
+    bad_event = memories_dir / f"calendar-event-host-{today_str}-broken-def456.md"
     bad_event.write_text("---\ntype: calendar_event\n---\n")
 
     real_read = Path.read_text
