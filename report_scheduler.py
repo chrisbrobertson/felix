@@ -384,7 +384,10 @@ class ReportScheduler:
             except Exception as e:
                 log.error(f"Report scheduler error: {e}", exc_info=True)
 
-            await asyncio.sleep(60)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=60)
+            except asyncio.TimeoutError:
+                pass
 
         log.info("Report scheduler stopped")
 

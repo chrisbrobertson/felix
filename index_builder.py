@@ -62,7 +62,7 @@ class IndexBuilder:
                     text = f.read_text()
                     break
                 except OSError as e:
-                    if e.errno == 11:  # EDEADLK — iCloud file lock, transient
+                    if e.errno in (11, 35):  # EDEADLK (11) or EAGAIN (35) — iCloud file lock, transient
                         if attempt < len(delays) - 1:
                             await asyncio.sleep(delay)
                             continue
@@ -140,4 +140,7 @@ class IndexBuilder:
                 await self._build()
             except Exception as e:
                 log.error("Index build loop error (will retry next cycle): %s", e)
-            await asyncio.sleep(interval)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass

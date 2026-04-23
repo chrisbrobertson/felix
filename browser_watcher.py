@@ -311,4 +311,7 @@ class BrowserWatcher:
             except Exception as e:
                 log.error(f"Browser watcher loop error: {e}")
 
-            await asyncio.sleep(interval)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass

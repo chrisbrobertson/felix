@@ -241,7 +241,7 @@ async def test_run_loop_continues_after_build_crash(builder, brain_dir):
 
     with patch.object(builder, "_build", mock_build):
         with patch("index_builder.yaml.safe_load", return_value={}):
-            with patch("index_builder.asyncio.sleep", new=AsyncMock()):
+            with patch("index_builder.asyncio.wait_for", new=AsyncMock()):
                 await builder.run_loop(stop_event)
 
     # Should have called _build at least twice (continued after crash)

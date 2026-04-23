@@ -2255,6 +2255,9 @@ class TelegramChatHandler:
             except ValueError:
                 await update.message.reply_text("Hours must be a number")
                 return
+            if hours <= 0:
+                await update.message.reply_text("Hours must be a positive number")
+                return
 
         if not self._last_action_set:
             await update.message.reply_text("No action list loaded. Use /actions first.")
