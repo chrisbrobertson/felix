@@ -349,7 +349,23 @@ class EventKitSource(CalendarDataSource):
             return None
 
         status = EK.EKEventStore.authorizationStatusForEntityType_(EK.EKEntityTypeEvent)
-        # 0=not determined, 1=restricted, 2=denied, 3=authorized, 4=full access (macOS 14+)
+        # EKAuthorizationStatus values:
+        #   0 = NotDetermined, 1 = Restricted, 2 = Denied,
+        #   3 = Authorized (legacy, pre-macOS 14 — full read+write),
+        #   4 = WriteOnly (macOS 14+ "Add Only" — silently returns [] on queries),
+        #   5 = FullAccess (macOS 14+ — required for reads on Sonoma+).
+        # WriteOnly is the insidious case: every read returns an empty array
+        # with no error, so the daemon happily logs "0 events" forever. Treat
+        # it as a hard failure so the user sees a loud, specific warning.
+        if status == 4:
+            log.warning(
+                "EventKit Calendar access is 'Add Only' (WriteOnly, status=4) — "
+                "queries will silently return 0 events. Grant FULL ACCESS in "
+                "System Settings → Privacy & Security → Calendars. "
+                "You may need to `tccutil reset Calendar` and reload the daemon "
+                "to re-trigger the consent prompt."
+            )
+            return None
         if status == 0:
             # Request access synchronously (blocks briefly; shows dialog on first call)
             import threading
@@ -369,8 +385,22 @@ class EventKitSource(CalendarDataSource):
                     "Grant in System Settings → Privacy & Security → Calendars."
                 )
                 return None
+            # Verify the grant was Full Access, not Add Only — the consent
+            # dialog offers both and "Add Only" is the default selection.
+            post_status = EK.EKEventStore.authorizationStatusForEntityType_(EK.EKEntityTypeEvent)
+            if post_status == 4:
+                log.warning(
+                    "EventKit grant was 'Add Only' (WriteOnly) — queries will "
+                    "silently return 0 events. Re-grant as Full Access in "
+                    "System Settings → Privacy & Security → Calendars."
+                )
+                return None
             return cls(store)
-        elif status in (3, 4):
+        elif status in (3, 5):
+            log.debug(
+                "EventKit Calendar authorization: %s",
+                "FullAccess" if status == 5 else "Authorized (legacy)",
+            )
             store = EK.EKEventStore.alloc().init()
             return cls(store)
         else:

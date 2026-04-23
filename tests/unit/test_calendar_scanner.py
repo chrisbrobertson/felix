@@ -1293,6 +1293,70 @@ def test_cleanup_skips_file_without_date_pattern(tmp_path, caplog):
     assert any("no date pattern" in r.message for r in caplog.records)
 
 
+def test_eventkit_rejects_writeonly_status(caplog):
+    """EKAuthorizationStatusWriteOnly (4) must be rejected with a loud warning.
+
+    macOS 14+ splits Calendar authorization into Add Only (4) and Full Access (5).
+    Add Only silently returns [] from every query — the daemon happily logs
+    "0 events" forever. This test guards the regression that landed on a
+    watcher laptop where the grant had degraded to Add Only.
+    """
+    from calendar_scanner import EventKitSource
+    import sys, types
+
+    # Build a minimal mock EventKit module just for EKAuthorizationStatus.
+    fake_ek = types.SimpleNamespace(
+        EKEventStore=MagicMock(),
+        EKEntityTypeEvent=0,
+    )
+    fake_ek.EKEventStore.authorizationStatusForEntityType_.return_value = 4
+
+    with patch.dict(sys.modules, {"EventKit": fake_ek}), \
+         caplog.at_level("WARNING", logger="calendar-scanner"):
+        src = EventKitSource.create()
+
+    assert src is None, "WriteOnly grant must not produce a usable source"
+    warnings = [r.message for r in caplog.records if r.levelname == "WARNING"]
+    assert any("Add Only" in m and "WriteOnly" in m for m in warnings), warnings
+    assert any("Full Access" in m.upper() or "FULL ACCESS" in m for m in warnings), warnings
+
+
+def test_eventkit_accepts_fullaccess_status():
+    """Status 5 (FullAccess, macOS 14+) must return a usable source."""
+    from calendar_scanner import EventKitSource
+    import sys, types
+
+    fake_ek = types.SimpleNamespace(
+        EKEventStore=MagicMock(),
+        EKEntityTypeEvent=0,
+    )
+    fake_ek.EKEventStore.authorizationStatusForEntityType_.return_value = 5
+    fake_ek.EKEventStore.alloc.return_value.init.return_value = MagicMock()
+
+    with patch.dict(sys.modules, {"EventKit": fake_ek}):
+        src = EventKitSource.create()
+
+    assert src is not None
+
+
+def test_eventkit_accepts_legacy_authorized_status():
+    """Status 3 (legacy Authorized, pre-macOS 14) must still work."""
+    from calendar_scanner import EventKitSource
+    import sys, types
+
+    fake_ek = types.SimpleNamespace(
+        EKEventStore=MagicMock(),
+        EKEntityTypeEvent=0,
+    )
+    fake_ek.EKEventStore.authorizationStatusForEntityType_.return_value = 3
+    fake_ek.EKEventStore.alloc.return_value.init.return_value = MagicMock()
+
+    with patch.dict(sys.modules, {"EventKit": fake_ek}):
+        src = EventKitSource.create()
+
+    assert src is not None
+
+
 def test_eventkit_logs_warning_on_zero_events(caplog):
     """EventKitSource.get_events warns with calendar count when predicate yields zero events."""
     from calendar_scanner import EventKitSource

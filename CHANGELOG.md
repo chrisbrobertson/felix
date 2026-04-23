@@ -6,6 +6,11 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.6.3] — 2026-04-22
+
+### Fixed
+- **EventKit "Add Only" grant now rejected at init, not silently tolerated** — on macOS Sonoma+, Calendar authorization split into two levels: `EKAuthorizationStatusWriteOnly` (4, "Add Only") and `EKAuthorizationStatusFullAccess` (5). The Add Only grant silently returns `[]` from every `eventsMatchingPredicate_` call with no error, so the daemon would happily log "0 events" forever. `EventKitSource.create()` previously accepted `status in (3, 4)` — treating Add Only as equivalent to legacy Authorized. This was the root cause of the watcher-laptop regression discovered 2026-04-22: Calendar.app listed 11 calendars, EventKit saw only 1, and no events were ever written despite the v1.6.0 zero-event WARNING firing every 5 minutes. The acceptance set is now `(3, 5)`, and status 4 triggers a loud WARNING telling the user to grant Full Access explicitly (with the `tccutil reset Calendar` hint). Additionally, after a successful `requestFullAccessToEventsWithCompletion_` prompt, the post-grant status is verified to be Full Access rather than Add Only (the latter is the default button in the consent dialog). Added three regression tests covering WriteOnly rejection, FullAccess acceptance, and legacy Authorized acceptance.
+
 ## [1.6.2] — 2026-04-22
 
 Cleanup release for the second-wave fallout of the hostname-stacking bug
