@@ -6,6 +6,19 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.6.6] — 2026-04-23
+
+### Fixed
+- **Systematic iCloud EDEADLK/EAGAIN resilience across all modules** — full codebase audit identified three recurring bug classes and fixed them:
+  1. **`skill_executor._log_execution` crashes chat** — bare `read_text()` on `skills/chat.md` raised EDEADLK after the LLM had already produced its answer, sending "Sorry — processing failed" instead. `_log_execution` is now best-effort: uses `read_text_with_retry(default=None)` and returns silently on any OSError — logging telemetry must never crash user-visible features. Also hardened the watcher-path JSONL write and the full-node tmp→rename write.
+  2. **`skill_executor._load` bare `read_bytes()`** — transient iCloud lock during skill hot-reload could crash executor construction. Now uses `read_bytes_with_retry` (new helper in utils.py).
+  3. **`utils.py` only retried errno 11 (EDEADLK), missed errno 35 (EAGAIN)** — `code_scanner` and `project_inference_scanner` already handled both; `read_text_with_retry` and `load_config` now match. Added `read_bytes_with_retry` to utils.py.
+  4. **11 modules used bare `CONFIG_PATH.read_text()`** — `browser_watcher`, `calendar_scanner`, `code_scanner`, `commitment_tracker`, `contact_tracker`, `email_scanner`, `goal_project_agent`, `index_builder`, `skill_optimizer`, `slack_scanner`, `zoom_scanner` all replaced with `load_config()`.
+  5. **`chat_handler._safe_read_text` caught OSError without retrying** — upgraded to delegate to `read_text_with_retry(default=None)` for consistent backoff.
+  6. **~70 bare `path.read_text()` / `open()` calls on MEMORIES_DIR/SKILLS_DIR** — `goals_tracker`, `goal_project_agent`, `email_scanner`, `commitment_tracker`, `contact_tracker`, `project_inference_scanner`, `skill_optimizer` now use `read_text_with_retry`.
+  7. **`skill_optimizer` used fragile string-split fence extraction** — replaced both instances with the standard `re.sub()` pair used by all other JSON-parsing modules.
+- **Test date staleness** — EDEADLK briefing regression test used a hardcoded `2026-04-22` calendar event date that became yesterday on next run; now uses `date.today()`.
+
 ## [1.6.5] — 2026-04-22
 
 ### Fixed
