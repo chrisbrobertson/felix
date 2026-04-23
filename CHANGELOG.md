@@ -6,6 +6,13 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.6.8] — 2026-04-23
+
+### Fixed
+- **`index_builder`, `browser_watcher`, `report_scheduler` ignored stop_event during sleep** — three `run_loop` implementations used `await asyncio.sleep(interval)` instead of the `await asyncio.wait_for(stop_event.wait(), timeout=interval)` pattern used by every other loop. On daemon shutdown (SIGTERM), these loops blocked for up to 60 min (`index_builder`), 5 min (`browser_watcher`), or 60 s (`report_scheduler`) before exiting. All three now respond to stop_event immediately.
+- **`index_builder` inline iCloud retry only caught EDEADLK, missed EAGAIN** — the inline retry loop at the memory-file read site checked `e.errno == 11` only, unlike `utils.read_text_with_retry` which was fixed in v1.6.6 to check both EDEADLK (11) and EAGAIN (35). Updated to match.
+- **`/defer` accepted negative hours** — `/defer 1 -5` set `defer_until` to 5 hours in the past, causing the action to immediately re-appear as not-deferred. Now rejects hours ≤ 0 with a clear error message.
+
 ## [1.6.7] — 2026-04-22
 
 ### Fixed
