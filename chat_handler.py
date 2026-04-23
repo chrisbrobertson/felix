@@ -70,10 +70,11 @@ class TelegramChatHandler:
     HISTORY_FILE = DEPLOY_DIR / "chat-history.json"
 
     def __init__(self, scanners: dict = None):
+        # Use the shared iCloud-resilient loader (retries EDEADLK with backoff).
         try:
-            config_text = (BRAIN_DIR / "config.yaml").read_text()
-            config = yaml.safe_load(config_text) or {}
-        except OSError as e:
+            from utils import load_config
+            config = load_config(BRAIN_DIR / "config.yaml")
+        except Exception as e:
             log.warning("Could not read config.yaml at startup: %s — using defaults", e)
             config = {}
         self._config = config  # Store for access by tools and helpers
@@ -321,8 +322,8 @@ class TelegramChatHandler:
     def _get_display_config(self) -> dict:
         """Read display config from config.yaml (live, so /settings changes take effect)."""
         try:
-            config = yaml.safe_load((BRAIN_DIR / "config.yaml").read_text())
-            return config.get("display", {})
+            from utils import load_config
+            return load_config(BRAIN_DIR / "config.yaml").get("display", {})
         except Exception:
             return {}
 
@@ -781,7 +782,8 @@ class TelegramChatHandler:
     async def cmd_skiplist(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
-        config = yaml.safe_load((BRAIN_DIR / "config.yaml").read_text())
+        from utils import load_config
+        config = load_config(BRAIN_DIR / "config.yaml")
         domains = config.get("browser_watcher", {}).get("skip_domains", [])
         if not domains:
             await update.message.reply_text("Skip list is empty.")
@@ -3341,7 +3343,8 @@ class TelegramChatHandler:
 
             # Load config to validate category
             try:
-                config = yaml.safe_load((BRAIN_DIR / "config.yaml").read_text())
+                from utils import load_config
+                config = load_config(BRAIN_DIR / "config.yaml")
                 valid_categories = config.get("goals", {}).get(
                     "categories",
                     ["personal", "work", "family", "learning", "other"]

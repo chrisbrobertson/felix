@@ -1896,3 +1896,96 @@ async def test_calendar_staleness_send_failure_rolls_back_state(tmp_path):
 
     saved = json.loads(state_file.read_text())
     assert "2026-04-21" not in saved["sent_calendar_staleness_alerts"]
+
+
+# ── iCloud EDEADLK resilience on config read ──────────────────────────────────
+
+def _reset_config_cache():
+    """Helper: clear the module-level shared config cache between tests."""
+    import utils as _utils
+    _utils._reset_config_cache()
+
+
+def test_load_config_retries_on_icloud_edeadlk(tmp_path, caplog):
+    """config.yaml read hitting EDEADLK must retry, then succeed on a later attempt.
+
+    Previously a single EDEADLK crashed /briefing (and every other command
+    that routed through _check_auth → get_chat_id → _load_config).
+    """
+    _reset_config_cache()
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("notifications:\n  telegram_chat_id: 42\n")
+
+    real_read_text = Path.read_text
+    attempts = {"n": 0}
+
+    def flaky_read(self, *a, **kw):
+        if self == config_file:
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise OSError(11, "Resource deadlock avoided")
+        return real_read_text(self, *a, **kw)
+
+    with patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(Path, "read_text", flaky_read):
+        mgr = NotificationManager()
+        cfg = mgr._load_config()
+
+    assert cfg == {"notifications": {"telegram_chat_id": 42}}
+    assert attempts["n"] >= 2, "must have retried at least once"
+
+
+def test_load_config_falls_back_to_cache_on_persistent_edeadlk(tmp_path, caplog):
+    """If EDEADLK persists through all retries, return last-good cache — don't crash."""
+    _reset_config_cache()
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("notifications:\n  telegram_chat_id: 99\n")
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        mgr = NotificationManager()
+        # First read populates the cache.
+        first = mgr._load_config()
+        assert first == {"notifications": {"telegram_chat_id": 99}}
+
+        # Now every read raises EDEADLK — must serve cache rather than crash.
+        real_read_text = Path.read_text
+
+        def always_edeadlk(self, *a, **kw):
+            if self == config_file:
+                raise OSError(11, "Resource deadlock avoided")
+            return real_read_text(self, *a, **kw)
+
+        # Force the cache mtime check to see a different mtime so we actually
+        # hit the retry loop (otherwise the cached value is returned without a read).
+        def new_stat(self, *a, **kw):
+            return type("S", (), {"st_mtime": 999999.0})()
+
+        with patch.object(Path, "read_text", always_edeadlk), \
+             patch.object(Path, "stat", new_stat):
+            second = mgr._load_config()
+
+    assert second == {"notifications": {"telegram_chat_id": 99}}, "must fall back to cache"
+
+
+def test_load_config_caches_by_mtime(tmp_path):
+    """Unchanged mtime → no re-read of iCloud file."""
+    _reset_config_cache()
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("notifications:\n  telegram_chat_id: 7\n")
+
+    read_count = {"n": 0}
+    real_read_text = Path.read_text
+
+    def counting_read(self, *a, **kw):
+        if self == config_file:
+            read_count["n"] += 1
+        return real_read_text(self, *a, **kw)
+
+    with patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(Path, "read_text", counting_read):
+        mgr = NotificationManager()
+        mgr._load_config()
+        mgr._load_config()
+        mgr._load_config()
+
+    assert read_count["n"] == 1, f"expected 1 read (cached), got {read_count['n']}"

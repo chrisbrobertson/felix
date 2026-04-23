@@ -109,9 +109,9 @@ class NotificationManager:
         self._transports: list = transports or []
 
     def _load_config(self) -> dict:
-        if CONFIG_PATH.exists():
-            return yaml.safe_load(CONFIG_PATH.read_text()) or {}
-        return {}
+        """Read config.yaml via the shared iCloud-resilient loader in utils."""
+        from utils import load_config
+        return load_config(CONFIG_PATH)
 
     @property
     def _config(self) -> dict:

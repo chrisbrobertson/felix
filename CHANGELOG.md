@@ -6,7 +6,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.6.4] — 2026-04-22
+
 ### Fixed
+- **Telegram commands no longer crash on iCloud `config.yaml` EDEADLK** — every Telegram command routes through `_check_auth` → `notification_manager.get_chat_id()` → `_load_config()`, which did a raw `CONFIG_PATH.read_text()` on the iCloud-backed `config.yaml`. When iCloud was materializing the placeholder, the read raised `OSError(11, 'Resource deadlock avoided')` straight out of the handler and Telegram got no reply. Observed symptom: `/briefing` silently failing (and by extension, every other command during an iCloud sync window). Added `utils.load_config()` — a shared iCloud-resilient loader that retries EDEADLK up to 3× with short backoffs, caches parsed YAML by mtime so repeat command invocations don't re-read iCloud, and falls back to the last known-good cached value if all retries fail. Rewired `notification_manager._load_config()`, `chat_handler.__init__`, `chat_handler._get_display_config`, `cmd_skiplist`, and the `/goal add` category validator to use it. Added three regression tests covering retry-then-succeed, persistent-EDEADLK fallback-to-cache, and mtime-based caching.
 - **Calendar scanner now strips `` ```json `` fences before parsing LLM output** — `_generate_summary_and_tags` was the only LLM-calling scanner without the fence-strip pattern used everywhere else (commitment_tracker, slack_scanner, zoom_scanner, project_inference_scanner, goal_project_agent). Haiku reliably wraps JSON in markdown fences, so every event hit `json.JSONDecodeError`, logged "LLM returned invalid JSON for event: …", and got written with `summary: ""` + `tags: []`. Discovered immediately after the EventKit Add-Only fix landed and the worker started seeing real events for the first time.
 
 ## [1.6.3] — 2026-04-22
