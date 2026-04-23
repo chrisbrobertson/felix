@@ -6,6 +6,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Calendar scanner now strips `` ```json `` fences before parsing LLM output** — `_generate_summary_and_tags` was the only LLM-calling scanner without the fence-strip pattern used everywhere else (commitment_tracker, slack_scanner, zoom_scanner, project_inference_scanner, goal_project_agent). Haiku reliably wraps JSON in markdown fences, so every event hit `json.JSONDecodeError`, logged "LLM returned invalid JSON for event: …", and got written with `summary: ""` + `tags: []`. Discovered immediately after the EventKit Add-Only fix landed and the worker started seeing real events for the first time.
+
 ## [1.6.3] — 2026-04-22
 
 ### Fixed

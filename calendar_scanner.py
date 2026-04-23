@@ -1119,6 +1119,12 @@ Return JSON only:
             )
             text = resp.choices[0].message.content.strip()
 
+            # Strip ```json fences if the model wrapped its output (Haiku does
+            # this reliably). Same pattern used in commitment_tracker, slack_scanner,
+            # zoom_scanner, project_inference_scanner, goal_project_agent.
+            text = re.sub(r'^```(?:json)?\n?', '', text)
+            text = re.sub(r'\n?```$', '', text)
+
             # Parse JSON response
             try:
                 data = json.loads(text)
