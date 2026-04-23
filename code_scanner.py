@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import hashlib
 import json
 import logging
@@ -25,6 +26,27 @@ BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-b
 MEMORIES_DIR = BRAIN_DIR / "memories"
 CONFIG_PATH = BRAIN_DIR / "config.yaml"
 DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
+
+# One-shot sentinels next to the deploy dir's state files. Once stamped, the
+# corresponding migration is a no-op on subsequent scanner inits. Needed
+# because the migrations' previous idempotency checks (filename-prefix
+# startswith) are unstable on macOS where socket.gethostname() flips between
+# values, causing the migration to re-run and stack hostnames on every flip.
+HOSTNAME_MIGRATION_SENTINEL_NAME = ".code-hostname-prefix-v2.done"
+PROJECT_TO_CODE_SENTINEL_NAME = ".code-project-to-code-v2.done"
+LEGACY_CODE_PROJECT_SENTINEL_NAME = ".code-legacy-code-project-v2.done"
+
+
+def _is_transient_oserror(e: OSError) -> bool:
+    """True if ``e`` is an iCloud/FS transient error worth retrying next boot.
+
+    macOS iCloud Drive can return ``EDEADLK`` (errno 11, "Resource deadlock
+    avoided") when a file is an evicted placeholder and the materialization
+    deadlocks against concurrent iCloud activity. ``EAGAIN`` is the same
+    class. These are not code-level corruption — the correct response is to
+    skip the file and try again next scanner boot.
+    """
+    return e.errno in (errno.EDEADLK, errno.EAGAIN)
 
 EXTENSION_MAP = {
     ".py": "python",
@@ -82,10 +104,23 @@ class CodeScanner:
             return set()
 
     def _migrate_legacy_code_project_files(self):
-        """Rewrite any project-*.md with type: code_project → type: project + category: code."""
+        """Rewrite any project-*.md with type: code_project → type: project + category: code.
+
+        Sentinel-gated: once complete on a machine, this is a no-op. Only
+        touches files where ``type: code_project`` is explicitly set — other
+        types (project_candidate, goal, etc.) are skipped without any
+        filesystem mutation beyond the read. iCloud EDEADLK on individual
+        files is treated as transient: the file is skipped, and the sentinel
+        is NOT stamped, so the next boot retries.
+        """
+        sentinel = DEPLOY_DIR / LEGACY_CODE_PROJECT_SENTINEL_NAME
+        if sentinel.exists():
+            return
         if not MEMORIES_DIR.exists():
+            self._stamp_sentinel(sentinel)
             return
         migrated = 0
+        transient = 0
         for path in MEMORIES_DIR.glob("project-*.md"):
             try:
                 text = path.read_text()
@@ -97,64 +132,122 @@ class CodeScanner:
                 if fm.get("type") != "code_project":
                     continue
                 fm["type"] = "project"
-                # Insert category after type; preserve other fields
                 if "category" not in fm:
                     fm["category"] = "code"
                 new_fm = yaml.dump(fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
                 new_text = f"---\n{new_fm}---\n{m.group(4)}"
-                # Atomic write
                 tmp = path.with_suffix(".tmp")
                 tmp.write_text(new_text)
                 tmp.replace(path)
                 migrated += 1
+            except OSError as e:
+                if _is_transient_oserror(e):
+                    log.debug("Legacy code_project migration: transient OSError on %s (%s)", path.name, e)
+                    transient += 1
+                else:
+                    log.exception("Legacy code_project migration failed for %s", path)
             except Exception:
-                log.exception("Migration failed for %s", path)
+                log.exception("Legacy code_project migration failed for %s", path)
         if migrated:
             log.info("Migrated %d legacy code_project files to type: project", migrated)
+        if transient == 0:
+            self._stamp_sentinel(sentinel)
 
     def _migrate_project_filenames(self):
-        """Migrate project-*.md to project-{hostname}-*.md for this node's files."""
+        """One-shot migration of legacy unprefixed project-*.md → project-{hostname}-*.md.
+
+        Only touches files that *belong to* code_scanner: those with
+        ``type: project`` AND ``category: code``. Before v1.6.2 this was too
+        greedy and re-prefixed any `project-*.md` file — including the
+        `project-candidate-*.md` files owned by project_inference_scanner,
+        which caused mass hostname stacking (474 candidate files mangled in
+        April 2026).
+
+        Sentinel-gated: once stamped, the migration is a no-op. The
+        sentinel is the primary idempotency guard. The old hostname-prefix
+        startswith() check was fragile because macOS's socket.gethostname()
+        flips between values — stamped-once beats a per-file runtime check.
+
+        iCloud EDEADLK is treated as transient (skip + don't stamp).
+        """
+        sentinel = DEPLOY_DIR / HOSTNAME_MIGRATION_SENTINEL_NAME
+        if sentinel.exists():
+            return
         if not MEMORIES_DIR.exists():
+            self._stamp_sentinel(sentinel)
             return
         my_hostname = _hostname()
         migrated = 0
+        transient = 0
         for path in MEMORIES_DIR.glob("project-*.md"):
             try:
                 stem = path.stem
                 rest = stem[len("project-"):]
-                # Already hostname-scoped for this host?
+                # Already hostname-scoped for this host? Skip without reading
+                # frontmatter (fast path for canonical files).
                 if rest.startswith(f"{my_hostname}-"):
                     continue
-                # Check if this file belongs to us by reading frontmatter
+
+                # Read frontmatter to determine ownership.
                 text = path.read_text()
                 fm = _parse_frontmatter(text)
-                # Skip non-code projects (future generic project types)
-                if fm.get("type") == "project" and fm.get("category") != "code":
+                file_type = fm.get("type")
+
+                # STRICT ownership check: only code-project memories are
+                # migrated here. Everything else — project_candidate, goal,
+                # generic project with non-code category, already-migrated
+                # type:code, etc. — is skipped entirely. This is what
+                # prevents the project-candidate mangling regression.
+                if file_type != "project":
                     continue
-                # Also skip if type is already "code" (already migrated by migration #3)
-                if fm.get("type") == "code":
+                if fm.get("category") != "code":
                     continue
+
                 fm_hostname = fm.get("hostname", "")
-                # If frontmatter hostname matches ours, this file belongs to us — rename it
-                if fm_hostname == my_hostname or not fm_hostname:
-                    # Empty hostname means legacy file — assume it's ours
-                    new_name = f"project-{my_hostname}-{rest}.md"
-                    new_path = path.parent / new_name
-                    path.rename(new_path)
-                    migrated += 1
-                # If hostname is different, leave it (other node will handle)
-            except (OSError, FileNotFoundError):
-                pass
+                # Only migrate files whose frontmatter hostname matches us
+                # (or is absent, meaning a legacy file that should belong
+                # to us). Files for other hosts stay put.
+                if fm_hostname and fm_hostname != my_hostname:
+                    continue
+
+                new_name = f"project-{my_hostname}-{rest}.md"
+                new_path = path.parent / new_name
+                if new_path.exists():
+                    # Canonical already exists — drop the legacy duplicate.
+                    path.unlink()
+                    continue
+                path.rename(new_path)
+                migrated += 1
+            except OSError as e:
+                if _is_transient_oserror(e):
+                    log.debug("Code filename migration: transient OSError on %s (%s)", path.name, e)
+                    transient += 1
+                else:
+                    log.exception("Code filename migration failed for %s", path)
             except Exception:
-                log.exception("Filename migration failed for %s", path)
+                log.exception("Code filename migration failed for %s", path)
         if migrated:
             log.info("Migrated %d project files to hostname-scoped filenames", migrated)
+        if transient == 0:
+            self._stamp_sentinel(sentinel)
 
     def _migrate_project_to_code_files(self):
-        """Migrate project-{hostname}-*.md with type:project+category:code → code-{hostname}-*.md with type:code."""
+        """One-shot migration of project-{hostname}-*.md (type:project+category:code) → code-{hostname}-*.md (type:code).
+
+        Only touches files with BOTH ``type: project`` AND ``category: code``.
+        All other types (notably ``project_candidate``) are skipped after the
+        frontmatter parse — no rename, no rewrite.
+
+        Sentinel-gated. iCloud EDEADLK is treated as transient.
+        """
+        sentinel = DEPLOY_DIR / PROJECT_TO_CODE_SENTINEL_NAME
+        if sentinel.exists():
+            return
         if not MEMORIES_DIR.exists():
+            self._stamp_sentinel(sentinel)
             return
         migrated = 0
+        transient = 0
         for path in MEMORIES_DIR.glob("project-*.md"):
             try:
                 text = path.read_text()
@@ -163,40 +256,48 @@ class CodeScanner:
                     continue
                 fm_text = m.group(2)
                 fm = yaml.safe_load(fm_text) or {}
-                # Skip if not type:project+category:code
                 if fm.get("type") != "project":
                     continue
                 if fm.get("category") != "code":
                     continue
-                # Update frontmatter: remove category, change type to code
                 del fm["category"]
                 fm["type"] = "code"
-                # Compute new filename: replace project-{hostname}- with code-{hostname}-
                 stem = path.stem
-                if stem.startswith("project-"):
-                    rest = stem[len("project-"):]
-                    new_stem = f"code-{rest}"
-                    new_path = path.parent / f"{new_stem}.md"
-                else:
-                    # Should not happen but be defensive
+                if not stem.startswith("project-"):
                     continue
-                # If new filename already exists, just delete old (partial run recovery)
+                rest = stem[len("project-"):]
+                new_path = path.parent / f"code-{rest}.md"
                 if new_path.exists():
                     path.unlink()
                     continue
-                # Atomic write to new path
                 new_fm = yaml.dump(fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
                 new_text = f"---\n{new_fm}---\n{m.group(4)}"
                 tmp = new_path.with_suffix(".tmp")
                 tmp.write_text(new_text)
                 tmp.replace(new_path)
-                # Delete old file
                 path.unlink()
                 migrated += 1
+            except OSError as e:
+                if _is_transient_oserror(e):
+                    log.debug("Code migration: transient OSError on %s (%s)", path.name, e)
+                    transient += 1
+                else:
+                    log.exception("Code migration failed for %s", path)
             except Exception:
                 log.exception("Code migration failed for %s", path)
         if migrated:
             log.info("Migrated %d project-{hostname}-*.md → code-{hostname}-*.md", migrated)
+        if transient == 0:
+            self._stamp_sentinel(sentinel)
+
+    @staticmethod
+    def _stamp_sentinel(path: Path) -> None:
+        """Write an empty sentinel file, creating parent dirs as needed."""
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+        except Exception:
+            log.exception("Failed to write code-scanner migration sentinel %s", path)
 
     def _load_config(self) -> dict:
         if CONFIG_PATH.exists():

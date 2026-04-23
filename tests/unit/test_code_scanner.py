@@ -946,3 +946,199 @@ async def test_rejected_local_path_skipped(tmp_path):
     candidate_files = list(memories_dir.glob("project-candidate-*.md"))
     assert len(confirmed_files) == 0
     assert len(candidate_files) == 0
+
+
+# ── v1.6.2 migration hardening ────────────────────────────────────────────────
+
+def _write_candidate_file(memories_dir, filename, summary="Candidate summary"):
+    """Write a `type: project_candidate` file as `project_inference_scanner` would."""
+    fm = {
+        "type": "project_candidate",
+        "source_title": "A candidate",
+        "summary": summary,
+        "status": "pending_confirmation",
+        "created": "2026-04-15T10:00:00",
+    }
+    path = memories_dir / filename
+    path.write_text(f"---\n{yaml.dump(fm, sort_keys=False)}---\n\n## Notes\n")
+    return path
+
+
+def _write_code_project_file(memories_dir, filename, hostname=""):
+    """Write a legacy `type: project, category: code` file as old code_scanner did."""
+    fm = {
+        "type": "project",
+        "category": "code",
+        "source_title": "my-repo",
+        "summary": "A code project",
+    }
+    if hostname:
+        fm["hostname"] = hostname
+    path = memories_dir / filename
+    path.write_text(f"---\n{yaml.dump(fm, sort_keys=False)}---\n\n## Notes\n")
+    return path
+
+
+def test_migration_skips_project_candidate_files(tmp_path):
+    """Regression: code_scanner migrations must not touch type:project_candidate files.
+
+    This is the root cause of the 474-file mangling in April 2026. Before
+    v1.6.2, `_migrate_project_filenames` re-prefixed any `project-*.md` whose
+    stem didn't start with the hostname — including candidate files owned
+    by project_inference_scanner.
+    """
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+
+    candidate = _write_candidate_file(memories_dir, "project-candidate-foo-abc123.md")
+    original_stat = candidate.stat()
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "DEPLOY_DIR", deploy), \
+         patch.object(cs, "_hostname", return_value="test-host"):
+        CodeScanner()
+
+    # Candidate file must be exactly where it started, with the same mtime
+    # and size (i.e. never opened/renamed/rewritten).
+    assert candidate.exists(), "candidate file was moved or deleted"
+    new_stat = candidate.stat()
+    assert (original_stat.st_size, original_stat.st_mtime) == (new_stat.st_size, new_stat.st_mtime)
+
+
+def test_migration_hostname_sentinel_makes_idempotent(tmp_path):
+    """Second CodeScanner() construction does not re-run the filename migration.
+
+    After the sentinel is stamped on first run, subsequent inits must not
+    iterate MEMORIES_DIR for rename — which is how the pre-v1.6.2 bug kept
+    re-stacking hostnames on each hostname flip.
+    """
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+
+    legacy = _write_code_project_file(memories_dir, "project-my-repo.md")
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "DEPLOY_DIR", deploy), \
+         patch.object(cs, "_hostname", return_value="HostA"):
+        CodeScanner()  # chain: project-my-repo → project-HostA-my-repo → code-HostA-my-repo
+
+    final = memories_dir / "code-HostA-my-repo.md"
+    assert final.exists()
+    assert not legacy.exists()
+    assert not (memories_dir / "project-HostA-my-repo.md").exists()
+    sentinel = deploy / cs.HOSTNAME_MIGRATION_SENTINEL_NAME
+    assert sentinel.exists(), "hostname-prefix sentinel stamped after successful run"
+
+    # Simulate a hostname flip (HostA → HostB) + add a new legacy file.
+    # Pre-v1.6.2 the flip would re-prefix to project-HostB-HostA-… and
+    # stack further on every additional flip. Post-fix the sentinel blocks
+    # the filename-migration entirely — the new legacy file stays put.
+    legacy2 = _write_code_project_file(memories_dir, "project-second-repo.md")
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "DEPLOY_DIR", deploy), \
+         patch.object(cs, "_hostname", return_value="HostB"):
+        CodeScanner()
+
+    assert legacy2.exists(), "sentinel must block any subsequent filename-migration run"
+    assert final.exists()
+
+
+def test_migration_survives_icloud_edeadlk(tmp_path, monkeypatch):
+    """An EDEADLK on one file doesn't crash the loop and doesn't stamp the sentinel."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+
+    _write_code_project_file(memories_dir, "project-good.md")
+    _write_code_project_file(memories_dir, "project-bad.md")
+
+    import errno as _errno
+    real_read_text = Path.read_text
+
+    def flaky_read(self, *a, **kw):
+        if "bad" in self.name:
+            raise OSError(_errno.EDEADLK, "Resource deadlock avoided")
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", flaky_read)
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "DEPLOY_DIR", deploy), \
+         patch.object(cs, "_hostname", return_value="HostA"):
+        CodeScanner()  # must not raise
+
+    # good.md flowed through the full chain (legacy → project-HostA-good → code-HostA-good).
+    assert (memories_dir / "code-HostA-good.md").exists()
+    # bad.md couldn't be read, so it stayed at its original legacy name.
+    assert (memories_dir / "project-bad.md").exists(), "bad file left for next boot"
+    # None of the three sentinels should be stamped while a transient error remains.
+    assert not (deploy / cs.HOSTNAME_MIGRATION_SENTINEL_NAME).exists()
+    assert not (deploy / cs.PROJECT_TO_CODE_SENTINEL_NAME).exists()
+    assert not (deploy / cs.LEGACY_CODE_PROJECT_SENTINEL_NAME).exists()
+
+
+def test_migration_drops_legacy_duplicate_when_canonical_exists(tmp_path):
+    """Legacy `project-foo.md` + existing `project-HostA-foo.md` → drop legacy, keep canonical."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+
+    legacy = _write_code_project_file(memories_dir, "project-my-repo.md")
+    canonical = _write_code_project_file(memories_dir, "project-HostA-my-repo.md", hostname="HostA")
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "DEPLOY_DIR", deploy), \
+         patch.object(cs, "_hostname", return_value="HostA"):
+        CodeScanner()
+
+    # The legacy duplicate must be dropped during the hostname-prefix migration,
+    # and the canonical file then flows forward to its final `code-HostA-*.md` name.
+    assert not legacy.exists()
+    assert not canonical.exists(), "canonical project-* form is renamed by the project→code migration"
+    assert (memories_dir / "code-HostA-my-repo.md").exists()
+
+
+def test_migration_leaves_other_host_files_alone(tmp_path):
+    """project-HostB-foo.md with hostname:HostB in frontmatter must not be touched on HostA."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+
+    other_host = _write_code_project_file(memories_dir, "project-HostB-my-repo.md", hostname="HostB")
+
+    with patch.object(cs, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs, "DEPLOY_DIR", deploy), \
+         patch.object(cs, "_hostname", return_value="HostA"):
+        CodeScanner()
+
+    # The hostname-prefix migration must NOT re-prefix with HostA, and no
+    # HostA-stacked variant may appear on disk. The project→code rename is
+    # hostname-agnostic, so the HostB prefix is preserved in the final name.
+    assert not other_host.exists()
+    assert (memories_dir / "code-HostB-my-repo.md").exists()
+    assert not (memories_dir / "project-HostA-HostB-my-repo.md").exists()
+    assert not (memories_dir / "code-HostA-HostB-my-repo.md").exists()
+    assert not (memories_dir / "code-HostA-my-repo.md").exists()
+
+
+def test_production_memories_dir_never_touched_during_code_tests(tmp_path):
+    """Meta-test: autouse fixture prevents mutation of real iCloud MEMORIES_DIR."""
+    from pathlib import Path as _Path
+    prod = _Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "second-brain" / "memories"
+    if not prod.exists():
+        pytest.skip("Production memories dir not present on this machine")
+    before = sorted((f.name, f.stat().st_mtime) for f in prod.glob("project-*.md"))
+    # Instantiate without any outer patch — the autouse fixture must isolate
+    # the real prod dir. Also patch `_hostname` to a pathological value to
+    # reproduce the exact shape that caused the April 2026 leak.
+    with patch.object(cs, "_hostname", return_value="test-host"):
+        CodeScanner()
+    after = sorted((f.name, f.stat().st_mtime) for f in prod.glob("project-*.md"))
+    assert before == after, "production MEMORIES_DIR was mutated by a code_scanner test"

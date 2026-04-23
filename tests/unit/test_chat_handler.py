@@ -1540,6 +1540,7 @@ def test_migrate_legacy_code_project(tmp_path):
     )
 
     with patch.object(cs_mod, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs_mod, "DEPLOY_DIR", tmp_path), \
          patch("code_scanner._hostname", return_value="testhost"):
         _ = CodeScanner()
 
@@ -1574,6 +1575,7 @@ def test_migrate_idempotent(tmp_path):
     )
 
     with patch.object(cs_mod, "MEMORIES_DIR", memories_dir), \
+         patch.object(cs_mod, "DEPLOY_DIR", tmp_path), \
          patch("code_scanner._hostname", return_value="testhost"):
         _ = CodeScanner()
 
