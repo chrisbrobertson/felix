@@ -6,8 +6,21 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.6.2] — 2026-04-22
+
+Cleanup release for the second-wave fallout of the hostname-stacking bug
+class identified in v1.6.0. On the live daemon, `code_scanner.py`'s
+over-broad filename migration had been silently stealing
+`project-candidate-*.md` files from `project_inference_scanner.py` and
+mangling 474 of them with stacked hostname prefixes; simultaneously, the
+migration loops were crashing on iCloud `EDEADLK` placeholder-read errors
+and spamming `Code migration failed` in error.log.
+
 ### Fixed
-- **Test isolation: autouse fixture now redirects `MEMORIES_DIR` as well as `STATE_FILE`** — v1.6.0's fixture only isolated `STATE_FILE`. `test_filename_format` patched `_hostname="test-host"` but not `MEMORIES_DIR`, so a pytest run under v1.6.1's (now-working) migration renamed 27 real calendar-event files in iCloud to a `test-host-` prefix. Autouse fixture now redirects both; added a meta-test that snapshots real production `MEMORIES_DIR` calendar-event filenames+mtimes and asserts no mutation after `CalendarScanner()` is constructed under `_hostname="test-host"`.
+- **Project-candidate filenames unmangled via one-shot migration** — `project_inference_scanner.py` now runs `_unmangle_candidate_filenames` at `__init__`, sentinel-gated by `.project-candidate-unmangle-v1.done` in `DEPLOY_DIR`. It matches the `project-*-candidate-*.md` glob, extracts the canonical `candidate-{slug}-{id}` tail via regex, and renames each file back to `project-{tail}.md`. When two mangled copies of the same candidate exist, the winner is picked by `status` (`confirmed`/`rejected` beats `pending`), then `created` timestamp, then mtime. `OSError` with errno `EDEADLK`/`EAGAIN` is treated as transient: the file is skipped and the sentinel is NOT stamped, so the migration re-attempts on the next boot. Production state: 474 mangled files expected to collapse back to canonical form on first boot post-deploy.
+- **`code_scanner` migrations scoped strictly to `type: code`/`category: code`** — `_migrate_project_filenames` previously matched any file whose name started with `project-`, which is how it stole `project-candidate-*.md` files from `project_inference_scanner`. It now requires the frontmatter to carry BOTH `type: project` AND `category: code` before touching a filename. All three code-scanner filename migrations (`_migrate_legacy_code_project_files`, `_migrate_project_filenames`, `_migrate_project_to_code_files`) are now sentinel-gated by `.code-*-v2.done` files in `DEPLOY_DIR`, so they run exactly once per install and can't re-enter on a hostname flip.
+- **iCloud `EDEADLK` no longer crashes code-scanner migration** — the migration loops now catch `OSError` with errno `EDEADLK`/`EAGAIN` as a transient iCloud placeholder-read deadlock, log at DEBUG, and skip the file. When any transient error occurs during a pass, the sentinel is NOT stamped so the migration will re-attempt cleanly on the next boot. This eliminates the "Code migration failed / Resource deadlock avoided" spam that had been flooding `error.log`.
+- **Test isolation: autouse fixture now redirects `MEMORIES_DIR` as well as `STATE_FILE`** — v1.6.0's fixture only isolated `STATE_FILE`. `test_filename_format` patched `_hostname="test-host"` but not `MEMORIES_DIR`, so a pytest run under v1.6.1's (now-working) migration renamed 27 real calendar-event files in iCloud to a `test-host-` prefix. Autouse fixture now redirects both; added a meta-test that snapshots real production `MEMORIES_DIR` calendar-event filenames+mtimes and asserts no mutation after `CalendarScanner()` is constructed under `_hostname="test-host"`. Equivalent autouse fixtures and meta-tests added for `test_code_scanner.py` and `test_project_inference_scanner.py`.
 
 ## [1.6.1] — 2026-04-22
 
