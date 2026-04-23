@@ -17,6 +17,7 @@ from litellm.exceptions import (
     Timeout as LiteLLMTimeout,
 )
 from llm_routes import resolve
+from utils import read_text_with_retry, read_bytes_with_retry
 
 # Exceptions that indicate a transient failure — safe to retry on the fallback model.
 # Auth errors, bad request, and quota exhaustion are permanent and propagate up.
@@ -99,7 +100,9 @@ class SkillExecutor:
         self._mtime = self.skill_path.stat().st_mtime if self.skill_path.exists() else 0
 
     def _load(self) -> dict:
-        file_bytes = self.skill_path.read_bytes()
+        file_bytes = read_bytes_with_retry(self.skill_path, default=None)
+        if file_bytes is None:
+            raise RuntimeError(f"Skill {self.skill_name} unavailable (iCloud lock after retries)")
         if not _verify_skill_checksum(self.skill_name, file_bytes):
             raise RuntimeError(f"Skill {self.skill_name} failed checksum verification")
         text = file_bytes.decode('utf-8')
@@ -187,23 +190,31 @@ class SkillExecutor:
             # Watcher nodes must not write to the shared iCloud skill file.
             # Two machines appending simultaneously produces iCloud conflict copies.
             # Log to iCloud logs dir — optimizer will merge on daily pass.
-            hostname = __import__("socket").gethostname()
-            logs_dir = BRAIN_DIR / "logs"
-            logs_dir.mkdir(parents=True, exist_ok=True)
-            watcher_log = logs_dir / f"{hostname}-execution-log.jsonl"
+            # Logging is best-effort: iCloud I/O failure must never crash the caller.
+            try:
+                hostname = __import__("socket").gethostname()
+                logs_dir = BRAIN_DIR / "logs"
+                logs_dir.mkdir(parents=True, exist_ok=True)
+                watcher_log = logs_dir / f"{hostname}-execution-log.jsonl"
 
-            record = {
-                "date": date, "skill": self.skill_name, "input_slug": slug,
-                "model": model, "score": score_str, "notes": notes,
-                "hostname": hostname
-            }
-            with open(watcher_log, "a") as f:
-                f.write(json.dumps(record) + "\n")
+                record = {
+                    "date": date, "skill": self.skill_name, "input_slug": slug,
+                    "model": model, "score": score_str, "notes": notes,
+                    "hostname": hostname
+                }
+                with open(watcher_log, "a") as f:
+                    f.write(json.dumps(record) + "\n")
+            except OSError as e:
+                log.warning("_log_execution: watcher log write failed (skipping): %s", e)
             return
 
-        # Full node: write to the skill file in iCloud as before
+        # Full node: write to the skill file in iCloud as before.
+        # Logging is best-effort: iCloud I/O failure must never crash the caller.
         row = f"| {date} | {slug} | {model} | {score_str} | {notes} |\n"
-        text = self.skill_path.read_text()
+        text = read_text_with_retry(self.skill_path, default=None)
+        if text is None:
+            log.warning("_log_execution: could not read %s (iCloud lock) — skipping log row", self.skill_path.name)
+            return
 
         if "## Execution History" not in text:
             text += (f"\n## Execution History\n\n"
@@ -219,9 +230,12 @@ class SkillExecutor:
             lines.insert(insert_at, row)
             text = "".join(lines)
 
-        tmp = self.skill_path.with_suffix(".tmp")
-        tmp.write_text(text)
-        os.rename(tmp, self.skill_path)
+        try:
+            tmp = self.skill_path.with_suffix(".tmp")
+            tmp.write_text(text)
+            os.rename(tmp, self.skill_path)
+        except OSError as e:
+            log.warning("_log_execution: could not write %s (iCloud lock) — skipping log row", self.skill_path.name)
 
     async def run_with_tools(
         self,
