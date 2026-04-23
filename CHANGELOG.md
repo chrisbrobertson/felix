@@ -6,6 +6,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.6.7] — 2026-04-22
+
+### Fixed
+- **`browser_watcher` blocked the asyncio event loop on SQLite reads** — `run_loop` and `backfill` called `_fetch_recent_urls()` (which does `shutil.copy2` + `sqlite3.connect`) directly from async context. SQLite reads block for 10–200 ms under normal conditions, longer under I/O pressure. Both callsites now use `await asyncio.to_thread(self._fetch_recent_urls, since)`.
+- **`calendar_scanner` blocked the asyncio event loop on `source.get_events()`** — `_run_scan` and the `/calendar` backfill handler called `source.get_events()` directly from async context. For `AppleScriptSource` (the primary fallback), this runs `subprocess.Popen(["osascript", ...], timeout=60)` — freezing all 14 event-loop tasks plus Telegram polling for up to 60 seconds. Both callsites now use `await asyncio.to_thread(source.get_events, ...)`.
+- **`slack_scanner` pagination `while True` loops had no iteration cap** — `_get_channel_messages` and `_fetch_thread_replies` looped indefinitely on Slack cursor pagination. A high-volume channel or a runaway API response could loop forever. Both loops now cap at `MAX_SLACK_PAGES = 50` and log a warning if the limit is reached.
+- **Processed-file state dicts grew unbounded** — `commitment_tracker`, `contact_tracker`, and `project_inference_scanner` all accumulated `{filename: mtime}` state entries but never pruned them when source memory files were deleted. Over months, state files bloated with thousands of stale entries. `_save_state()` in each module now prunes entries for files that no longer exist in MEMORIES_DIR before writing.
+
 ## [1.6.6] — 2026-04-23
 
 ### Fixed
