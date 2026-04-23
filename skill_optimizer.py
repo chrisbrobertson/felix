@@ -547,12 +547,9 @@ Respond with JSON only:
 
         result_text = response.choices[0].message.content.strip()
 
-        # Parse JSON
-        # Try to extract JSON from markdown code block if present
-        if "```json" in result_text:
-            result_text = result_text.split("```json")[1].split("```")[0].strip()
-        elif "```" in result_text:
-            result_text = result_text.split("```")[1].split("```")[0].strip()
+        # Strip ```json fences if the model wrapped its output.
+        result_text = re.sub(r'^```(?:json)?\n?', '', result_text)
+        result_text = re.sub(r'\n?```$', '', result_text)
 
         result = json.loads(result_text)
         score = float(result["score"])
@@ -941,11 +938,9 @@ Be specific. Cite evidence from the execution examples. Avoid generic observatio
 
             result_text = response.choices[0].message.content.strip()
 
-            # Extract JSON
-            if "```json" in result_text:
-                result_text = result_text.split("```json")[1].split("```")[0].strip()
-            elif "```" in result_text:
-                result_text = result_text.split("```")[1].split("```")[0].strip()
+            # Strip ```json fences if the model wrapped its output.
+            result_text = re.sub(r'^```(?:json)?\n?', '', result_text)
+            result_text = re.sub(r'\n?```$', '', result_text)
 
             critique = json.loads(result_text)
 
