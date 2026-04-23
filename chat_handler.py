@@ -33,6 +33,7 @@ TG_MAX_CHARS = 4096  # Telegram hard limit per message
 # Defined in command_core.py and imported here so cmd_help, tests, and
 # _format_commands_text all reference the same object.
 from command_core import COMMAND_REGISTRY  # noqa: E402 (import after stdlib)
+from utils import read_text_with_retry
 
 # Backfill configuration: default and max days per scanner type
 BACKFILL_CONFIG = {
@@ -46,12 +47,8 @@ BACKFILL_CONFIG = {
 
 
 def _safe_read_text(path: Path) -> Optional[str]:
-    """Read iCloud file, returning None on transient OSError (e.g. errno 11 EDEADLK)."""
-    try:
-        return path.read_text()
-    except OSError as e:
-        log.warning("Read failed for %s: %s", path, e)
-        return None
+    """Read iCloud file with retry, returning None on persistent EDEADLK/EAGAIN."""
+    return read_text_with_retry(path, default=None)
 
 
 def _safe_error(e: Exception) -> str:
