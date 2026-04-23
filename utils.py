@@ -101,3 +101,43 @@ def _reset_config_cache() -> None:
     global _config_cache, _config_cache_mtime
     _config_cache = {}
     _config_cache_mtime = None
+
+
+def read_text_with_retry(
+    path: Path,
+    *,
+    encoding: str = "utf-8",
+    delays: tuple = (0.1, 0.5, 1.0),
+    default: Optional[str] = "",
+) -> Optional[str]:
+    """Read a text file, retrying on iCloud EDEADLK.
+
+    iCloud-backed files (everything under `~/Library/Mobile Documents/
+    com~apple~CloudDocs/`) can raise `OSError(11, 'Resource deadlock
+    avoided')` when the placeholder is being materialized. A short
+    backoff almost always clears it.
+
+    Returns the file contents on success, or `default` if all retries
+    fail (or the file doesn't exist). The default of `""` keeps callers
+    of the common `_parse_frontmatter(read_text_with_retry(path))`
+    pattern working without needing a None check — an empty string
+    parses to an empty dict and the surrounding `if fm.get(...)` guards
+    skip the file naturally. Pass `default=None` if you want to
+    distinguish "read failed" from "file is empty".
+    """
+    if not path.exists():
+        return default
+
+    for attempt, delay in enumerate(delays):
+        try:
+            return path.read_text(encoding=encoding)
+        except OSError as e:
+            if e.errno == 11:  # EDEADLK
+                if attempt < len(delays) - 1:
+                    time.sleep(delay)
+                    continue
+                log.warning("read_text_with_retry: %s — iCloud EDEADLK after %d retries", path.name, len(delays))
+            else:
+                log.warning("read_text_with_retry: %s — %s", path.name, e)
+            break
+    return default

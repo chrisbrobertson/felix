@@ -6,6 +6,11 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.6.5] — 2026-04-22
+
+### Fixed
+- **`/briefing` and notification-manager alert loops now tolerate iCloud EDEADLK on memory file reads** — v1.6.4 only plugged the `config.yaml` read. `_assemble_briefing` (plus `_check_commitment_alerts`, `_check_goal_alerts`, `_check_project_alerts`, `_check_pre_meeting_alerts`, `_check_calendar_staleness`, `_prune_sent_alerts`, and `_assemble_pre_meeting_context`) still did raw `f.read_text()` on 14 distinct memory-file loops. A single EDEADLK in any of them raised straight out of the handler, so `/briefing` continued to return "internal error" even after the v1.6.4 deploy. Added `utils.read_text_with_retry()` — a generic iCloud-resilient reader (3× retry on errno 11, returns `""` on exhaustion so callers' existing `_parse_frontmatter`/`if fm.get(...)` guards skip unreadable files naturally). Every `f.read_text()` / `path.read_text(encoding="utf-8")` in `notification_manager.py` that targets an iCloud memory file now goes through the helper. Regression test asserts `_assemble_briefing()` completes without raising when one memory file raises `OSError(11)` on every read.
+
 ## [1.6.4] — 2026-04-22
 
 ### Fixed

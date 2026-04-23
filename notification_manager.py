@@ -10,6 +10,8 @@ from typing import Optional
 import yaml
 from zoneinfo import ZoneInfo
 
+from utils import read_text_with_retry
+
 log = logging.getLogger("notification-manager")
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
@@ -207,7 +209,7 @@ class NotificationManager:
             if not commitment_files:
                 continue  # File deleted — discard
 
-            fm = _parse_frontmatter(commitment_files[0].read_text())
+            fm = _parse_frontmatter(read_text_with_retry(commitment_files[0]))
             due_date_str = fm.get("due_date")
             if not due_date_str:
                 pruned_commitments.append(commitment_id)
@@ -231,7 +233,7 @@ class NotificationManager:
             if not event_file.exists():
                 continue  # File deleted — discard
 
-            fm = _parse_frontmatter(event_file.read_text())
+            fm = _parse_frontmatter(read_text_with_retry(event_file))
             start_time_str = fm.get("start_time")
             if not start_time_str:
                 continue  # No start time — discard
@@ -315,7 +317,7 @@ class NotificationManager:
         # Calendar events for today
         calendar_events = []
         for f in MEMORIES_DIR.glob("calendar-event-*.md"):
-            fm = _parse_frontmatter(f.read_text())
+            fm = _parse_frontmatter(read_text_with_retry(f))
             if fm.get("type") != "calendar_event":
                 continue
             start_time_str = fm.get("start_time")
@@ -345,7 +347,7 @@ class NotificationManager:
         due_today = []
         overdue = []
         for f in MEMORIES_DIR.glob("commitment-*.md"):
-            fm = _parse_frontmatter(f.read_text())
+            fm = _parse_frontmatter(read_text_with_retry(f))
             if fm.get("type") != "commitment":
                 continue
             if fm.get("status") != "active":
@@ -398,7 +400,7 @@ class NotificationManager:
         cutoff = now - timedelta(days=stale_days)
         stale_waiting = []
         for f in MEMORIES_DIR.glob("commitment-*.md"):
-            fm = _parse_frontmatter(f.read_text())
+            fm = _parse_frontmatter(read_text_with_retry(f))
             if fm.get("type") != "commitment":
                 continue
             if fm.get("status") != "active":
@@ -431,7 +433,7 @@ class NotificationManager:
         cutoff_24h = now - timedelta(hours=24)
         for f in sorted(MEMORIES_DIR.glob("action-*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
             try:
-                fm = _parse_frontmatter(f.read_text(encoding="utf-8"))
+                fm = _parse_frontmatter(read_text_with_retry(f))
                 if fm.get("type") != "agent_action" or fm.get("status") != "pending":
                     continue
                 proposed_at_str = fm.get("proposed_at", "")
@@ -517,7 +519,7 @@ class NotificationManager:
         sent_alerts = set(state.get("sent_commitment_alerts", []))
 
         for f in MEMORIES_DIR.glob("commitment-*.md"):
-            fm = _parse_frontmatter(f.read_text())
+            fm = _parse_frontmatter(read_text_with_retry(f))
             if fm.get("type") != "commitment":
                 continue
             if fm.get("status") != "active":
@@ -602,7 +604,7 @@ class NotificationManager:
 
         for path in MEMORIES_DIR.glob("goal-*.md"):
             try:
-                text = path.read_text(encoding="utf-8")
+                text = read_text_with_retry(path)
                 fm = _parse_frontmatter(text)
 
                 if fm.get("status") != "active":
@@ -661,7 +663,7 @@ class NotificationManager:
                 continue
 
             try:
-                text = path.read_text(encoding="utf-8")
+                text = read_text_with_retry(path)
                 fm = _parse_frontmatter(text)
 
                 # Skip candidates that might slip through
@@ -722,7 +724,7 @@ class NotificationManager:
         sent_meetings = set(state.get("sent_pre_meeting", []))
 
         for f in MEMORIES_DIR.glob("calendar-event-*.md"):
-            fm = _parse_frontmatter(f.read_text())
+            fm = _parse_frontmatter(read_text_with_retry(f))
             if fm.get("type") != "calendar_event":
                 continue
 
@@ -851,7 +853,7 @@ class NotificationManager:
                 contact_files = list(MEMORIES_DIR.glob(f"contact-*.md"))
                 contact_fm = None
                 for cf in contact_files:
-                    cfm = _parse_frontmatter(cf.read_text())
+                    cfm = _parse_frontmatter(read_text_with_retry(cf))
                     name = cfm.get("name", "")
                     email = cfm.get("email", "")
                     if participant.lower() in name.lower() or participant.lower() in email.lower():
@@ -868,7 +870,7 @@ class NotificationManager:
         # Open commitments involving attendees
         open_commitments = []
         for f in MEMORIES_DIR.glob("commitment-*.md"):
-            fm = _parse_frontmatter(f.read_text())
+            fm = _parse_frontmatter(read_text_with_retry(f))
             if fm.get("type") != "commitment":
                 continue
             if fm.get("status") != "active":

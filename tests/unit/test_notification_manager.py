@@ -1967,6 +1967,48 @@ def test_load_config_falls_back_to_cache_on_persistent_edeadlk(tmp_path, caplog)
     assert second == {"notifications": {"telegram_chat_id": 99}}, "must fall back to cache"
 
 
+def test_assemble_briefing_survives_icloud_edeadlk_on_memory_file(tmp_path):
+    """_assemble_briefing must not crash when a memory file read hits EDEADLK.
+
+    Before this fix, a transient EDEADLK on any calendar-event-*.md or
+    commitment-*.md read raised straight out of the command handler and
+    Telegram got no reply. Now the retry helper absorbs it and returns
+    "" so the file is silently skipped.
+    """
+    _reset_config_cache()
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    # One good calendar event and one "bad" one whose read always EDEADLKs.
+    good_event = memories_dir / "calendar-event-host-2026-04-22-standup-abc123.md"
+    good_event.write_text(
+        "---\ntype: calendar_event\nsource_title: Standup\n"
+        "start_time: '2026-04-22T09:00:00'\n---\n"
+    )
+    bad_event = memories_dir / "calendar-event-host-2026-04-22-broken-def456.md"
+    bad_event.write_text("---\ntype: calendar_event\n---\n")
+
+    real_read = Path.read_text
+
+    def flaky(self, *a, **kw):
+        if "broken" in self.name:
+            raise OSError(11, "Resource deadlock avoided")
+        return real_read(self, *a, **kw)
+
+    bot_mock = AsyncMock()
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({"chat_id": 111}))
+
+    with patch.object(nm, "MEMORIES_DIR", memories_dir), \
+         patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(Path, "read_text", flaky):
+        mgr = NotificationManager(bot=bot_mock)
+        text = mgr._assemble_briefing()
+
+    # Must complete without raising and include the good event.
+    assert "Standup" in text
+
+
 def test_load_config_caches_by_mtime(tmp_path):
     """Unchanged mtime → no re-read of iCloud file."""
     _reset_config_cache()
