@@ -531,9 +531,8 @@ class TelegramChatHandler:
             if budget_tokens <= 0:
                 log.info(f"Chat context assembled: {len(parts)} files, ~{total_tokens} tokens")
                 break
-            try:
-                text = f.read_text()
-            except OSError:
+            text = read_text_with_retry(f, default=None)
+            if text is None:
                 continue
             text_tokens = self._count_tokens(text)
             if text_tokens > budget_tokens:
@@ -5806,7 +5805,7 @@ class TelegramChatHandler:
           try:
             history = self._chat_history.get(chat_id, [])
 
-            memory_context = self._load_context(query, history)
+            memory_context = await asyncio.to_thread(self._load_context, query, history)
             log.info(f"Context loaded: {len(memory_context)} chars")
 
             from chat_tools import TOOLS, dispatch as _tool_dispatch

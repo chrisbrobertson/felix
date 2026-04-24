@@ -10,7 +10,7 @@ from typing import Optional
 import yaml
 from zoneinfo import ZoneInfo
 
-from utils import read_text_with_retry
+from utils import read_text_with_retry_async
 
 log = logging.getLogger("notification-manager")
 
@@ -196,7 +196,7 @@ class NotificationManager:
             tz = ZoneInfo("UTC")
         return datetime.now(tz)
 
-    def _prune_sent_alerts(self, state: dict):
+    async def _prune_sent_alerts(self, state: dict):
         """Remove stale entries from sent_commitment_alerts and sent_pre_meeting."""
         now = self._get_local_now()
         today = now.date()
@@ -209,7 +209,7 @@ class NotificationManager:
             if not commitment_files:
                 continue  # File deleted — discard
 
-            fm = _parse_frontmatter(read_text_with_retry(commitment_files[0]))
+            fm = _parse_frontmatter(await read_text_with_retry_async(commitment_files[0]))
             due_date_str = fm.get("due_date")
             if not due_date_str:
                 pruned_commitments.append(commitment_id)
@@ -233,7 +233,7 @@ class NotificationManager:
             if not event_file.exists():
                 continue  # File deleted — discard
 
-            fm = _parse_frontmatter(read_text_with_retry(event_file))
+            fm = _parse_frontmatter(await read_text_with_retry_async(event_file))
             start_time_str = fm.get("start_time")
             if not start_time_str:
                 continue  # No start time — discard
@@ -289,7 +289,7 @@ class NotificationManager:
         # Commit the attempt before the network call so a crash mid-send
         # doesn't re-send the briefing on the next restart (send-before-save
         # was the root cause of duplicate briefings from daemon crash loops).
-        briefing_text = self._assemble_briefing()
+        briefing_text = await self._assemble_briefing()
         prev_date = state.get("last_briefing_date")
         state["last_briefing_date"] = today_str
         _save_state(state)
@@ -302,7 +302,7 @@ class NotificationManager:
             _save_state(state)
             raise
 
-    def _assemble_briefing(self) -> str:
+    async def _assemble_briefing(self) -> str:
         """Assemble daily briefing content from memory files."""
         now = self._get_local_now()
         today = now.date()
@@ -317,7 +317,7 @@ class NotificationManager:
         # Calendar events for today
         calendar_events = []
         for f in MEMORIES_DIR.glob("calendar-event-*.md"):
-            fm = _parse_frontmatter(read_text_with_retry(f))
+            fm = _parse_frontmatter(await read_text_with_retry_async(f))
             if fm.get("type") != "calendar_event":
                 continue
             start_time_str = fm.get("start_time")
@@ -347,7 +347,7 @@ class NotificationManager:
         due_today = []
         overdue = []
         for f in MEMORIES_DIR.glob("commitment-*.md"):
-            fm = _parse_frontmatter(read_text_with_retry(f))
+            fm = _parse_frontmatter(await read_text_with_retry_async(f))
             if fm.get("type") != "commitment":
                 continue
             if fm.get("status") != "active":
@@ -400,7 +400,7 @@ class NotificationManager:
         cutoff = now - timedelta(days=stale_days)
         stale_waiting = []
         for f in MEMORIES_DIR.glob("commitment-*.md"):
-            fm = _parse_frontmatter(read_text_with_retry(f))
+            fm = _parse_frontmatter(await read_text_with_retry_async(f))
             if fm.get("type") != "commitment":
                 continue
             if fm.get("status") != "active":
@@ -433,7 +433,7 @@ class NotificationManager:
         cutoff_24h = now - timedelta(hours=24)
         for f in sorted(MEMORIES_DIR.glob("action-*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
             try:
-                fm = _parse_frontmatter(read_text_with_retry(f))
+                fm = _parse_frontmatter(await read_text_with_retry_async(f))
                 if fm.get("type") != "agent_action" or fm.get("status") != "pending":
                     continue
                 proposed_at_str = fm.get("proposed_at", "")
@@ -519,7 +519,7 @@ class NotificationManager:
         sent_alerts = set(state.get("sent_commitment_alerts", []))
 
         for f in MEMORIES_DIR.glob("commitment-*.md"):
-            fm = _parse_frontmatter(read_text_with_retry(f))
+            fm = _parse_frontmatter(await read_text_with_retry_async(f))
             if fm.get("type") != "commitment":
                 continue
             if fm.get("status") != "active":
@@ -604,7 +604,7 @@ class NotificationManager:
 
         for path in MEMORIES_DIR.glob("goal-*.md"):
             try:
-                text = read_text_with_retry(path)
+                text = await read_text_with_retry_async(path)
                 fm = _parse_frontmatter(text)
 
                 if fm.get("status") != "active":
@@ -663,7 +663,7 @@ class NotificationManager:
                 continue
 
             try:
-                text = read_text_with_retry(path)
+                text = await read_text_with_retry_async(path)
                 fm = _parse_frontmatter(text)
 
                 # Skip candidates that might slip through
@@ -724,7 +724,7 @@ class NotificationManager:
         sent_meetings = set(state.get("sent_pre_meeting", []))
 
         for f in MEMORIES_DIR.glob("calendar-event-*.md"):
-            fm = _parse_frontmatter(read_text_with_retry(f))
+            fm = _parse_frontmatter(await read_text_with_retry_async(f))
             if fm.get("type") != "calendar_event":
                 continue
 
@@ -757,7 +757,7 @@ class NotificationManager:
                 continue  # Already sent
 
             # Assemble pre-meeting context
-            context_text = self._assemble_pre_meeting_context(fm, start_time)
+            context_text = await self._assemble_pre_meeting_context(fm, start_time)
             await self.send_message(context_text)
             sent_meetings.add(event_id)
             log.info("Sent pre-meeting context for event %s", event_id)
@@ -835,7 +835,7 @@ class NotificationManager:
             except Exception:
                 log.exception("Failed to roll back staleness dedup")
 
-    def _assemble_pre_meeting_context(self, event_fm: dict, start_time: datetime) -> str:
+    async def _assemble_pre_meeting_context(self, event_fm: dict, start_time: datetime) -> str:
         """Assemble pre-meeting context from event and related files."""
         title = event_fm.get("source_title") or event_fm.get("title") or "(no title)"
         time_str = start_time.strftime("%I:%M %p").lstrip("0")
@@ -853,7 +853,7 @@ class NotificationManager:
                 contact_files = list(MEMORIES_DIR.glob(f"contact-*.md"))
                 contact_fm = None
                 for cf in contact_files:
-                    cfm = _parse_frontmatter(read_text_with_retry(cf))
+                    cfm = _parse_frontmatter(await read_text_with_retry_async(cf))
                     name = cfm.get("name", "")
                     email = cfm.get("email", "")
                     if participant.lower() in name.lower() or participant.lower() in email.lower():
@@ -870,7 +870,7 @@ class NotificationManager:
         # Open commitments involving attendees
         open_commitments = []
         for f in MEMORIES_DIR.glob("commitment-*.md"):
-            fm = _parse_frontmatter(read_text_with_retry(f))
+            fm = _parse_frontmatter(await read_text_with_retry_async(f))
             if fm.get("type") != "commitment":
                 continue
             if fm.get("status") != "active":
@@ -928,7 +928,7 @@ class NotificationManager:
             return
 
         # Prune stale entries
-        self._prune_sent_alerts(state)
+        await self._prune_sent_alerts(state)
 
         # Run checks
         await self._check_daily_briefing(state)

@@ -1,4 +1,5 @@
 """Shared helpers for second-brain daemon."""
+import asyncio
 import errno
 import logging
 import re
@@ -171,5 +172,40 @@ def read_bytes_with_retry(
                 log.warning("read_bytes_with_retry: %s — iCloud EDEADLK/EAGAIN after %d retries", path.name, len(delays))
             else:
                 log.warning("read_bytes_with_retry: %s — %s", path.name, e)
+            break
+    return default
+
+
+async def read_text_with_retry_async(
+    path: Path,
+    *,
+    encoding: str = "utf-8",
+    delays: tuple = (0.1, 0.5, 1.0),
+    default: Optional[str] = "",
+) -> Optional[str]:
+    """Async variant of read_text_with_retry — uses asyncio.sleep so the event
+    loop is not blocked during iCloud EDEADLK/EAGAIN backoff.
+
+    Use this in async functions that read iCloud-backed files in a hot path
+    (e.g. scanner loops, notification manager). The sync version is fine in
+    worker threads (asyncio.to_thread) or startup code.
+    """
+    if not path.exists():
+        return default
+
+    for attempt, delay in enumerate(delays):
+        try:
+            return path.read_text(encoding=encoding)
+        except OSError as e:
+            if e.errno in (errno.EDEADLK, errno.EAGAIN):  # transient iCloud lock
+                if attempt < len(delays) - 1:
+                    await asyncio.sleep(delay)
+                    continue
+                log.warning(
+                    "read_text_with_retry_async: %s — iCloud EDEADLK/EAGAIN after %d retries",
+                    path.name, len(delays),
+                )
+            else:
+                log.warning("read_text_with_retry_async: %s — %s", path.name, e)
             break
     return default

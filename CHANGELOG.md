@@ -6,6 +6,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.6.9] — 2026-04-23
+
+### Fixed
+- **`_load_context` blocked the asyncio event loop for up to 8 minutes per query** — `chat_handler._handle_message` called `self._load_context(query, history)` directly from async context. With 3300+ memory files in iCloud, `_load_context` does thousands of `stat()` + `read_text()` calls, freezing Telegram polling and all other loops for the full duration. Now dispatched via `await asyncio.to_thread(self._load_context, query, history)`.
+- **Context loading silently returned 0 files under iCloud sync pressure** — the memory-file read loop in `_load_context` used a bare `f.read_text()` inside a bare `except OSError: continue`. Any transient EDEADLK/EAGAIN during iCloud sync dropped the file silently with no retry, yielding "0 files, 0 tokens" context. Now uses `read_text_with_retry(f, default=None)` so transient locks are retried before skipping.
+- **`notification_manager` used blocking `time.sleep()` during iCloud retries in async context** — `_assemble_briefing`, `_assemble_pre_meeting_context`, and `_prune_sent_alerts` called `read_text_with_retry()` (which uses `time.sleep()` for backoff) directly from async functions. Under iCloud sync pressure, this blocked the event loop per file. All three methods are now `async def`, all file reads use the new `read_text_with_retry_async()` helper (uses `await asyncio.sleep()`), and their callers are updated accordingly.
+- **Added `read_text_with_retry_async`** — new coroutine in `utils.py` that mirrors `read_text_with_retry` but uses `await asyncio.sleep()` for backoff, safe to call from async contexts without blocking the event loop.
+
 ## [1.6.8] — 2026-04-23
 
 ### Fixed

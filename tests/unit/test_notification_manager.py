@@ -161,7 +161,8 @@ async def test_no_send_when_muted(tmp_path):
     bot_mock.send_message.assert_not_called()
 
 
-def test_briefing_bypasses_mute(tmp_path):
+@pytest.mark.asyncio
+async def test_briefing_bypasses_mute(tmp_path):
     """/briefing command delivers briefing even when muted."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -177,7 +178,7 @@ def test_briefing_bypasses_mute(tmp_path):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
                 mgr = NotificationManager()
-                briefing = mgr._assemble_briefing()
+                briefing = await mgr._assemble_briefing()
                 assert "Good morning" in briefing
 
 
@@ -326,7 +327,8 @@ async def test_daily_briefing_updates_last_date(tmp_path):
                 assert reloaded["last_briefing_date"] == "2026-04-11"
 
 
-def test_on_demand_briefing_does_not_advance_date(tmp_path):
+@pytest.mark.asyncio
+async def test_on_demand_briefing_does_not_advance_date(tmp_path):
     """/briefing does not set last_briefing_date."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -342,13 +344,14 @@ def test_on_demand_briefing_does_not_advance_date(tmp_path):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
                 mgr = NotificationManager()
-                mgr._assemble_briefing()
+                await mgr._assemble_briefing()
 
                 reloaded = nm._load_state()
                 assert reloaded["last_briefing_date"] == "2026-04-10"
 
 
-def test_briefing_includes_todays_calendar_events(tmp_path):
+@pytest.mark.asyncio
+async def test_briefing_includes_todays_calendar_events(tmp_path):
     """calendar_event files for today listed."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -373,13 +376,14 @@ def test_briefing_includes_todays_calendar_events(tmp_path):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
             mgr = NotificationManager()
             with patch.object(mgr, "_get_local_now", return_value=now):
-                briefing = mgr._assemble_briefing()
+                briefing = await mgr._assemble_briefing()
 
     assert "Team Standup" in briefing
     assert "9:00 AM" in briefing
 
 
-def test_briefing_includes_due_commitments(tmp_path):
+@pytest.mark.asyncio
+async def test_briefing_includes_due_commitments(tmp_path):
     """Active commitments with due_date=today shown."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -398,13 +402,14 @@ def test_briefing_includes_due_commitments(tmp_path):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
             mgr = NotificationManager()
             with patch.object(mgr, "_get_local_now", return_value=now):
-                briefing = mgr._assemble_briefing()
+                briefing = await mgr._assemble_briefing()
 
     assert "Commitments due today" in briefing
     assert "Send report" in briefing
 
 
-def test_briefing_includes_overdue(tmp_path):
+@pytest.mark.asyncio
+async def test_briefing_includes_overdue(tmp_path):
     """due_date < today shown as overdue."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -423,13 +428,14 @@ def test_briefing_includes_overdue(tmp_path):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
             mgr = NotificationManager()
             with patch.object(mgr, "_get_local_now", return_value=now):
-                briefing = mgr._assemble_briefing()
+                briefing = await mgr._assemble_briefing()
 
     assert "Overdue" in briefing
     assert "Review document" in briefing
 
 
-def test_briefing_empty_section_omitted(tmp_path):
+@pytest.mark.asyncio
+async def test_briefing_empty_section_omitted(tmp_path):
     """Section with no items not included in message."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -445,7 +451,7 @@ def test_briefing_empty_section_omitted(tmp_path):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
             mgr = NotificationManager()
             with patch.object(mgr, "_get_local_now", return_value=now):
-                briefing = mgr._assemble_briefing()
+                briefing = await mgr._assemble_briefing()
 
     assert "Calendar" not in briefing
     assert "Commitments due today" not in briefing
@@ -579,7 +585,8 @@ async def test_commitment_alert_not_for_completed(tmp_path):
     bot_mock.send_message.assert_not_called()
 
 
-def test_commitment_alerts_pruned_by_age(tmp_path):
+@pytest.mark.asyncio
+async def test_commitment_alerts_pruned_by_age(tmp_path):
     """sent_commitment_alerts entries > 1 day past due removed."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -603,7 +610,7 @@ def test_commitment_alerts_pruned_by_age(tmp_path):
                 mgr = NotificationManager()
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
-                    mgr._prune_sent_alerts(state)
+                    await mgr._prune_sent_alerts(state)
                     nm._save_state(state)
 
     reloaded = nm._load_state()
@@ -873,7 +880,7 @@ async def test_pre_meeting_dedup_survives_prune(tmp_path):
                     assert bot_mock.send_message.call_count == 1
 
                     # Prune: event is still in future, so entry should be KEPT
-                    mgr._prune_sent_alerts(state)
+                    await mgr._prune_sent_alerts(state)
                     assert "calendar-event-evt123" in state["sent_pre_meeting"]
 
                     # Second cycle: alert must NOT re-fire
@@ -881,7 +888,8 @@ async def test_pre_meeting_dedup_survives_prune(tmp_path):
                     assert bot_mock.send_message.call_count == 1  # still 1, not 2
 
 
-def test_pre_meeting_includes_contacts(tmp_path):
+@pytest.mark.asyncio
+async def test_pre_meeting_includes_contacts(tmp_path):
     """Contact file info shown for attendees."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -902,13 +910,14 @@ def test_pre_meeting_includes_contacts(tmp_path):
             mgr = NotificationManager()
             with patch.object(mgr, "_get_local_now", return_value=now):
                 fm = _parse_frontmatter((memories_dir / "calendar-event-evt123.md").read_text())
-                context = mgr._assemble_pre_meeting_context(fm, event_time)
+                context = await mgr._assemble_pre_meeting_context(fm, event_time)
 
     assert "Alice Chen" in context
     assert "relationship score 3.50" in context
 
 
-def test_pre_meeting_includes_open_commitments(tmp_path):
+@pytest.mark.asyncio
+async def test_pre_meeting_includes_open_commitments(tmp_path):
     """Active commitments with attendees shown."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -929,13 +938,14 @@ def test_pre_meeting_includes_open_commitments(tmp_path):
             mgr = NotificationManager()
             with patch.object(mgr, "_get_local_now", return_value=now):
                 fm = _parse_frontmatter((memories_dir / "calendar-event-evt123.md").read_text())
-                context = mgr._assemble_pre_meeting_context(fm, event_time)
+                context = await mgr._assemble_pre_meeting_context(fm, event_time)
 
     assert "Open commitments with attendees" in context
     assert "Send budget numbers" in context
 
 
-def test_pre_meeting_missing_contact_graceful(tmp_path):
+@pytest.mark.asyncio
+async def test_pre_meeting_missing_contact_graceful(tmp_path):
     """No contact file → attendee shown without score."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -955,13 +965,14 @@ def test_pre_meeting_missing_contact_graceful(tmp_path):
             mgr = NotificationManager()
             with patch.object(mgr, "_get_local_now", return_value=now):
                 fm = _parse_frontmatter((memories_dir / "calendar-event-evt123.md").read_text())
-                context = mgr._assemble_pre_meeting_context(fm, event_time)
+                context = await mgr._assemble_pre_meeting_context(fm, event_time)
 
     assert "Bob" in context
     assert "relationship score" not in context
 
 
-def test_pre_meeting_sent_alerts_pruned(tmp_path):
+@pytest.mark.asyncio
+async def test_pre_meeting_sent_alerts_pruned(tmp_path):
     """Entries for past events removed from state; future events kept."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -991,7 +1002,7 @@ def test_pre_meeting_sent_alerts_pruned(tmp_path):
                 mgr = NotificationManager()
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
-                    mgr._prune_sent_alerts(state)
+                    await mgr._prune_sent_alerts(state)
                     nm._save_state(state)
                 reloaded = nm._load_state()
 
@@ -1836,7 +1847,8 @@ async def test_calendar_staleness_alert_not_fired_when_no_files(tmp_path):
     bot_mock.send_message.assert_not_called()
 
 
-def test_calendar_staleness_alert_prunes_state_after_7_days(tmp_path):
+@pytest.mark.asyncio
+async def test_calendar_staleness_alert_prunes_state_after_7_days(tmp_path):
     """Entries older than 7 days are dropped by _prune_sent_alerts."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -1859,7 +1871,7 @@ def test_calendar_staleness_alert_prunes_state_after_7_days(tmp_path):
         mgr = NotificationManager(bot=bot_mock)
         with patch.object(mgr, "_get_local_now", return_value=now):
             state = nm._load_state()
-            mgr._prune_sent_alerts(state)
+            await mgr._prune_sent_alerts(state)
 
     assert "2026-04-13" not in state["sent_calendar_staleness_alerts"]
     assert "2026-04-21" in state["sent_calendar_staleness_alerts"]
@@ -1967,7 +1979,8 @@ def test_load_config_falls_back_to_cache_on_persistent_edeadlk(tmp_path, caplog)
     assert second == {"notifications": {"telegram_chat_id": 99}}, "must fall back to cache"
 
 
-def test_assemble_briefing_survives_icloud_edeadlk_on_memory_file(tmp_path):
+@pytest.mark.asyncio
+async def test_assemble_briefing_survives_icloud_edeadlk_on_memory_file(tmp_path):
     """_assemble_briefing must not crash when a memory file read hits EDEADLK.
 
     Before this fix, a transient EDEADLK on any calendar-event-*.md or
@@ -2006,7 +2019,7 @@ def test_assemble_briefing_survives_icloud_edeadlk_on_memory_file(tmp_path):
          patch.object(nm, "STATE_FILE", state_file), \
          patch.object(Path, "read_text", flaky):
         mgr = NotificationManager(bot=bot_mock)
-        text = mgr._assemble_briefing()
+        text = await mgr._assemble_briefing()
 
     # Must complete without raising and include the good event.
     assert "Standup" in text
