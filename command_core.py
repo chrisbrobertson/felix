@@ -135,6 +135,11 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("report_resume",  "Resume paused report N"),
         ("report_run",     "Run report N immediately"),
     ],
+    "Circles": [
+        ("circles",       "List configured circles with member count and last-sync time"),
+        ("circle",        "Show detail for circle N from last /circles list"),
+        ("circle_status", "Quick health check: which circles are syncing, which have missing iCloud folders"),
+    ],
     "Meta": [
         ("help",     "Show this list"),
         ("commands", "Alias of /help"),

@@ -6,6 +6,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Circles Phase B: add `/circles`, `/circle <N>`, `/circle_status` host Telegram commands for inspecting circle sync state and ruleset details
+
 ## [1.7.0] — 2026-04-25
 
 ### Added
