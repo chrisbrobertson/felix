@@ -559,6 +559,8 @@ DAEMON_FILES=(
     synthesis_scanner.py
     watchlist_checker.py
     llm_chat_importer.py
+    circle_ruleset.py
+    circle_sync_scanner.py
     VERSION
 )
 

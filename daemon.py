@@ -155,6 +155,7 @@ async def main():
         from project_inference_scanner import ProjectInferenceScanner
         from goal_project_agent import GoalProjectAgent
         from synthesis_scanner import SynthesisScanner
+        from circle_sync_scanner import CircleSyncScanner
 
         # Instantiate tier-2 scanners and services
         optimizer = SkillOptimizer(config)
@@ -165,6 +166,10 @@ async def main():
         project_inference_scanner = ProjectInferenceScanner(role=role)
         goal_agent = GoalProjectAgent(role=role)
         synthesis_scanner = SynthesisScanner(role=role)
+
+        # Instantiate circle sync scanner if enabled
+        circles_cfg = config.get("circles", {})
+        circle_sync_scanner = CircleSyncScanner(role=role) if circles_cfg.get("enabled", False) else None
 
         # Build scanners dict for backfill command (tier-1 scanners already instantiated)
         scanners_dict = {
@@ -233,6 +238,10 @@ async def main():
             goal_agent.run_loop,
             synthesis_scanner.run_loop,
         ]
+
+        # Add circle sync scanner task if enabled
+        if circle_sync_scanner is not None:
+            tasks.append(circle_sync_scanner.run_loop)
 
         # Add Slack adapter task if configured
         if slack_adapter is not None:

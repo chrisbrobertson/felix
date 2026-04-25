@@ -166,3 +166,9 @@ notifications:
 # precedence. Set github.repo here to configure the repo without an env var.
 # github:
 #   repo: chrisrobertson/secondbrain
+
+circles:
+  enabled: false            # master kill-switch; no scan loop started if false
+  dir: ~/secondbrain/circles  # runtime dir for *.yaml ruleset files
+  icloud_root: ~/Library/Mobile Documents/com~apple~CloudDocs
+  scan_interval_seconds: 300

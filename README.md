@@ -1097,6 +1097,85 @@ To disable classification, set `email_scanner.classification_enabled: false` in 
 
 ---
 
+## Circles (Selective Memory Sharing)
+
+**Circles** let you share specific memories with named groups through iCloud shared folders. Each circle has its own ruleset (YAML file) that declares which memory types, tags, categories, or metadata should be synced. The daemon runs a scanner loop that keeps the shared folders in sync with your main memories directory.
+
+**Phase A** (current) implements **one-way sync** — the full node reads rulesets, matches memories, and writes to shared folders. No Telegram commands, no member bots. Phase B will add `/circles`, `/circle <N>`, and per-circle member bots.
+
+### How it works
+
+1. **Create an iCloud shared folder** in Finder (e.g., `~/Library/Mobile Documents/com~apple~CloudDocs/second-brain-circles/family/memories`)
+2. **Share it** with other Apple IDs via iCloud sharing
+3. **Write a ruleset** in `~/secondbrain/circles/family.yaml` (filename stem = circle slug)
+4. **Enable circles** in `config.yaml`: set `circles.enabled: true`
+5. **Restart the daemon** (`./install.sh` or `launchctl unload/load`)
+
+The scanner runs every 5 minutes (configurable). Files matching `include` rules (and not matching `exclude` rules) are copied atomically to the shared folder. Files that no longer match are removed. Changes to rulesets are detected each cycle.
+
+### Example ruleset
+
+```yaml
+circle: family
+display_name: Robertson Family
+members:
+  - telegram_user_id: 123456
+    name: Alex
+bot_token: ""  # empty for Phase A (member bot comes in Phase B)
+icloud_folder: second-brain-circles/family/memories  # relative to icloud_root
+
+rules:
+  include:
+    - type: calendar_event
+      tags_contains_any: [family, home]
+    - type: goal
+      category: family
+    - type: email_thread
+      tags_contains_any: [family]
+      classification: human
+    - source_title_contains: "school"
+
+  exclude:
+    - tags_contains_any: [work, confidential]
+    - classification: marketing
+```
+
+**Rule predicates** (all AND-ed within a rule):
+- `type: <type>` — exact match on frontmatter `type` field
+- `tags_contains_any: [list]` — memory must have at least one of these tags
+- `tags_contains_all: [list]` — memory must have all of these tags
+- `classification: <value>` — exact match on `classification` (email threads)
+- `category: <value>` — exact match on `category` (goals/projects)
+- `hostname: <value>` — exact match on `hostname` (code repos, calendar events)
+- `source_title_contains: <substring>` — case-insensitive substring match on `source_title`
+- `frontmatter: {key: value, ...}` — arbitrary frontmatter key/value pairs
+
+**Logic:** A memory syncs if it matches at least one `include` rule AND does not match any `exclude` rule.
+
+### Configuration
+
+Add to `config.yaml`:
+
+```yaml
+circles:
+  enabled: false            # master kill-switch; no scan loop started if false
+  dir: ~/secondbrain/circles  # runtime dir for *.yaml ruleset files
+  icloud_root: ~/Library/Mobile Documents/com~apple~CloudDocs
+  scan_interval_seconds: 300
+```
+
+**State file:** `~/secondbrain/circle-sync-state.json` tracks synced files per circle (mtime-based change detection).
+
+### Phase B (future)
+
+Phase B will add:
+- `/circles` — list all circles with member count, last sync, file count
+- `/circle <N>` — show ruleset, members, and recent synced files
+- **Member bots** — per-circle Telegram bot tokens, members can query their shared memories
+- **Two-way edits** — members can update tags/status on shared files, changes propagate back
+
+---
+
 ## Optional integrations
 
 ### Zoom Scanner
