@@ -11,6 +11,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `scripts/promote_local_features.py` — standalone CLI that mirrors the promotion half of `/feature_import` (uses `gh` directly, no daemon required). Supports `--dry-run` and `--repo`.
 - Circles Phase B: add `/circles`, `/circle <N>`, `/circle_status` host Telegram commands for inspecting circle sync state and ruleset details
 
+## [1.7.1] — 2026-04-25
+
+### Fixed
+- **All proactive notifications silently dropped since Phase 4 transport wiring landed** — `TelegramAdapter._bot()` looked for `handler._app` (underscore) but `TelegramChatHandler` stores the Application as `handler.app` (no underscore). `_bot()` always returned `None`, causing `send_text()` to warn "bot not available" and return silently. Every daily morning briefing (07:30), pre-meeting alert, commitment deadline alert, and goal/project deadline alert was dropped without any error or state rollback. Fixed by correcting the attribute name to `"app"`.
+- **`send_text()` swallowed all failures** — the old code returned `None` on bot unavailability and caught all `bot.send_message` exceptions with a `log.warning`. Combined with the attribute typo, failures were invisible. Now raises `RuntimeError` when the bot is unavailable and lets `send_message` exceptions propagate so callers can detect and recover from failures.
+- **`notification_manager.send_message` marked sends as successful even after transport errors** — set `any_sent = True` before checking whether the transport actually succeeded, preventing the existing `_check_daily_briefing` rollback of `last_briefing_date` from ever firing. Now tracks `last_error` across transports and re-raises it when none succeeded.
+- **`TelegramAdapter` unit tests masked the attribute mismatch** — mocks used `handler._app` matching the buggy code, so tests passed while never exercising the real attribute. Fixed to use `handler.app`; added a regression test with `spec=["app"]` that would have caught the original bug.
+
 ## [1.7.0] — 2026-04-25
 
 ### Added
