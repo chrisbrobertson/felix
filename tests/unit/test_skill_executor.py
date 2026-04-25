@@ -655,14 +655,113 @@ def test_skill_load_succeeds_when_skill_not_in_manifest(skills_dir, tmp_path):
     """Skill loads when manifest exists but doesn't include this skill."""
     deploy_dir = tmp_path / "deploy"
     deploy_dir.mkdir()
-    
+
     # Manifest has other skills but not this one
     manifest = {"other-skill": "abc123"}
     checksum_file = deploy_dir / "skill-checksums.json"
     checksum_file.write_text(json.dumps(manifest))
-    
+
     with patch.object(se, "SKILLS_DIR", skills_dir), \
          patch.object(se, "_CHECKSUM_FILE", checksum_file):
         executor = se.SkillExecutor("summarize-webpage", role="full")
-    
+
     assert "long-term memory entry" in executor._skill["instructions"]
+
+
+# --- LiteLLM acompletion timeout (v1.6.10) ---
+#
+# Without an explicit timeout, a stalled HTTP connection to the model provider
+# wedges the chat handler indefinitely. Bound every acompletion() call so a
+# hung request becomes LiteLLMTimeout (already in _RETRYABLE_ERRORS), which
+# falls back to the next model and ultimately produces a user-visible
+# "model failed" reply instead of silence.
+
+def _timeout_err(msg="timed out"):
+    """Construct a retryable LiteLLM Timeout error."""
+    from litellm.exceptions import Timeout as _Timeout
+    return _Timeout(message=msg, llm_provider="test", model="test-model")
+
+
+async def test_run_passes_default_timeout_to_acompletion(executor_full):
+    """run() passes timeout=90 to acompletion when frontmatter doesn't override."""
+    mock_resp = MagicMock()
+    mock_resp.choices[0].message.content = "ok"
+    with patch("skill_executor.acompletion", new=AsyncMock(return_value=mock_resp)) as mock_ac:
+        await executor_full.run({"url": "u", "title": "t", "content": "c"})
+    assert mock_ac.call_args.kwargs["timeout"] == 90
+
+
+async def test_run_uses_skill_frontmatter_timeout(skills_dir):
+    """A skill declaring `timeout: 30` in frontmatter overrides the default."""
+    skill_path = skills_dir / "fast_skill.md"
+    skill_path.write_text(
+        "---\nname: fast_skill\nversion: 1\n"
+        "preferred_model: summarize\ntimeout: 30\n---\n\n"
+        "## Instructions\n\nReply briefly.\n\n## Execution History\n\n"
+        "| date | input_slug | model | score | notes |\n"
+        "|------|-----------|-------|-------|-------|\n"
+    )
+    mock_resp = MagicMock()
+    mock_resp.choices[0].message.content = "ok"
+    with patch.object(se, "SKILLS_DIR", skills_dir), \
+         patch("skill_executor.acompletion", new=AsyncMock(return_value=mock_resp)) as mock_ac:
+        executor = se.SkillExecutor("fast_skill", role="full")
+        await executor.run({"content": "c"})
+    assert mock_ac.call_args.kwargs["timeout"] == 30
+
+
+async def test_run_with_tools_passes_default_timeout(skills_dir):
+    """run_with_tools() also passes timeout=90 — this is the chat path."""
+    msg = MagicMock()
+    msg.content = "ok"
+    msg.tool_calls = []
+    response = MagicMock()
+    response.choices[0].message = msg
+    with patch.object(se, "SKILLS_DIR", skills_dir), \
+         patch("skill_executor.acompletion", new=AsyncMock(return_value=response)) as mock_ac:
+        executor = se.SkillExecutor("summarize-webpage", role="full")
+        await executor.run_with_tools(inputs={"query": "q"}, tools=[], tool_dispatch=AsyncMock())
+    assert mock_ac.call_args.kwargs["timeout"] == 90
+
+
+async def test_run_with_tools_falls_back_on_timeout(skills_dir):
+    """First model raises LiteLLMTimeout → second model is tried and succeeds."""
+    with patch.object(se, "SKILLS_DIR", skills_dir):
+        executor = se.SkillExecutor("summarize-webpage", role="full")
+
+    call_count = 0
+    msg = MagicMock()
+    msg.content = "fallback ok"
+    msg.tool_calls = []
+
+    def side_effect(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise _timeout_err()
+        resp = MagicMock()
+        resp.choices[0].message = msg
+        return resp
+
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=side_effect)), \
+         patch.object(se, "BRAIN_DIR", skills_dir.parent):
+        result = await executor.run_with_tools(
+            inputs={"query": "q"}, tools=[], tool_dispatch=AsyncMock()
+        )
+
+    assert result == "fallback ok"
+    assert call_count == 2
+
+
+async def test_run_with_tools_returns_none_when_all_models_timeout(skills_dir):
+    """Both models timeout → run_with_tools returns None (handler then replies with error)."""
+    with patch.object(se, "SKILLS_DIR", skills_dir):
+        executor = se.SkillExecutor("summarize-webpage", role="full")
+
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=_timeout_err())), \
+         patch.object(se, "BRAIN_DIR", skills_dir.parent):
+        result = await executor.run_with_tools(
+            inputs={"query": "q"}, tools=[], tool_dispatch=AsyncMock()
+        )
+
+    assert result is None

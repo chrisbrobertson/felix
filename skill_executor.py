@@ -131,6 +131,7 @@ class SkillExecutor:
         meta = self._skill["meta"]
         preferred = meta.get("preferred_model", "summarize")
         fallback = meta.get("fallback_model")  # may be None
+        timeout_s = meta.get("timeout", 90)
         user_msg = _format_inputs(inputs)
         messages = [
             {"role": "system", "content": _UNTRUSTED_INPUT_PREFIX + self._skill["instructions"]},
@@ -142,7 +143,7 @@ class SkillExecutor:
         for model in models_to_try:
             try:
                 max_tokens = self._skill["meta"].get("max_tokens", 1000)
-                response = await acompletion(model=resolve(model), messages=messages, max_tokens=max_tokens)
+                response = await acompletion(model=resolve(model), messages=messages, max_tokens=max_tokens, timeout=timeout_s)
                 result = response.choices[0].message.content
                 await self._log_execution(inputs, resolve(model), score=score)
                 if model != preferred:
@@ -263,6 +264,7 @@ class SkillExecutor:
         meta = self._skill["meta"]
         preferred = meta.get("preferred_model", "summarize")
         fallback = meta.get("fallback_model")
+        timeout_s = meta.get("timeout", 90)
         user_msg = _format_inputs(inputs)
         messages = [{"role": "system", "content": _UNTRUSTED_INPUT_PREFIX + self._skill["instructions"]}]
         if history:
@@ -280,6 +282,7 @@ class SkillExecutor:
                         messages=messages,
                         tools=tools,
                         max_tokens=2000,
+                        timeout=timeout_s,
                     )
                     msg = response.choices[0].message
                     tool_calls = getattr(msg, "tool_calls", None) or []
