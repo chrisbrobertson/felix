@@ -25,6 +25,7 @@ log = logging.getLogger("chat-handler")
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
 DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
+DEFAULT_ICLOUD_ROOT = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs"
 MAX_CONTEXT_CHARS = 80_000  # Deprecated; kept for fallback only
 MAX_CONTEXT_TOKENS = 150_000  # Security (M9): token-aware budget (75% of 200k context window)
 TG_MAX_CHARS = 4096  # Telegram hard limit per message
@@ -195,6 +196,10 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("remember", self.cmd_remember))
         self.app.add_handler(CommandHandler("deepen", self.cmd_deepen))
         self.app.add_handler(CommandHandler("note", self.cmd_note))
+        # Circles
+        self.app.add_handler(CommandHandler("circles", self.cmd_circles))
+        self.app.add_handler(CommandHandler("circle", self.cmd_circle))
+        self.app.add_handler(CommandHandler("circle_status", self.cmd_circle_status))
         self.app.add_error_handler(self._on_telegram_error)
         # Cache: path -> (mtime, header_text). Invalidated when mtime changes.
         # Avoids reading every file on every chat message.
@@ -246,6 +251,8 @@ class TelegramChatHandler:
             log.info("GitHub backing disabled — feature/bug using local files")
         # Last /reports result set
         self._last_report_set: list = []
+        # Last /circles result set — used by /circle <N>.
+        self._last_circle_set: list = []
         # Goal manager for goals and projects CRUD
         self._goal_manager = GoalManager(BRAIN_DIR / "memories", config)
         # Notification manager reference (set by daemon.py)
@@ -5881,6 +5888,179 @@ class TelegramChatHandler:
                 await update.message.set_reaction("❌")
             except Exception:
                 pass
+
+    # ── /circles, /circle, /circle_status commands ────────────────────────────
+
+    def _circles_time_ago(self, iso_str: Optional[str]) -> str:
+        """Return human-readable 'N min ago' or 'never' from ISO timestamp."""
+        if not iso_str:
+            return "never"
+        try:
+            from datetime import timezone as _tz
+            ts = datetime.fromisoformat(iso_str)
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=_tz.utc)
+            delta = datetime.now(_tz.utc) - ts
+            minutes = int(delta.total_seconds() / 60)
+            if minutes < 1:
+                return "just now"
+            if minutes < 60:
+                return f"{minutes} min ago"
+            hours = minutes // 60
+            if hours < 24:
+                return f"{hours}h ago"
+            return f"{hours // 24}d ago"
+        except Exception:
+            return "unknown"
+
+    def _format_circle_rule(self, rule: dict) -> str:
+        """Format a single rule dict as a compact string like 'type:calendar_event tags:[family]'."""
+        parts = []
+        for key, val in rule.items():
+            if isinstance(val, list):
+                parts.append(f"{key}:[{','.join(str(v) for v in val)}]")
+            else:
+                parts.append(f"{key}:{val}")
+        return " ".join(parts)
+
+    async def cmd_circles(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        circles_dir = DEPLOY_DIR / "circles"
+        ruleset_files = sorted(circles_dir.glob("*.yaml")) if circles_dir.exists() else []
+        if not ruleset_files:
+            await update.message.reply_text("No circles configured. Add YAML files to ~/secondbrain/circles/.")
+            return
+
+        try:
+            state_path = DEPLOY_DIR / "circle-sync-state.json"
+            state = json.loads(state_path.read_text()) if state_path.exists() else {}
+        except Exception:
+            state = {}
+
+        self._last_circle_set = []
+        lines = [f"Circles ({len(ruleset_files)} configured):"]
+        for i, path in enumerate(ruleset_files, 1):
+            try:
+                from circle_ruleset import load_ruleset
+                ruleset = load_ruleset(path)
+            except ValueError as e:
+                lines.append(f"{i}. {path.stem} — ⚠️ malformed ruleset: {e}")
+                self._last_circle_set.append(None)
+                continue
+            circle_state = state.get(ruleset.slug, {})
+            synced_count = len(circle_state.get("synced_files", {}))
+            last_run = self._circles_time_ago(circle_state.get("last_run"))
+            member_count = len(ruleset.members)
+            lines.append(
+                f"{i}. {ruleset.slug} — {member_count} member{'s' if member_count != 1 else ''}"
+                f" · {synced_count} file{'s' if synced_count != 1 else ''} synced"
+                f" · last sync {last_run}"
+            )
+            self._last_circle_set.append(path)
+        self._active_list = self._last_circle_set
+
+        await update.message.reply_text("\n".join(lines))
+
+    async def cmd_circle(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if not context.args:
+            await update.message.reply_text("Usage: /circle <N>")
+            return
+        try:
+            n = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("Usage: /circle <N>")
+            return
+        if not self._last_circle_set or n < 1 or n > len(self._last_circle_set):
+            await update.message.reply_text("Invalid index. Run /circles first.")
+            return
+        path = self._last_circle_set[n - 1]
+        if path is None:
+            await update.message.reply_text("That circle has a malformed ruleset. Run /circles for details.")
+            return
+
+        try:
+            from circle_ruleset import load_ruleset
+            ruleset = load_ruleset(path)
+        except ValueError as e:
+            await update.message.reply_text(f"Failed to load circle: {e}")
+            return
+
+        icloud_root = Path(
+            self._config.get("circles", {}).get("icloud_root", str(DEFAULT_ICLOUD_ROOT))
+        ).expanduser()
+        icloud_path = icloud_root / ruleset.icloud_folder
+        folder_status = "✓" if icloud_path.exists() else "❌"
+
+        try:
+            state_path = DEPLOY_DIR / "circle-sync-state.json"
+            state = json.loads(state_path.read_text()) if state_path.exists() else {}
+        except Exception:
+            state = {}
+        circle_state = state.get(ruleset.slug, {})
+        synced_count = len(circle_state.get("synced_files", {}))
+
+        member_names = [m.get("name", str(m.get("telegram_user_id", "?"))) for m in ruleset.members]
+
+        lines = [f"{ruleset.slug} ({ruleset.display_name})"]
+        lines.append(f"Members: {', '.join(member_names) if member_names else '(none)'}")
+        lines.append(f"iCloud folder: {ruleset.icloud_folder} {folder_status}")
+        lines.append(f"Synced: {synced_count} file{'s' if synced_count != 1 else ''}")
+
+        if ruleset.include_rules:
+            lines.append("")
+            lines.append("Include rules:")
+            for rule in ruleset.include_rules:
+                lines.append(f"  · {self._format_circle_rule(rule)}")
+        if ruleset.exclude_rules:
+            lines.append("")
+            lines.append("Exclude rules:")
+            for rule in ruleset.exclude_rules:
+                lines.append(f"  · {self._format_circle_rule(rule)}")
+
+        await update.message.reply_text("\n".join(lines))
+
+    async def cmd_circle_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        circles_dir = DEPLOY_DIR / "circles"
+        ruleset_files = sorted(circles_dir.glob("*.yaml")) if circles_dir.exists() else []
+        if not ruleset_files:
+            await update.message.reply_text("No circles configured.")
+            return
+
+        try:
+            state_path = DEPLOY_DIR / "circle-sync-state.json"
+            state = json.loads(state_path.read_text()) if state_path.exists() else {}
+        except Exception:
+            state = {}
+
+        icloud_root = Path(
+            self._config.get("circles", {}).get("icloud_root", str(DEFAULT_ICLOUD_ROOT))
+        ).expanduser()
+
+        lines = ["Circle sync status:"]
+        for path in ruleset_files:
+            try:
+                from circle_ruleset import load_ruleset
+                ruleset = load_ruleset(path)
+            except ValueError as e:
+                lines.append(f"⚠️  {path.stem} — malformed ruleset: {e}")
+                continue
+            icloud_path = icloud_root / ruleset.icloud_folder
+            folder_ok = icloud_path.exists()
+            circle_state = state.get(ruleset.slug, {})
+            last_run = self._circles_time_ago(circle_state.get("last_run"))
+            synced_count = len(circle_state.get("synced_files", {}))
+            status_icon = "✓" if folder_ok else "❌"
+            lines.append(
+                f"{status_icon} {ruleset.slug}"
+                + (f" — {synced_count} files synced · last sync {last_run}" if folder_ok else " — iCloud folder missing")
+            )
+
+        await update.message.reply_text("\n".join(lines))
 
     # ── CommandRouter bridge ──────────────────────────────────────────────────
 

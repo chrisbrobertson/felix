@@ -4459,3 +4459,163 @@ async def test_query_logging_includes_content_at_debug(handler, brain_dir, caplo
     has_content = any("debug test query" in msg for msg in debug_logs)
     
     assert has_content, f"Query content missing from DEBUG log. Logs: {debug_logs}"
+
+
+class TestCircleCommands:
+    """Tests for /circles, /circle, /circle_status commands."""
+
+    def _make_yaml(self, tmp_path, slug, members=None, icloud_folder=None, include_rules=None, exclude_rules=None):
+        """Write a minimal circle YAML file and return its path."""
+        members = members or []
+        icloud_folder = icloud_folder or f"second-brain-circles/{slug}/memories"
+        include_rules = include_rules or [{"type": "calendar_event"}]
+        exclude_rules = exclude_rules or []
+        content = {
+            "circle": slug,
+            "display_name": slug.replace("-", " ").title(),
+            "members": members,
+            "bot_token": "",
+            "icloud_folder": icloud_folder,
+            "rules": {
+                "include": include_rules,
+                "exclude": exclude_rules,
+            },
+        }
+        import yaml
+        p = tmp_path / f"{slug}.yaml"
+        p.write_text(yaml.dump(content))
+        return p
+
+    @pytest.fixture
+    def handler(self, tmp_path, monkeypatch):
+        """Minimal TelegramChatHandler with patched DEPLOY_DIR and no real Telegram."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        circles_dir = tmp_path / "circles"
+        circles_dir.mkdir()
+        monkeypatch.setattr("chat_handler.DEPLOY_DIR", tmp_path)
+        monkeypatch.setattr("chat_handler.BRAIN_DIR", tmp_path)
+        (tmp_path / "memories").mkdir(exist_ok=True)
+
+        config = {}
+        with patch("chat_handler.ApplicationBuilder") as mock_builder:
+            mock_app = MagicMock()
+            mock_app.add_handler = MagicMock()
+            mock_app.add_error_handler = MagicMock()
+            mock_builder.return_value.token.return_value.build.return_value = mock_app
+            h = ch.TelegramChatHandler.__new__(ch.TelegramChatHandler)
+            h.app = mock_app
+            h.allowed_user_id = 12345
+            h._config = config
+            h._last_circle_set = []
+            h._active_list = []
+            h.notification_manager = None
+        return h, tmp_path
+
+    def _make_update(self, user_id=12345, args=None):
+        from unittest.mock import AsyncMock, MagicMock
+        update = MagicMock()
+        update.effective_user.id = user_id
+        update.effective_chat.id = 99999
+        update.message.reply_text = AsyncMock()
+        context = MagicMock()
+        context.args = args or []
+        return update, context
+
+    @pytest.mark.asyncio
+    async def test_circles_empty(self, handler, tmp_path):
+        """No circles dir / empty -> helpful message."""
+        h, tmp = handler
+        update, context = self._make_update()
+        await h.cmd_circles(update, context)
+        text = update.message.reply_text.call_args[0][0]
+        assert "No circles configured" in text
+
+    @pytest.mark.asyncio
+    async def test_circles_lists_all(self, handler, tmp_path):
+        """Two YAML files -> numbered list with member count and synced count."""
+        h, tmp = handler
+        circles_dir = tmp / "circles"
+        self._make_yaml(circles_dir, "family", members=[{"name": "Alex", "telegram_user_id": 1}])
+        self._make_yaml(circles_dir, "work-team", members=[{"name": "Bob", "telegram_user_id": 2}, {"name": "Carol", "telegram_user_id": 3}])
+        update, context = self._make_update()
+        await h.cmd_circles(update, context)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Circles (2 configured)" in text
+        assert "family" in text
+        assert "work-team" in text
+        assert "1 member" in text
+        assert "2 members" in text
+        assert len(h._last_circle_set) == 2
+
+    @pytest.mark.asyncio
+    async def test_circle_invalid_index_no_prior_list(self, handler, tmp_path):
+        """Index before running /circles -> 'Invalid index. Run /circles first.'"""
+        h, tmp = handler
+        update, context = self._make_update(args=["1"])
+        await h.cmd_circle(update, context)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Invalid index" in text
+        assert "/circles" in text
+
+    @pytest.mark.asyncio
+    async def test_circle_detail(self, handler, tmp_path):
+        """After /circles, /circle 1 shows detail with rules."""
+        h, tmp = handler
+        circles_dir = tmp / "circles"
+        icloud_folder = "second-brain-circles/family/memories"
+        (tmp / "Library" / "Mobile Documents" / "com~apple~CloudDocs" / "second-brain-circles" / "family" / "memories").mkdir(parents=True)
+        self._make_yaml(
+            circles_dir, "family",
+            members=[{"name": "Alex", "telegram_user_id": 1}],
+            icloud_folder=icloud_folder,
+            include_rules=[{"type": "calendar_event", "tags_contains_any": ["family"]}],
+            exclude_rules=[{"tags_contains_any": ["private"]}],
+        )
+        # patch the icloud root to tmp so the folder existence check works
+        monkeypatch_icloud = tmp / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
+        h._config = {"circles": {"icloud_root": str(monkeypatch_icloud)}}
+        update, context = self._make_update()
+        await h.cmd_circles(update, context)
+        update2, context2 = self._make_update(args=["1"])
+        await h.cmd_circle(update2, context2)
+        text = update2.message.reply_text.call_args[0][0]
+        assert "family" in text
+        assert "Alex" in text
+        assert "Include rules" in text
+        assert "Exclude rules" in text
+        assert "✓" in text
+
+    @pytest.mark.asyncio
+    async def test_circle_missing_icloud_folder(self, handler, tmp_path):
+        """iCloud folder not present -> shown in detail."""
+        h, tmp = handler
+        circles_dir = tmp / "circles"
+        self._make_yaml(circles_dir, "family", icloud_folder="nonexistent/path")
+        h._config = {"circles": {"icloud_root": str(tmp)}}
+        update, context = self._make_update()
+        await h.cmd_circles(update, context)
+        update2, context2 = self._make_update(args=["1"])
+        await h.cmd_circle(update2, context2)
+        text = update2.message.reply_text.call_args[0][0]
+        assert "❌" in text
+
+    @pytest.mark.asyncio
+    async def test_circle_status(self, handler, tmp_path):
+        """circle_status shows all circles with folder status."""
+        h, tmp = handler
+        circles_dir = tmp / "circles"
+        self._make_yaml(circles_dir, "family")
+        h._config = {"circles": {"icloud_root": str(tmp)}}
+        update, context = self._make_update()
+        await h.cmd_circle_status(update, context)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Circle sync status" in text
+        assert "family" in text
+
+    @pytest.mark.asyncio
+    async def test_circles_unauth(self, handler, tmp_path):
+        """Unauthorized user -> silent return, no reply."""
+        h, tmp = handler
+        update, context = self._make_update(user_id=99999)
+        await h.cmd_circles(update, context)
+        update.message.reply_text.assert_not_called()

@@ -164,7 +164,7 @@ def test_command_registry_has_expected_groups():
         "Knowledge listings", "Commitments", "Goals", "Projects",
         "Review", "Agent actions", "Notifications", "Domain filter",
         "Deduplication", "Watchlists", "Import", "Feature Requests",
-        "Skill Management", "Reports", "Meta", "System",
+        "Skill Management", "Reports", "Circles", "Meta", "System",
     }
     assert expected == set(COMMAND_REGISTRY.keys())
 
