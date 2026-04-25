@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from memory_writer import MemoryWriter
+from memory_writer import MemoryWriter, _canonicalize_url
 from skill_executor import SkillExecutor
 from content_fetcher import fetch_url_content
 from skill_router import detect_content_type, get_skill_and_depth
@@ -42,9 +42,10 @@ class BrowserWatcher:
         Uses dict (not set) to maintain insertion order for FIFO eviction."""
         if SEEN_URLS_FILE.exists():
             all_lines = SEEN_URLS_FILE.read_text().splitlines()
-            # Keep only the last N (most recent) URLs
+            # Keep only the last N (most recent) URLs; canonicalize so
+            # existing raw-URL entries are still matched by new lookups.
             recent_lines = all_lines[-_MAX_SEEN_URLS:]
-            return {url: None for url in recent_lines}
+            return {_canonicalize_url(url): None for url in recent_lines}
         return {}
 
     def _get_executor(self, skill_name: str) -> SkillExecutor:
@@ -174,7 +175,7 @@ class BrowserWatcher:
         return results
 
     def _should_process(self, entry: dict, config: dict) -> bool:
-        url = entry["url"]
+        url = _canonicalize_url(entry["url"])
         if url in self.seen_urls:
             return False
         if not url.startswith("http"):
@@ -245,12 +246,12 @@ class BrowserWatcher:
 
         if not in_probation:
             await self.writer.write(entry, memory_body, depth=depth)
-            self.seen_urls[entry["url"]] = None
+            self.seen_urls[_canonicalize_url(entry["url"])] = None
             self.save_seen_urls()
             log.info(f"Memory written: {entry['title'][:60]} [{content_type}, {depth}]")
         else:
             # Still mark as seen so we don't re-process on next cycle
-            self.seen_urls[entry["url"]] = None
+            self.seen_urls[_canonicalize_url(entry["url"])] = None
             self.save_seen_urls()
 
     async def backfill(self, days: int) -> dict:
@@ -267,7 +268,7 @@ class BrowserWatcher:
         errors = 0
 
         for entry in entries:
-            url = entry["url"]
+            url = _canonicalize_url(entry["url"])
 
             # Remove from seen_urls so _should_process will return True
             if url in self.seen_urls:

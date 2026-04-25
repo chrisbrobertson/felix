@@ -6,6 +6,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **`browser_watcher` wrote duplicate memory files for the same URL visited via different tracking params** — URL hash was computed from the raw URL, so `example.com/page?utm_source=email` and `example.com/page?utm_source=twitter` produced different hashes and bypassed the `seen-urls` dedup guard. Added `_canonicalize_url()` in `memory_writer.py` that strips UTM/fbclid/gclid/etc. tracking params, strips fragments, and lowercases scheme + host before hashing. Both `BrowserWatcher.seen_urls` and `MemoryWriter._build_filename` now use the canonical form. Existing `seen-urls` entries are canonicalized on load so prior raw-URL entries are still matched.
+
 ## [1.6.9] — 2026-04-23
 
 ### Fixed

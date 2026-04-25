@@ -170,3 +170,73 @@ async def test_write_default_depth_standard(writer, memories_dir):
     parts = (memories_dir / filename).read_text().split("---", 2)
     fm = yaml.safe_load(parts[1])
     assert fm["depth"] == "standard"
+
+
+# --- _canonicalize_url ---
+
+from memory_writer import _canonicalize_url
+
+
+def test_canonicalize_strips_utm_params():
+    url = "https://example.com/page?utm_source=email&utm_medium=newsletter"
+    assert _canonicalize_url(url) == "https://example.com/page"
+
+
+def test_canonicalize_strips_fragment():
+    url = "https://example.com/page#section-3"
+    assert _canonicalize_url(url) == "https://example.com/page"
+
+
+def test_canonicalize_lowercases_host():
+    url = "HTTPS://Example.COM/Path"
+    assert _canonicalize_url(url) == "https://example.com/Path"
+
+
+def test_canonicalize_keeps_content_params():
+    url = "https://example.com/page?page=2&sort=asc"
+    assert _canonicalize_url(url) == "https://example.com/page?page=2&sort=asc"
+
+
+def test_canonicalize_strips_tracking_but_keeps_content_params():
+    url = "https://example.com/page?page=2&utm_source=email&fbclid=abc"
+    result = _canonicalize_url(url)
+    assert "page=2" in result
+    assert "utm_source" not in result
+    assert "fbclid" not in result
+
+
+def test_canonicalize_strips_all_tracking_params():
+    params = [
+        "utm_source=x", "utm_medium=y", "utm_campaign=z",
+        "fbclid=1", "gclid=2", "_ga=3", "mc_cid=4", "yclid=5", "igshid=6",
+    ]
+    url = "https://example.com/page?" + "&".join(params)
+    assert _canonicalize_url(url) == "https://example.com/page"
+
+
+def test_canonicalize_same_page_different_tracking_params_same_hash():
+    """Two visits to the same page with different utm params → identical hash."""
+    import hashlib
+    url1 = "https://example.com/article?utm_source=email"
+    url2 = "https://example.com/article?utm_source=twitter"
+    h1 = hashlib.sha1(_canonicalize_url(url1).encode()).hexdigest()[:6]
+    h2 = hashlib.sha1(_canonicalize_url(url2).encode()).hexdigest()[:6]
+    assert h1 == h2
+
+
+async def test_tracking_params_do_not_produce_new_file(writer, memories_dir):
+    """Same URL visited via two referrers produces one memory file, not two."""
+    entry1 = {**SAMPLE_ENTRY, "url": "https://example.com/page?utm_source=email"}
+    entry2 = {**SAMPLE_ENTRY, "url": "https://example.com/page?utm_source=twitter"}
+    f1 = await writer.write(entry1, SAMPLE_BODY)
+    f2 = await writer.write(entry2, SAMPLE_BODY)
+    assert f1 == f2
+
+
+async def test_source_url_stored_as_original(writer, memories_dir):
+    """source_url frontmatter stores the original URL, not the canonical form."""
+    entry = {**SAMPLE_ENTRY, "url": "https://example.com/page?utm_source=email"}
+    filename = await writer.write(entry, SAMPLE_BODY)
+    parts = (memories_dir / filename).read_text().split("---", 2)
+    fm = yaml.safe_load(parts[1])
+    assert fm["source_url"] == "https://example.com/page?utm_source=email"

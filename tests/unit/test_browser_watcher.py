@@ -69,6 +69,39 @@ def test_allows_when_skip_domains_empty(watcher):
     assert watcher._should_process(entry, config) is True
 
 
+def test_rejects_url_with_different_tracking_params_when_canonical_seen(watcher):
+    """utm variant of a page should be rejected when the canonical form is already seen."""
+    canonical = "https://example.com/article"
+    watcher.seen_urls[canonical] = None
+    entry = {"url": "https://example.com/article?utm_source=email", "title": "Test"}
+    assert watcher._should_process(entry, {}) is False
+
+
+def test_two_tracking_variants_are_deduplicated(watcher):
+    """Processing a utm URL should prevent re-processing any other tracking variant."""
+    from memory_writer import _canonicalize_url
+    url1 = "https://example.com/article?utm_source=email"
+    url2 = "https://example.com/article?utm_source=twitter"
+    # Simulate having processed url1: store its canonical form
+    watcher.seen_urls[_canonicalize_url(url1)] = None
+    entry2 = {"url": url2, "title": "Test"}
+    assert watcher._should_process(entry2, {}) is False
+
+
+def test_load_seen_urls_canonicalizes_existing_entries(tmp_path):
+    """Raw tracking URLs in seen-urls file are canonicalized on load."""
+    seen = tmp_path / "seen"
+    seen.write_text("https://example.com/page?utm_source=email\nhttps://other.com/x\n")
+    with patch.object(bw, "SEEN_URLS_FILE", seen), \
+         patch("browser_watcher.SkillExecutor"), \
+         patch("browser_watcher.MemoryWriter"):
+        w = bw.BrowserWatcher(role="full")
+    # Canonical form (no tracking param) is present
+    assert "https://example.com/page" in w.seen_urls
+    # Original raw form is not needed — canonical is what matters
+    assert "https://other.com/x" in w.seen_urls
+
+
 # --- Chrome epoch ---
 
 def test_chrome_epoch_is_large_positive_int():

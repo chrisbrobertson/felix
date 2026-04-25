@@ -1359,6 +1359,7 @@ def test_eventkit_accepts_legacy_authorized_status():
 
 def test_eventkit_logs_warning_on_zero_events(caplog):
     """EventKitSource.get_events warns with calendar count when predicate yields zero events."""
+    import sys, types
     from calendar_scanner import EventKitSource
 
     mock_store = MagicMock()
@@ -1368,11 +1369,21 @@ def test_eventkit_logs_warning_on_zero_events(caplog):
     # predicateForEventsWithStartDate_endDate_calendars_ can return any sentinel.
     mock_store.predicateForEventsWithStartDate_endDate_calendars_.return_value = object()
 
+    # get_events guards itself with `import EventKit, Foundation` so we must
+    # provide stubs for both; otherwise it returns [] before logging anything.
+    fake_foundation = types.SimpleNamespace(
+        NSDate=MagicMock(
+            dateWithTimeIntervalSince1970_=MagicMock(return_value=MagicMock())
+        )
+    )
+    fake_ek = types.SimpleNamespace()
+
     src = EventKitSource(mock_store)
     start = datetime(2026, 4, 14)
     end = datetime(2026, 4, 28)
 
-    with caplog.at_level("WARNING", logger="calendar-scanner"):
+    with patch.dict(sys.modules, {"EventKit": fake_ek, "Foundation": fake_foundation}), \
+         caplog.at_level("WARNING", logger="calendar-scanner"):
         events = src.get_events(start, end, set())
 
     assert events == []

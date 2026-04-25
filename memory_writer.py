@@ -4,8 +4,44 @@ import re
 import yaml
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
 MEMORIES_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain/memories"
+
+# Query parameters that carry no content identity — strip before hashing so
+# the same logical page visited via different referrers or campaigns produces
+# one stable memory file.
+_TRACKING_PARAMS = frozenset({
+    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+    "utm_id", "utm_reader", "utm_name", "utm_place",
+    "fbclid", "gclid", "_ga", "_gl", "_gac", "_gid",
+    "mc_cid", "mc_eid", "yclid", "igshid",
+    "ref", "referrer",
+})
+
+
+def _canonicalize_url(url: str) -> str:
+    """Return a stable canonical form of *url* for hashing and dedup.
+
+    Strips fragments, known tracking/session query params, and lowercases
+    scheme + host. Path is kept case-sensitive so paginated URLs like
+    /page/2/ stay distinct from /page/3/.
+    """
+    try:
+        p = urlparse(url)
+        qs = parse_qs(p.query, keep_blank_values=True)
+        qs_clean = {k: v for k, v in qs.items() if k not in _TRACKING_PARAMS}
+        query = urlencode(qs_clean, doseq=True)
+        return urlunparse((
+            p.scheme.lower(),
+            p.netloc.lower(),
+            p.path,
+            p.params,
+            query,
+            "",  # strip fragment
+        ))
+    except Exception:
+        return url
 
 
 def _extract_summary(body: str) -> str:
@@ -26,7 +62,7 @@ class MemoryWriter:
 
         title_part = re.sub(r'[^a-z0-9]+', '-',
                             entry.get("title", entry["url"])[:50].lower()).strip('-')
-        url_hash = hashlib.sha1(entry["url"].encode()).hexdigest()[:6]
+        url_hash = hashlib.sha1(_canonicalize_url(entry["url"]).encode()).hexdigest()[:6]
         slug = f"{title_part}-{url_hash}"
         filename = f"{date}-{slug}.md"
 
