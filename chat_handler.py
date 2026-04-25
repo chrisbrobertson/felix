@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import socket
+import time
 import yaml
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -489,7 +490,7 @@ class TelegramChatHandler:
 
         return "\n".join(lines) if lines else ""
 
-    def _load_context(self, query: str, history: list = None) -> str:
+    def _load_context(self, query: str, history: list = None, deadline: float = 0.0) -> str:
         """Load memory files into context with relevance sorting and token-aware budget."""
         parts = []
         budget_tokens = MAX_CONTEXT_TOKENS
@@ -537,6 +538,9 @@ class TelegramChatHandler:
         for f in scored:
             if budget_tokens <= 0:
                 log.info(f"Chat context assembled: {len(parts)} files, ~{total_tokens} tokens")
+                break
+            if deadline and time.monotonic() > deadline:
+                log.warning("_load_context deadline exceeded — returning partial context (%d files)", len(parts))
                 break
             text = read_text_with_retry(f, default=None)
             if text is None:
@@ -5812,7 +5816,9 @@ class TelegramChatHandler:
           try:
             history = self._chat_history.get(chat_id, [])
 
-            memory_context = await asyncio.to_thread(self._load_context, query, history)
+            memory_context = await asyncio.to_thread(
+                self._load_context, query, history, time.monotonic() + 25.0
+            )
             log.info(f"Context loaded: {len(memory_context)} chars")
 
             from chat_tools import TOOLS, dispatch as _tool_dispatch
