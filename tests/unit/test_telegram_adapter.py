@@ -12,8 +12,7 @@ from telegram_adapter import TelegramAdapter
 def _make_handler(chat_id=None):
     """Return a minimal mock TelegramChatHandler."""
     handler = MagicMock()
-    handler._chat_id = chat_id
-    handler._app = None  # bot not yet initialised by default
+    handler.app = None  # bot not yet initialised by default
     return handler
 
 
@@ -37,7 +36,7 @@ async def test_send_text_calls_bot_send_message():
     mock_bot = AsyncMock()
     mock_app = MagicMock()
     mock_app.bot = mock_bot
-    handler._app = mock_app
+    handler.app = mock_app
 
     await adapter.send_text("123", "hello")
 
@@ -50,7 +49,7 @@ async def test_send_text_chunks_at_4096():
     mock_bot = AsyncMock()
     mock_app = MagicMock()
     mock_app.bot = mock_bot
-    handler._app = mock_app
+    handler.app = mock_app
 
     long_text = "x" * 9000
     await adapter.send_text("1", long_text)
@@ -59,25 +58,27 @@ async def test_send_text_chunks_at_4096():
 
 
 @pytest.mark.asyncio
-async def test_send_text_no_bot_is_silent():
-    """When bot is unavailable, send_text must not raise."""
+async def test_send_text_no_bot_raises():
+    """When bot is unavailable, send_text must raise."""
     adapter, handler = _make_adapter()
-    handler._app = None  # no bot
+    handler.app = None  # no bot
 
-    await adapter.send_text("1", "hello")  # should not raise
+    with pytest.raises(RuntimeError, match="bot not available"):
+        await adapter.send_text("1", "hello")
 
 
 @pytest.mark.asyncio
-async def test_send_text_bot_error_is_silent():
-    """A bot.send_message exception must be swallowed, not propagated."""
+async def test_send_text_bot_error_propagates():
+    """A bot.send_message exception must propagate."""
     adapter, handler = _make_adapter()
     mock_bot = AsyncMock()
     mock_bot.send_message.side_effect = RuntimeError("network error")
     mock_app = MagicMock()
     mock_app.bot = mock_bot
-    handler._app = mock_app
+    handler.app = mock_app
 
-    await adapter.send_text("1", "hello")  # should not raise
+    with pytest.raises(RuntimeError, match="network error"):
+        await adapter.send_text("1", "hello")
 
 
 # ── send_typing ───────────────────────────────────────────────────────────────
@@ -90,7 +91,7 @@ async def test_send_typing_calls_send_chat_action():
     mock_bot = AsyncMock()
     mock_app = MagicMock()
     mock_app.bot = mock_bot
-    handler._app = mock_app
+    handler.app = mock_app
 
     with patch("telegram.constants.ChatAction") as mock_action:
         mock_action.TYPING = "typing"
@@ -102,16 +103,11 @@ async def test_send_typing_calls_send_chat_action():
 @pytest.mark.asyncio
 async def test_send_typing_no_bot_is_silent():
     adapter, handler = _make_adapter()
-    handler._app = None
+    handler.app = None
     await adapter.send_typing("1")  # should not raise
 
 
 # ── get_chat_id ───────────────────────────────────────────────────────────────
-
-def test_get_chat_id_from_handler_attribute():
-    adapter, _ = _make_adapter(chat_id=99)
-    assert adapter.get_chat_id() == "99"
-
 
 def test_get_chat_id_none_when_no_chat_id_anywhere():
     # _load_state is imported inside get_chat_id from notification_manager
@@ -128,25 +124,18 @@ def test_get_chat_id_falls_back_to_notification_state():
     assert result == "777"
 
 
-def test_get_chat_id_handler_attribute_takes_priority_over_state():
-    # _chat_id on the handler takes priority; _load_state is never called
-    adapter, _ = _make_adapter(chat_id=42)
-    result = adapter.get_chat_id()
-    assert result == "42"
-
-
 # ── _bot helper ───────────────────────────────────────────────────────────────
 
 def test_bot_returns_none_when_app_is_none():
     adapter, handler = _make_adapter()
-    handler._app = None
+    handler.app = None
     assert adapter._bot() is None
 
 
 def test_bot_returns_none_when_app_has_no_bot():
     adapter, handler = _make_adapter()
     mock_app = MagicMock(spec=[])  # spec with no attributes
-    handler._app = mock_app
+    handler.app = mock_app
     assert adapter._bot() is None
 
 
@@ -155,5 +144,14 @@ def test_bot_returns_bot_from_app():
     mock_bot = MagicMock()
     mock_app = MagicMock()
     mock_app.bot = mock_bot
-    handler._app = mock_app
+    handler.app = mock_app
+    assert adapter._bot() is mock_bot
+
+
+def test_bot_returns_bot_using_app_attribute():
+    """Regression: TelegramChatHandler uses self.app, not self._app."""
+    handler = MagicMock()
+    mock_bot = MagicMock()
+    handler.app.bot = mock_bot
+    adapter = TelegramAdapter(handler)
     assert adapter._bot() is mock_bot
