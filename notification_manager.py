@@ -152,6 +152,7 @@ class NotificationManager:
         """
         if self._transports:
             any_sent = False
+            last_error: Optional[Exception] = None
             for adapter in self._transports:
                 try:
                     adapter_chat_id = getattr(adapter, "get_chat_id", lambda: None)()
@@ -165,10 +166,12 @@ class NotificationManager:
                     any_sent = True
                 except Exception as e:
                     log.warning("send_message: error sending via %s: %s", adapter, e)
+                    last_error = e
             if any_sent:
                 return
-            # All adapters had no chat_id yet (startup before first user message) —
-            # fall through to legacy self.bot path so notifications aren't lost.
+            if last_error is not None:
+                raise last_error
+            # else: fall through to legacy self.bot path (no transports had a chat_id)
 
         # Legacy path — direct telegram.Bot
         if self.bot is None:
