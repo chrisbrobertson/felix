@@ -423,6 +423,23 @@ Set `GITHUB_PAT` (a Personal Access Token with `repo` scope) and `GITHUB_REPO` (
 
 You can bypass the `/features` list and reference issues directly: `/feature-plan #42`, `/feature-done #42`, etc.
 
+### Working the backlog autonomously
+
+`scripts/work_reports.sh` (run from the repo root) drains the captured feature/bug backlog into PRs without further hand-holding. It:
+
+1. Promotes any local `feature-request-*.md` files in iCloud memories to GitHub issues (mirrors `/feature_import` — uses the `gh` CLI, no daemon required).
+2. Loops `claude -p` against open `kind:bug` and `kind:feature` issues, picking one per iteration, branching, implementing per `CLAUDE.md`, running tests, committing, and opening a PR with `Closes #NNN`.
+
+Stops when Claude outputs `STOP` (no actionable issues left), the loop gets stuck (`STUCK_N` identical results), or `MAX_ITER` is hit. Logs go to `~/sisyphus-logs/`. Graceful stop: `rm ~/sisyphus-logs/secondbrain-work-reports.stop`.
+
+```bash
+scripts/work_reports.sh                       # defaults: MAX_ITER=20, SLEEP_SEC=10, STUCK_N=3
+MAX_ITER=5 scripts/work_reports.sh            # do at most 5 iterations
+scripts/promote_local_features.py --dry-run   # preview what would be promoted, don't touch anything
+```
+
+Requires `gh` authenticated against the target repo and `claude` CLI on PATH.
+
 ### Managing proactive notifications
 
 ```

@@ -6,6 +6,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `scripts/work_reports.sh` — autonomous backlog drainer. Promotes any local `feature-request-*.md` files to GitHub issues (via `scripts/promote_local_features.py`), then loops `claude -p` against open `kind:bug` / `kind:feature` issues, picking one per iteration, branching, implementing, testing, committing, and opening a PR. Stops on `STOP` token, stuck loop, or `MAX_ITER`. Modeled on `~/repos/scripts/babysit.sh`. Documented in README under "Working the backlog autonomously".
+- `scripts/promote_local_features.py` — standalone CLI that mirrors the promotion half of `/feature_import` (uses `gh` directly, no daemon required). Supports `--dry-run` and `--repo`.
+
 ## [1.7.0] — 2026-04-25
 
 ### Added

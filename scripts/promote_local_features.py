@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Promote locally-captured feature/bug requests to GitHub issues.
+
+Reads `feature-request-*.md` files from the iCloud memories directory,
+creates a GitHub issue per file via the `gh` CLI, stamps the file's
+frontmatter with `github_issue_number`, and moves the file into
+`memories/archive/`. Mirrors the semantics of `cmd_feature_import` in
+`chat_handler.py` so the daemon and this CLI agree on what's already been
+imported.
+
+Usage:
+  scripts/promote_local_features.py [--dry-run] [--repo OWNER/NAME]
+
+Exits 0 if everything succeeds (including "nothing to promote").
+Exits non-zero if any `gh` call fails — the bash wrapper aborts in that
+case so we don't silently leak local reports.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import yaml
+
+BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
+
+
+def parse_frontmatter(text: str) -> dict:
+    m = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
+    if not m:
+        return {}
+    try:
+        return yaml.safe_load(m.group(1)) or {}
+    except Exception:
+        return {}
+
+
+def split_body(text: str) -> str:
+    parts = text.split("---", 2)
+    return parts[2].lstrip("\n") if len(parts) >= 3 else text
+
+
+def rewrite_frontmatter(path: Path, updates: dict) -> None:
+    text = path.read_text()
+    if not text.startswith("---"):
+        return
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return
+    _, fm_text, body = parts
+    fm = yaml.safe_load(fm_text) or {}
+    fm.update(updates)
+    new_text = f"---\n{yaml.dump(fm, sort_keys=False, allow_unicode=True)}---{body}"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(new_text)
+    os.rename(tmp, path)
+
+
+def gh_create_issue(title: str, body: str, labels: list[str], repo: str | None) -> int:
+    """Run `gh issue create`, return new issue number. Raises on failure."""
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
+        f.write(body)
+        body_path = f.name
+    try:
+        cmd = ["gh", "issue", "create", "--title", title, "--body-file", body_path]
+        for label in labels:
+            cmd += ["--label", label]
+        if repo:
+            cmd += ["--repo", repo]
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    finally:
+        os.unlink(body_path)
+    # Last non-empty line of stdout is the issue URL: .../issues/123
+    for line in reversed(result.stdout.strip().splitlines()):
+        m = re.search(r"/issues/(\d+)", line)
+        if m:
+            return int(m.group(1))
+    raise RuntimeError(f"Could not parse issue number from gh output: {result.stdout!r}")
+
+
+def gh_close_issue(number: int, reason: str, repo: str | None) -> None:
+    cmd = ["gh", "issue", "close", str(number), "--reason", reason]
+    if repo:
+        cmd += ["--repo", repo]
+    subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+
+def collect_pending(memories_dir: Path) -> list[tuple[Path, dict]]:
+    pending = []
+    for f in sorted(memories_dir.glob("feature-request-*.md")):
+        text = f.read_text()
+        fm = parse_frontmatter(text)
+        if fm.get("type") != "feature_request":
+            continue
+        if fm.get("github_issue_number"):
+            continue
+        pending.append((f, fm))
+    return pending
+
+
+def build_labels(fm: dict) -> list[str]:
+    kind = fm.get("kind", "feature")
+    priority = fm.get("priority", "medium")
+    tags = fm.get("tags") or []
+    labels = [f"kind:{kind}", f"priority:{priority}"] + list(tags)
+    status = fm.get("status", "new")
+    if status == "planned":
+        labels.append("status:planned")
+    elif status == "in-progress":
+        labels.append("status:in-progress")
+    return labels
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--dry-run", action="store_true",
+                    help="List what would be promoted; don't touch anything.")
+    ap.add_argument("--repo", default=None,
+                    help="OWNER/NAME for gh -R; defaults to git remote inference.")
+    args = ap.parse_args()
+
+    memories_dir = BRAIN_DIR / "memories"
+    if not memories_dir.is_dir():
+        print(f"memories dir not found: {memories_dir}", file=sys.stderr)
+        return 1
+
+    pending = collect_pending(memories_dir)
+    if not pending:
+        print("Nothing to promote.")
+        return 0
+
+    print(f"{len(pending)} file(s) to promote:")
+    for f, fm in pending:
+        print(f"  • [{fm.get('kind', 'feature')}] {fm.get('title', f.stem)[:70]}  ({f.name})")
+
+    if args.dry_run:
+        return 0
+
+    archive_dir = memories_dir / "archive"
+    archive_dir.mkdir(exist_ok=True)
+
+    failures = 0
+    for f, fm in pending:
+        title = (fm.get("title") or f.stem)[:100]
+        body = split_body(f.read_text()).strip() or fm.get("title", title)
+        labels = build_labels(fm)
+        try:
+            number = gh_create_issue(title, body, labels, args.repo)
+        except subprocess.CalledProcessError as e:
+            print(f"FAILED to create issue for {f.name}: {e.stderr.strip()}", file=sys.stderr)
+            failures += 1
+            continue
+        rewrite_frontmatter(f, {"github_issue_number": number})
+        os.rename(f, archive_dir / f.name)
+        status = fm.get("status", "new")
+        if status == "done":
+            try:
+                gh_close_issue(number, "completed", args.repo)
+            except subprocess.CalledProcessError as e:
+                print(f"WARN: created #{number} but close failed: {e.stderr.strip()}", file=sys.stderr)
+        elif status == "wont-do":
+            try:
+                gh_close_issue(number, "not planned", args.repo)
+            except subprocess.CalledProcessError as e:
+                print(f"WARN: created #{number} but close failed: {e.stderr.strip()}", file=sys.stderr)
+        print(f"  → #{number}  {f.name}")
+
+    if failures:
+        print(f"{failures} failure(s).", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
