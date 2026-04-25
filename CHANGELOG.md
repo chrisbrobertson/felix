@@ -11,6 +11,11 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `scripts/promote_local_features.py` — standalone CLI that mirrors the promotion half of `/feature_import` (uses `gh` directly, no daemon required). Supports `--dry-run` and `--repo`.
 - Circles Phase B: add `/circles`, `/circle <N>`, `/circle_status` host Telegram commands for inspecting circle sync state and ruleset details
 
+## [1.7.2] — 2026-04-25
+
+### Fixed
+- **Telegram chat handler hung indefinitely on stalled LLM calls** — `skill_executor.acompletion()` calls in both `run()` and `run_with_tools()` had no `timeout=` argument. LiteLLM's default is unbounded, so a stalled HTTP connection (overloaded model, network blip, partial stream) wedged the chat handler's `await` forever — slash commands kept working but plain chat replies silently never arrived. Added `timeout=90` (overridable via `timeout:` in skill frontmatter) to both call sites. `LiteLLMTimeout` was already in `_RETRYABLE_ERRORS`, so a timeout now falls back to the secondary model and ultimately produces the existing user-visible "Sorry — the chat model failed" reply instead of silence. Live evidence: chat message at 11:58:46 received, `acompletion()` invoked at 11:59:27, no response logged in 30+ minutes.
+
 ## [1.7.1] — 2026-04-25
 
 ### Fixed
@@ -34,6 +39,12 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Context loading silently returned 0 files under iCloud sync pressure** — the memory-file read loop in `_load_context` used a bare `f.read_text()` inside a bare `except OSError: continue`. Any transient EDEADLK/EAGAIN during iCloud sync dropped the file silently with no retry, yielding "0 files, 0 tokens" context. Now uses `read_text_with_retry(f, default=None)` so transient locks are retried before skipping.
 - **`notification_manager` used blocking `time.sleep()` during iCloud retries in async context** — `_assemble_briefing`, `_assemble_pre_meeting_context`, and `_prune_sent_alerts` called `read_text_with_retry()` (which uses `time.sleep()` for backoff) directly from async functions. Under iCloud sync pressure, this blocked the event loop per file. All three methods are now `async def`, all file reads use the new `read_text_with_retry_async()` helper (uses `await asyncio.sleep()`), and their callers are updated accordingly.
 - **Added `read_text_with_retry_async`** — new coroutine in `utils.py` that mirrors `read_text_with_retry` but uses `await asyncio.sleep()` for backoff, safe to call from async contexts without blocking the event loop.
+=======
+## [1.6.9] — 2026-04-25
+
+### Fixed
+- **Telegram chat handler hung indefinitely on stalled LLM calls** — `skill_executor.acompletion()` calls in both `run()` and `run_with_tools()` had no `timeout=` argument. LiteLLM's default is unbounded, so a stalled HTTP connection (overloaded model, network blip, partial stream) wedged the chat handler's `await` forever — slash commands kept working but plain chat replies silently never arrived. Added `timeout=90` (overridable via `timeout:` in skill frontmatter) to both call sites. `LiteLLMTimeout` was already in `_RETRYABLE_ERRORS`, so a timeout now falls back to the secondary model and ultimately produces the existing user-visible "Sorry — the chat model failed" reply instead of silence. Live evidence: chat message at 11:58:46 received, `acompletion()` invoked at 11:59:27, no response logged in 30+ minutes — exactly the hang this prevents.
+>>>>>>> Stashed changes
 
 ## [1.6.8] — 2026-04-23
 
