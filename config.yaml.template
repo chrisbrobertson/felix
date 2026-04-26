@@ -180,3 +180,12 @@ circles:
   dir: ~/secondbrain/circles  # runtime dir for *.yaml ruleset files
   icloud_root: ~/Library/Mobile Documents/com~apple~CloudDocs
   scan_interval_seconds: 300
+
+quota:
+  scrape_enabled: false     # WARNING: scraping may violate vendor ToS; use at your own risk
+  claude_cookie_path: ~/.config/secondbrain/claude.cookies
+  chatgpt_cookie_path: ~/.config/secondbrain/chatgpt.cookies
+  briefing_enabled: true    # include quota status in daily briefing
+  warning_threshold: 0.75   # alert at 75% utilization
+  critical_threshold: 0.90  # alert at 90% utilization
+  poll_interval_minutes: 30 # scrape interval (when scrape_enabled=true)

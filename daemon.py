@@ -177,6 +177,7 @@ async def main():
         from goal_project_agent import GoalProjectAgent
         from synthesis_scanner import SynthesisScanner
         from circle_sync_scanner import CircleSyncScanner
+        from quota_scanner import QuotaScanner
 
         # Instantiate tier-2 scanners and services
         optimizer = SkillOptimizer(config)
@@ -187,6 +188,7 @@ async def main():
         project_inference_scanner = ProjectInferenceScanner(role=role)
         goal_agent = GoalProjectAgent(role=role)
         synthesis_scanner = SynthesisScanner(role=role)
+        quota_scanner = QuotaScanner(deploy_dir, config, role)
 
         # Instantiate circle sync scanner if enabled
         circles_cfg = config.get("circles", {})
@@ -200,6 +202,7 @@ async def main():
             "calendar": calendar_scanner,
             "slack": slack_scanner,
             "code": code_scanner,
+            "quota_scanner": quota_scanner,
         }
 
         # Instantiate chat handler with scanners and cache
@@ -275,6 +278,7 @@ async def main():
             goal_agent.run_loop,
             synthesis_scanner.run_loop,
             cache_sweep_loop,
+            quota_scanner.run_loop,
         ]
 
         # Add circle sync scanner task if enabled
