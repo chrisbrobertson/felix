@@ -186,7 +186,7 @@ async def main():
         commitment_tracker = CommitmentTracker(role=role)
         contact_tracker = ContactTracker(role=role)
         project_inference_scanner = ProjectInferenceScanner(role=role)
-        goal_agent = GoalProjectAgent(role=role)
+        goal_agent = GoalProjectAgent(role=role, cache=cache)
         synthesis_scanner = SynthesisScanner(role=role)
         quota_scanner = QuotaScanner(deploy_dir, config, role)
 

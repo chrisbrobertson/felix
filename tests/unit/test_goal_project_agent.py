@@ -12,9 +12,14 @@ import yaml
 
 import goal_project_agent as gpa
 from goal_project_agent import GoalProjectAgent, _parse_frontmatter, _slugify, _title_similarity
+from memory_cache import MemoryCache
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _make_cache(memories_dir):
+    """Create a pass-through MemoryCache for testing."""
+    return MemoryCache(None, memories_dir, enabled=False)
 
 def make_goal_file(memories_dir, title, status="active", agent=None, due_date=None, created="2026-04-01T00:00:00"):
     """Write a goal file with the given status."""
@@ -95,13 +100,15 @@ def test_title_similarity_no_match():
 @pytest.mark.asyncio
 async def test_scan_skips_watcher_role(tmp_path):
     """Watcher role → run_loop returns immediately."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
     config_file = tmp_path / "config.yaml"
     config_file.write_text(yaml.dump({"goal_agent": {"enabled": True}}))
 
     with patch.object(gpa, "CONFIG_PATH", config_file), \
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
-         patch.object(gpa, "MEMORIES_DIR", tmp_path / "memories"):
-        agent = GoalProjectAgent(role="watcher")
+         patch.object(gpa, "MEMORIES_DIR", memories_dir):
+        agent = GoalProjectAgent(role="watcher", cache=_make_cache(memories_dir))
         # Should return immediately without error
         import asyncio
         stop_event = asyncio.Event()
@@ -112,20 +119,23 @@ async def test_scan_skips_watcher_role(tmp_path):
 @pytest.mark.asyncio
 async def test_scan_skips_disabled_config(tmp_path):
     """enabled: false → run_loop returns immediately."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
     config_file = tmp_path / "config.yaml"
     config_file.write_text(yaml.dump({"goal_agent": {"enabled": False}}))
 
     with patch.object(gpa, "CONFIG_PATH", config_file), \
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
-         patch.object(gpa, "MEMORIES_DIR", tmp_path / "memories"):
-        agent = GoalProjectAgent(role="full")
+         patch.object(gpa, "MEMORIES_DIR", memories_dir):
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
         import asyncio
         stop_event = asyncio.Event()
         stop_event.set()
         await agent.run_loop(stop_event)
 
 
-def test_scan_respects_agent_false_frontmatter(tmp_path):
+@pytest.mark.asyncio
+async def test_scan_respects_agent_false_frontmatter(tmp_path):
     """agent: false in frontmatter → item skipped."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -137,12 +147,13 @@ def test_scan_respects_agent_false_frontmatter(tmp_path):
     with patch.object(gpa, "CONFIG_PATH", config_file), \
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
          patch.object(gpa, "MEMORIES_DIR", memories_dir):
-        agent = GoalProjectAgent(role="full")
-        items = agent._select_items()
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
+        items = await agent._select_items()
         assert len(items) == 0
 
 
-def test_scan_skips_completed_goals(tmp_path):
+@pytest.mark.asyncio
+async def test_scan_skips_completed_goals(tmp_path):
     """status: completed → goal skipped."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -154,12 +165,13 @@ def test_scan_skips_completed_goals(tmp_path):
     with patch.object(gpa, "CONFIG_PATH", config_file), \
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
          patch.object(gpa, "MEMORIES_DIR", memories_dir):
-        agent = GoalProjectAgent(role="full")
-        items = agent._select_items()
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
+        items = await agent._select_items()
         assert len(items) == 0
 
 
-def test_related_memories_seed_from_inferred_from(tmp_path):
+@pytest.mark.asyncio
+async def test_related_memories_seed_from_inferred_from(tmp_path):
     """inferred_from field → memory included."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -186,13 +198,14 @@ def test_related_memories_seed_from_inferred_from(tmp_path):
     with patch.object(gpa, "CONFIG_PATH", config_file), \
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
          patch.object(gpa, "MEMORIES_DIR", memories_dir):
-        agent = GoalProjectAgent(role="full")
-        related = agent._find_related_memories(goal_path, fm, None)
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
+        related = await agent._find_related_memories(goal_path, fm, None)
         assert len(related) == 1
         assert related[0][0].name == "email-test.md"
 
 
-def test_related_memories_tag_overlap(tmp_path):
+@pytest.mark.asyncio
+async def test_related_memories_tag_overlap(tmp_path):
     """Tag intersection → memory included."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -208,12 +221,13 @@ def test_related_memories_tag_overlap(tmp_path):
     with patch.object(gpa, "CONFIG_PATH", config_file), \
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
          patch.object(gpa, "MEMORIES_DIR", memories_dir):
-        agent = GoalProjectAgent(role="full")
-        related = agent._find_related_memories(goal_path, fm, None)
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
+        related = await agent._find_related_memories(goal_path, fm, None)
         assert len(related) == 1
 
 
-def test_related_memories_title_jaccard_threshold(tmp_path):
+@pytest.mark.asyncio
+async def test_related_memories_title_jaccard_threshold(tmp_path):
     """Title Jaccard >= 0.3 → memory included."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -228,12 +242,13 @@ def test_related_memories_title_jaccard_threshold(tmp_path):
     with patch.object(gpa, "CONFIG_PATH", config_file), \
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
          patch.object(gpa, "MEMORIES_DIR", memories_dir):
-        agent = GoalProjectAgent(role="full")
-        related = agent._find_related_memories(goal_path, fm, None)
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
+        related = await agent._find_related_memories(goal_path, fm, None)
         assert len(related) == 1
 
 
-def test_related_memories_recency_filter(tmp_path):
+@pytest.mark.asyncio
+async def test_related_memories_recency_filter(tmp_path):
     """mtime > last_checked → memory included, else skipped."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -251,13 +266,14 @@ def test_related_memories_recency_filter(tmp_path):
     with patch.object(gpa, "CONFIG_PATH", config_file), \
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
          patch.object(gpa, "MEMORIES_DIR", memories_dir):
-        agent = GoalProjectAgent(role="full")
-        related = agent._find_related_memories(goal_path, fm, last_checked)
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
+        related = await agent._find_related_memories(goal_path, fm, last_checked)
         # Memory is older than last_checked → should be skipped
         assert len(related) == 0
 
 
-def test_related_memories_max_cap(tmp_path):
+@pytest.mark.asyncio
+async def test_related_memories_max_cap(tmp_path):
     """Cap at max_memories_per_item."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -277,8 +293,8 @@ def test_related_memories_max_cap(tmp_path):
     with patch.object(gpa, "CONFIG_PATH", config_file), \
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
          patch.object(gpa, "MEMORIES_DIR", memories_dir):
-        agent = GoalProjectAgent(role="full")
-        related = agent._find_related_memories(goal_path, fm, None)
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
+        related = await agent._find_related_memories(goal_path, fm, None)
         # Should be capped at 5
         assert len(related) == 5
 
@@ -323,7 +339,7 @@ async def test_llm_dedup_by_report_hash(tmp_path):
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
          patch.object(gpa, "MEMORIES_DIR", memories_dir), \
          patch("litellm.acompletion", new=AsyncMock(return_value=mock_response)):
-        agent = GoalProjectAgent(role="full")
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
         state_entry = state["goals"][goal_path.name]
         result = await agent._generate_report(goal_path, fm, [], state_entry)
         # Should return None because hash matches
@@ -359,7 +375,7 @@ async def test_llm_confidence_filter(tmp_path):
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
          patch.object(gpa, "MEMORIES_DIR", memories_dir), \
          patch("litellm.acompletion", new=AsyncMock(return_value=mock_response)):
-        agent = GoalProjectAgent(role="full")
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
         result = await agent._generate_report(goal_path, fm, [], {})
         # Action should be filtered out (0.5 < 0.7)
         assert len(result["actions"]) == 0
@@ -385,7 +401,7 @@ async def test_staleness_emits_low_urgency_report(tmp_path):
     with patch.object(gpa, "CONFIG_PATH", config_file), \
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
          patch.object(gpa, "MEMORIES_DIR", memories_dir):
-        agent = GoalProjectAgent(role="full")
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
         state = agent._load_state()
         await agent._process_item(goal_path, fm, state)
 
@@ -417,7 +433,7 @@ def test_action_file_written_atomically(tmp_path):
     with patch.object(gpa, "CONFIG_PATH", config_file), \
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
          patch.object(gpa, "MEMORIES_DIR", memories_dir):
-        agent = GoalProjectAgent(role="full")
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
         agent._write_action(goal_path, fm, action_dict)
 
         # Check action file was written
@@ -477,7 +493,7 @@ async def test_urgent_ping_rate_limited(tmp_path):
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
          patch.object(gpa, "MEMORIES_DIR", memories_dir), \
          patch("litellm.acompletion", new=AsyncMock(return_value=mock_response)):
-        agent = GoalProjectAgent(role="full")
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
         agent.notification_callback = mock_send_message
         state = agent._load_state()
         await agent._process_item(goal_path, fm, state)
@@ -488,6 +504,8 @@ async def test_urgent_ping_rate_limited(tmp_path):
 
 def test_state_file_persisted_and_loaded(tmp_path):
     """State is written atomically and can be loaded."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
     config_file = tmp_path / "config.yaml"
     config_file.write_text(yaml.dump({"goal_agent": {"enabled": True}}))
     state_file = tmp_path / "goal-agent-state.json"
@@ -504,7 +522,7 @@ def test_state_file_persisted_and_loaded(tmp_path):
 
     with patch.object(gpa, "CONFIG_PATH", config_file), \
          patch.object(gpa, "DEPLOY_DIR", tmp_path):
-        agent = GoalProjectAgent(role="full")
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
         agent._save_state(state)
 
         # Load back
@@ -545,7 +563,7 @@ def test_archive_superseded_action(tmp_path):
     with patch.object(gpa, "CONFIG_PATH", config_file), \
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
          patch.object(gpa, "MEMORIES_DIR", memories_dir):
-        agent = GoalProjectAgent(role="full")
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
         agent._check_superseded_actions()
 
         # Action should not be superseded yet (target check is done on execute, not on source_goal)
@@ -565,7 +583,7 @@ def test_archive_superseded_action(tmp_path):
     with patch.object(gpa, "CONFIG_PATH", config_file), \
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
          patch.object(gpa, "MEMORIES_DIR", memories_dir):
-        agent = GoalProjectAgent(role="full")
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
         agent._check_superseded_actions()
 
         # Load action and check status
