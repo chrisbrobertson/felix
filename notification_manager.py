@@ -19,6 +19,7 @@ MEMORIES_DIR = BRAIN_DIR / "memories"
 CONFIG_PATH = BRAIN_DIR / "config.yaml"
 DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
 STATE_FILE = DEPLOY_DIR / "notification-state.json"
+QUOTA_STATE_FILE = DEPLOY_DIR / "quota-scanner-state.json"
 
 TG_MAX_CHARS = 4000  # Chunk at 4000 to leave margin
 
@@ -64,6 +65,16 @@ def _save_state(state: dict):
     except Exception as e:
         log.error("Failed to save notification state: %s", e)
         raise
+
+
+def _read_quota_state() -> dict:
+    """Read quota-scanner-state.json directly (no scanner instance coupling)."""
+    if QUOTA_STATE_FILE.exists():
+        try:
+            return json.loads(QUOTA_STATE_FILE.read_text())
+        except Exception:
+            pass
+    return {}
 
 
 def _chunk_message(text: str, max_len: int = TG_MAX_CHARS) -> list:
@@ -504,6 +515,34 @@ class NotificationManager:
 
         if new_count > 0:
             lines.append(f"\n{new_count} new memories captured since yesterday.")
+
+        # Quota status (if enabled and recent data)
+        quota_cfg = self._config.get("quota", {})
+        if quota_cfg.get("briefing_enabled", True):
+            quota_state = _read_quota_state()
+            recent_quota = {}
+            cutoff_24h = now - timedelta(hours=24)
+            for platform, state_data in quota_state.items():
+                last_seen_str = state_data.get("last_seen_at", "")
+                if last_seen_str:
+                    try:
+                        last_seen = datetime.fromisoformat(last_seen_str)
+                        # Make tz-aware
+                        if now.tzinfo is not None and last_seen.tzinfo is None:
+                            last_seen = last_seen.replace(tzinfo=now.tzinfo)
+                        elif now.tzinfo is None and last_seen.tzinfo is not None:
+                            last_seen = last_seen.replace(tzinfo=None)
+                        if last_seen >= cutoff_24h:
+                            recent_quota[platform] = state_data
+                    except Exception:
+                        pass
+
+            if recent_quota:
+                from quota_scanner import render_one
+                lines.append("\nQuotas:")
+                for platform in ["claude", "chatgpt"]:
+                    if platform in recent_quota:
+                        lines.append(f"• {render_one(platform, quota_state)}")
 
         return "\n".join(lines)
 
@@ -965,6 +1004,35 @@ class NotificationManager:
         await self.send_message(msg)
         state["last_llm_chat_nudge"] = now.isoformat()
 
+    async def _check_quota_thresholds(self, state: dict):
+        """Check quota utilization thresholds and send alerts."""
+        if state.get("muted", False):
+            return
+
+        cfg = self._config.get("quota", {})
+        warn = cfg.get("warning_threshold", 0.75)
+        crit = cfg.get("critical_threshold", 0.90)
+
+        quota_state = _read_quota_state()
+        if not quota_state:
+            return
+
+        # Import pure helpers from quota_scanner
+        from quota_scanner import detect_threshold_crossings, render_one
+
+        sent_alerts = state.setdefault("sent_quota_alerts", {})
+        crossings = detect_threshold_crossings(
+            quota_state, sent_alerts,
+            warn=warn,
+            crit=crit,
+            cooldown_min=60,
+        )
+
+        for platform, level in crossings.items():
+            emoji = "⚠️" if level == "warning" else "🔴"
+            msg = f"{emoji} {platform} quota {level} — {render_one(platform, quota_state)}"
+            await self.send_message(msg)
+
     async def _check_and_send(self):
         """Main check-and-send logic run every 60 seconds."""
         state = _load_state()
@@ -986,6 +1054,7 @@ class NotificationManager:
         await self._check_commitment_alerts(state)
         await self._check_goal_alerts(state)
         await self._check_project_alerts(state)
+        await self._check_quota_thresholds(state)
         _save_state(state)
         await self._check_pre_meeting_alerts(state)
         await self._check_calendar_staleness(state)
