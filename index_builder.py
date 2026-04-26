@@ -5,10 +5,12 @@ import re
 import yaml
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from litellm import acompletion
 from llm_routes import resolve
 from utils import load_config
+from memory_cache import MemoryCache
 
 log = logging.getLogger("index-builder")
 
@@ -30,55 +32,40 @@ future conversation the person has with their AI assistant."""
 
 
 class IndexBuilder:
-    async def _build(self):
-        memory_files = sorted(
-            (BRAIN_DIR / "memories").glob("*.md"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True
-        )
+    def __init__(self, cache: Optional[MemoryCache] = None):
+        self._cache = cache if cache is not None else MemoryCache(None, BRAIN_DIR / "memories", enabled=False)
 
-        if not memory_files:
+    async def _build(self):
+        # Fetch all memory rows from cache
+        memory_rows = await self._cache.query_all()
+
+        if not memory_rows:
             log.info("No memory files yet — skipping index build")
             return
+
+        # Sort by mtime descending (most recent first)
+        memory_rows = sorted(memory_rows, key=lambda r: r["mtime"], reverse=True)
 
         # Health signal: log the most recent memory mtime per hostname+browser.
         # If a watcher node's memories stop arriving for >1hr during work hours,
         # this log line will show a stale timestamp — iCloud sync stalled or daemon died.
-        self._log_watcher_health(memory_files)
+        self._log_watcher_health(memory_rows)
 
         # Concatenate memory files up to input cap
         chunks = []
         budget = MAX_INPUT_CHARS
-        for f in memory_files:
+        for row in memory_rows:
             if budget <= 0:
                 break
-            # Retry on iCloud deadlock (errno 11 — EDEADLK, transient advisory lock).
-            # A brief wait almost always clears it; skip the file on exhaustion rather
-            # than crashing the whole index build.
-            text = None
-            delays = (0.1, 0.5, 1.0)
-            for attempt, delay in enumerate(delays):
-                try:
-                    text = f.read_text()
-                    break
-                except OSError as e:
-                    if e.errno in (11, 35):  # EDEADLK (11) or EAGAIN (35) — iCloud file lock, transient
-                        if attempt < len(delays) - 1:
-                            await asyncio.sleep(delay)
-                            continue
-                        log.warning("Skipping %s — iCloud lock after 3 retries", f.name)
-                    else:
-                        log.warning("Skipping %s — read error: %s", f.name, e)
-                    break
-            if text is None:
-                continue
+            # Cache already has the body — no need for retries
+            text = row["body"]
             chunks.append(text[:budget])
             budget -= len(text)
 
         combined = "\n\n---\n\n".join(chunks)
         n = len(chunks)
         days_span = (datetime.now() - datetime.fromtimestamp(
-            memory_files[-1].stat().st_mtime)).days + 1
+            memory_rows[-1]["mtime"])).days + 1
 
         try:
             response = await acompletion(
@@ -109,19 +96,19 @@ class IndexBuilder:
         except Exception as e:
             log.warning("dedup_checker failed: %s", e)
 
-    def _log_watcher_health(self, memory_files: list):
+    def _log_watcher_health(self, memory_rows: list):
         """
         Parse frontmatter hostname field from recent files, log last-seen mtime
         per source. A gap >1hr during work hours means a watcher node is silent.
-        Reads only the first 300 chars (frontmatter) of the 20 most recent files.
+        Reads only the first 500 chars (header500) of the 20 most recent rows.
         """
         seen: dict[str, float] = {}  # hostname -> most recent mtime
-        for f in memory_files[:20]:
+        for row in memory_rows[:20]:
             try:
-                header = f.read_text()[:300]
+                header = row["header500"]
                 match = re.search(r'hostname:\s*(\S+)', header)
                 hostname = match.group(1) if match else "unknown"
-                mtime = f.stat().st_mtime
+                mtime = row["mtime"]
                 if hostname not in seen or mtime > seen[hostname]:
                     seen[hostname] = mtime
             except Exception:
