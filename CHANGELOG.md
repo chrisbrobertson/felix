@@ -6,6 +6,13 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.9.1] — 2026-04-25
+
+### Fixed
+- Chat latency: `_build_goal_project_context` was synchronously reading 584 `project-candidate-*.md` files on every query via `list_projects()` glob match (`project-*.md` matched candidates). At 750ms each under iCloud EDEADLK, "hello" took 52+ seconds. Migrated to `cache.query_by_type("goal"/"project")` — two SQL queries, sub-ms.
+- `index.md` read in `_load_context` now uses `read_text_with_retry_async` instead of bare `read_text()`, keeping the event loop unblocked under iCloud pressure.
+- `goals_tracker.list_projects()` now excludes `project-candidate-*` filenames before reading — protects `/projects`, `/list_projects` LLM tool, and `goal_project_agent` from the same fan-out.
+
 ## [1.9.0] — 2026-04-25
 
 ### Added

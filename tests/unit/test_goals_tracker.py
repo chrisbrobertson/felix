@@ -5,7 +5,7 @@ All external access (filesystem) is mocked via tmp_path and patch.
 """
 import os
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, call
 
 import pytest
 import yaml
@@ -335,3 +335,50 @@ def test_link_goal_rollback_on_project_write_failure(manager, memories_dir):
     fm_text = content.split("---\n")[1]
     fm_goal = yaml.safe_load(fm_text)
     assert fm_goal["linked_projects"] == []
+
+
+def test_list_projects_skips_candidates_without_reading(manager, memories_dir):
+    """list_projects never opens project-candidate-*.md files — 584-file fan-out regression."""
+    import goals_tracker as gt_module
+
+    memories_dir.mkdir(parents=True, exist_ok=True)
+
+    real_content = (
+        "---\n"
+        "type: project\n"
+        "category: work\n"
+        "source_title: Real Project\n"
+        "summary: ''\n"
+        "tags: []\n"
+        "created: '2026-04-15T09:00:00'\n"
+        "due_date: null\n"
+        "status: active\n"
+        "priority: high\n"
+        "linked_goal: null\n"
+        "milestones: []\n"
+        "inferred_from: []\n"
+        "notes: ''\n"
+        "---\n\n## Notes\n"
+    )
+    for i in range(3):
+        (memories_dir / f"project-work-real-{i}.md").write_text(real_content)
+
+    candidate_content = (
+        "---\ntype: project_candidate\nsource_title: Candidate\nstatus: pending_confirmation\n---\n"
+    )
+    for i in range(5):
+        (memories_dir / f"project-candidate-noise-{i}.md").write_text(candidate_content)
+
+    read_calls = []
+    original = gt_module.read_text_with_retry
+
+    def tracking_read(path, default=""):
+        read_calls.append(path.name)
+        return original(path, default=default)
+
+    with patch.object(gt_module, "read_text_with_retry", side_effect=tracking_read):
+        manager.list_projects()
+
+    candidate_reads = [n for n in read_calls if n.startswith("project-candidate-")]
+    assert candidate_reads == [], f"Expected 0 candidate reads, got: {candidate_reads}"
+    assert len(read_calls) == 3

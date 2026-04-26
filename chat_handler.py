@@ -35,7 +35,7 @@ TG_MAX_CHARS = 4096  # Telegram hard limit per message
 # Defined in command_core.py and imported here so cmd_help, tests, and
 # _format_commands_text all reference the same object.
 from command_core import COMMAND_REGISTRY  # noqa: E402 (import after stdlib)
-from utils import read_text_with_retry
+from utils import read_text_with_retry, read_text_with_retry_async
 
 # Backfill configuration: default and max days per scanner type
 BACKFILL_CONFIG = {
@@ -419,67 +419,59 @@ class TelegramChatHandler:
             return f"{hours}h"
         return f"{mins}m"
 
-    def _build_goal_project_context(self) -> str:
+    async def _build_goal_project_context_async(self) -> str:
         """Build context block for active goals and projects (FR-7).
 
+        Cache-backed: queries SQLite instead of globbing iCloud to avoid
+        the project-candidate fan-out (584 files read only to be discarded).
         Always injected into chat LLM context, bypassing keyword relevance.
         Returns empty string if no active goals or projects exist.
         """
-        import re
-        import yaml
+        import json as _json
 
         max_items = self._config.get("goals", {}).get("max_context_items", 5)
         lines = []
 
-        # Active goals
+        # Active goals — one SQL query, no iCloud reads
         try:
-            active_goals = self._goal_manager.list_goals(status="active")[:max_items]
-            if active_goals:
+            goal_rows = await self._cache.query_by_type("goal", status="active")
+            goal_rows = goal_rows[:max_items]
+            if goal_rows:
                 lines.append("## Active Goals")
-                for goal_path in active_goals:
+                for row in goal_rows:
                     try:
-                        with open(goal_path) as f:
-                            content = f.read()
-                        match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
-                        if match:
-                            fm = yaml.safe_load(match.group(1))
-                            title = fm.get("source_title", goal_path.stem)
-                            category = fm.get("category", "")
-                            due = fm.get("due_date", "")
-                            due_str = f" — due {due}" if due else ""
-                            lines.append(f"- {title} [{category}]{due_str}")
+                        fm = _json.loads(row["frontmatter"]) if row.get("frontmatter") else {}
+                        title = fm.get("source_title", row["filename"])
+                        category = fm.get("category", "")
+                        due = fm.get("due_date", "")
+                        due_str = f" — due {due}" if due else ""
+                        lines.append(f"- {title} [{category}]{due_str}")
                     except Exception:
                         continue
         except Exception:
             pass
 
-        # Active + on-hold projects
+        # Active + on-hold projects — one SQL query, no iCloud reads
         try:
-            all_projects = self._goal_manager.list_projects()
-            # Filter to active or on-hold
+            project_rows = await self._cache.query_by_type("project")
             active_projects = []
-            for project_path in all_projects:
+            for row in project_rows:
                 try:
-                    with open(project_path) as f:
-                        content = f.read()
-                    match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
-                    if match:
-                        fm = yaml.safe_load(match.group(1))
-                        status = fm.get("status", "")
-                        if status in ("active", "on-hold"):
-                            active_projects.append((project_path, fm))
+                    fm = _json.loads(row["frontmatter"]) if row.get("frontmatter") else {}
+                    status = fm.get("status", "")
+                    if status in ("active", "on-hold"):
+                        active_projects.append(fm)
                 except Exception:
                     continue
 
-            # Cap to max_items
             active_projects = active_projects[:max_items]
 
             if active_projects:
                 if lines:
                     lines.append("")
                 lines.append("## Active Projects")
-                for project_path, fm in active_projects:
-                    title = fm.get("source_title", project_path.stem)
+                for fm in active_projects:
+                    title = fm.get("source_title", "")
                     category = fm.get("category", "")
                     due = fm.get("due_date", "")
                     milestones = fm.get("milestones", [])
@@ -503,16 +495,18 @@ class TelegramChatHandler:
         index_path = BRAIN_DIR / "index.md"
         if index_path.exists():
             try:
-                chunk = f"# Memory Index\n{index_path.read_text()}"
-                chunk_tokens = self._count_tokens(chunk)
-                parts.append(chunk)
-                budget_tokens -= chunk_tokens
-                total_tokens += chunk_tokens
+                text = await read_text_with_retry_async(index_path, default=None)
+                if text is not None:
+                    chunk = f"# Memory Index\n{text}"
+                    chunk_tokens = self._count_tokens(chunk)
+                    parts.append(chunk)
+                    budget_tokens -= chunk_tokens
+                    total_tokens += chunk_tokens
             except OSError:
                 pass
 
         # FR-7: Inject active goals and projects before keyword-matched memories
-        goal_context = self._build_goal_project_context()
+        goal_context = await self._build_goal_project_context_async()
         if goal_context:
             goal_tokens = self._count_tokens(goal_context)
             parts.append(goal_context)

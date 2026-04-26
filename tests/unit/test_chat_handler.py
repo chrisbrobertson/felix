@@ -2938,9 +2938,9 @@ async def test_forget_indices_helper_regression(handler, brain_dir):
 
 # --- FR-7: Active goals/projects context injection ---
 
-def test_build_goal_project_context_returns_active_goals(handler, brain_dir):
-    """_build_goal_project_context includes active goals."""
-    # Write a goal file
+@pytest.mark.asyncio
+async def test_build_goal_project_context_returns_active_goals(handler, brain_dir):
+    """_build_goal_project_context_async includes active goals."""
     goal_path = brain_dir / "memories" / "goal-run-5k-abc123.md"
     goal_path.write_text(
         "---\n"
@@ -2958,16 +2958,16 @@ def test_build_goal_project_context_returns_active_goals(handler, brain_dir):
         "---\n\n## Notes\n"
     )
 
-    result = handler._build_goal_project_context()
+    result = await handler._build_goal_project_context_async()
     assert "## Active Goals" in result
     assert "Run a 5K" in result
     assert "[personal]" in result
     assert "2026-06-30" in result
 
 
-def test_build_goal_project_context_returns_active_projects(handler, brain_dir):
-    """_build_goal_project_context includes active and on-hold projects."""
-    # Write an active project
+@pytest.mark.asyncio
+async def test_build_goal_project_context_returns_active_projects(handler, brain_dir):
+    """_build_goal_project_context_async includes active and on-hold projects."""
     active_path = brain_dir / "memories" / "project-work-q2-rollout-def456.md"
     active_path.write_text(
         "---\n"
@@ -2991,7 +2991,6 @@ def test_build_goal_project_context_returns_active_projects(handler, brain_dir):
         "---\n\n## Notes\n"
     )
 
-    # Write an on-hold project
     onhold_path = brain_dir / "memories" / "project-personal-garden-shed-ghi789.md"
     onhold_path.write_text(
         "---\n"
@@ -3011,7 +3010,7 @@ def test_build_goal_project_context_returns_active_projects(handler, brain_dir):
         "---\n\n## Notes\n"
     )
 
-    result = handler._build_goal_project_context()
+    result = await handler._build_goal_project_context_async()
     assert "## Active Projects" in result
     assert "Q2 rollout plan" in result
     assert "milestones: 1/2 done" in result
@@ -3019,9 +3018,9 @@ def test_build_goal_project_context_returns_active_projects(handler, brain_dir):
     assert "no due date" in result
 
 
-def test_build_goal_project_context_empty_when_no_active(handler, brain_dir):
-    """_build_goal_project_context returns empty string when no active goals/projects."""
-    # Write a completed goal
+@pytest.mark.asyncio
+async def test_build_goal_project_context_empty_when_no_active(handler, brain_dir):
+    """_build_goal_project_context_async returns empty string when no active goals/projects."""
     goal_path = brain_dir / "memories" / "goal-old-abc123.md"
     goal_path.write_text(
         "---\n"
@@ -3039,8 +3038,46 @@ def test_build_goal_project_context_empty_when_no_active(handler, brain_dir):
         "---\n\n## Notes\n"
     )
 
-    result = handler._build_goal_project_context()
+    result = await handler._build_goal_project_context_async()
     assert result == ""
+
+
+@pytest.mark.asyncio
+async def test_build_goal_project_context_excludes_candidates(handler, brain_dir):
+    """_build_goal_project_context_async never reads project-candidate-*.md files."""
+    # Write a real active project
+    real_path = brain_dir / "memories" / "project-work-real-abc123.md"
+    real_path.write_text(
+        "---\n"
+        "type: project\n"
+        "category: work\n"
+        "source_title: Real Project\n"
+        "summary: ''\n"
+        "tags: []\n"
+        "created: '2026-04-15T09:00:00'\n"
+        "due_date: null\n"
+        "status: active\n"
+        "priority: high\n"
+        "linked_goal: null\n"
+        "milestones: []\n"
+        "inferred_from: []\n"
+        "notes: ''\n"
+        "---\n\n## Notes\n"
+    )
+    # Write a project-candidate that should never appear
+    for i in range(5):
+        cand_path = brain_dir / "memories" / f"project-candidate-noise-{i:06d}.md"
+        cand_path.write_text(
+            "---\n"
+            "type: project_candidate\n"
+            "source_title: Candidate Project\n"
+            "status: pending_confirmation\n"
+            "---\n\nCandidate body\n"
+        )
+
+    result = await handler._build_goal_project_context_async()
+    assert "Real Project" in result
+    assert "Candidate Project" not in result
 
 
 @pytest.mark.asyncio

@@ -277,7 +277,8 @@ class GoalManager:
         Only includes files with type: project (excludes candidates).
         """
         # Glob project files (but not candidates)
-        projects = list(self.memories_dir.glob("project-*.md"))
+        projects = [p for p in self.memories_dir.glob("project-*.md")
+                    if not p.name.startswith("project-candidate-")]
 
         # Filter by frontmatter
         filtered = []
