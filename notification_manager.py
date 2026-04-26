@@ -915,6 +915,67 @@ class NotificationManager:
 
         return "\n".join(lines)
 
+    def _newest_llm_chat_mtime_by_platform(self) -> dict[str, datetime]:
+        """Return newest mtime per platform for llm-chat memories.
+
+        Parses platform from filename (llm-chat-{platform}-*.md) to avoid
+        opening every file. Returns dict[platform, datetime] (timezone-aware).
+        """
+        by_platform = {}
+        tz_name = self._user_config().get("timezone", "America/Los_Angeles")
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = ZoneInfo("UTC")
+
+        for f in MEMORIES_DIR.glob("llm-chat-*.md"):
+            # Filename pattern: llm-chat-{platform}-{date}-{slug}-{id}.md
+            # Extract platform from second segment
+            parts = f.stem.split("-")
+            if len(parts) < 3:
+                continue
+            platform = parts[2]  # 0=llm, 1=chat, 2=platform
+            mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=tz)
+            if platform not in by_platform or mtime > by_platform[platform]:
+                by_platform[platform] = mtime
+        return by_platform
+
+    async def _check_llm_chat_refresh(self, state: dict) -> None:
+        """Check if llm_chat memories are stale and nudge user to re-import."""
+        cfg = self._config.get("llm_chat", {})
+        if not cfg.get("nudge_enabled", True):
+            return
+        if state.get("muted", False):
+            return
+
+        interval_days = cfg.get("refresh_interval_days", 14)
+        cooldown_days = cfg.get("nudge_cooldown_days", 7)
+
+        last_nudge = state.get("last_llm_chat_nudge")
+        if last_nudge:
+            try:
+                last_nudge_dt = datetime.fromisoformat(last_nudge)
+                if (self._get_local_now() - last_nudge_dt).days < cooldown_days:
+                    return
+            except Exception:
+                pass
+
+        newest = self._newest_llm_chat_mtime_by_platform()
+        now = self._get_local_now()
+        stale = [p for p, t in newest.items() if (now - t).days > interval_days]
+        missing = [p for p in ("claude", "chatgpt") if p not in newest]
+        targets = stale + missing
+
+        if not targets:
+            return
+
+        msg = (
+            f"📥 LLM chat history is going stale ({', '.join(targets)}). "
+            f"Re-export and run `/import_chats {targets[0]}` when you have a moment."
+        )
+        await self.send_message(msg)
+        state["last_llm_chat_nudge"] = now.isoformat()
+
     async def _check_and_send(self):
         """Main check-and-send logic run every 60 seconds."""
         state = _load_state()
@@ -932,6 +993,7 @@ class NotificationManager:
 
         # Run checks
         await self._check_daily_briefing(state)
+        await self._check_llm_chat_refresh(state)
         await self._check_commitment_alerts(state)
         await self._check_goal_alerts(state)
         await self._check_project_alerts(state)

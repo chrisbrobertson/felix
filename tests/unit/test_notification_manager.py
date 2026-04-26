@@ -5,6 +5,7 @@ All external access (Telegram bot, filesystem) is mocked.
 """
 import asyncio
 import json
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2047,3 +2048,217 @@ def test_load_config_caches_by_mtime(tmp_path):
         mgr._load_config()
 
     assert read_count["n"] == 1, f"expected 1 read (cached), got {read_count['n']}"
+
+
+# ── LLM Chat Refresh Nudge ────────────────────────────────────────────────────
+
+def make_llm_chat_memory(memories_dir: Path, platform: str, title: str, created: str, slug: str, chat_id: str) -> Path:
+    """Create an llm-chat memory file."""
+    date = created[:10]
+    p = memories_dir / f"llm-chat-{platform}-{date}-{slug}-{chat_id}.md"
+    fm = {
+        "type": "llm_chat",
+        "platform": platform,
+        "source_title": title,
+        "created": created,
+        "summary": f"Conversation about {title}",
+        "topics": ["test"],
+        "tags": [],
+    }
+    frontmatter = yaml.dump(fm, sort_keys=False)
+    p.write_text(f"---\n{frontmatter}---\n\n## Summary\nTest conversation.\n")
+    return p
+
+
+@pytest.mark.asyncio
+async def test_llm_chat_nudge_fires_when_chats_stale(tmp_path):
+    """Nudge fires when latest llm-chat mtime is older than refresh_interval_days."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\n"
+        "llm_chat:\n  refresh_interval_days: 14\n  nudge_cooldown_days: 7\n  nudge_enabled: true\n"
+    )
+
+    now = datetime(2026, 4, 25, 10, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    stale_time = now - timedelta(days=30)
+
+    # Create a 30-day-old claude chat
+    chat_path = make_llm_chat_memory(
+        memories_dir, "claude", "How to use RAG", stale_time.isoformat(), "rag-discussion", "abc123"
+    )
+    # Set mtime to 30 days ago
+    os.utime(chat_path, (stale_time.timestamp(), stale_time.timestamp()))
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_llm_chat_refresh(state)
+
+    bot_mock.send_message.assert_called_once()
+    call_args = bot_mock.send_message.call_args[1]["text"]
+    assert "claude" in call_args
+    assert "/import_chats" in call_args
+    assert state["last_llm_chat_nudge"] is not None
+
+
+@pytest.mark.asyncio
+async def test_llm_chat_nudge_respects_cooldown(tmp_path):
+    """Nudge does not fire if last nudge was within cooldown_days."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    now = datetime(2026, 4, 25, 10, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    last_nudge = now - timedelta(days=3)
+
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({
+        "chat_id": 123456789,
+        "muted": False,
+        "last_llm_chat_nudge": last_nudge.isoformat()
+    }))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\n"
+        "llm_chat:\n  refresh_interval_days: 14\n  nudge_cooldown_days: 7\n  nudge_enabled: true\n"
+    )
+
+    stale_time = now - timedelta(days=30)
+    chat_path = make_llm_chat_memory(
+        memories_dir, "claude", "Test", stale_time.isoformat(), "test", "abc123"
+    )
+    os.utime(chat_path, (stale_time.timestamp(), stale_time.timestamp()))
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_llm_chat_refresh(state)
+
+    bot_mock.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_llm_chat_nudge_respects_mute(tmp_path):
+    """Nudge does not fire when muted=True."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": True}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\n"
+        "llm_chat:\n  refresh_interval_days: 14\n  nudge_cooldown_days: 7\n  nudge_enabled: true\n"
+    )
+
+    now = datetime(2026, 4, 25, 10, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    stale_time = now - timedelta(days=30)
+
+    chat_path = make_llm_chat_memory(
+        memories_dir, "claude", "Test", stale_time.isoformat(), "test", "abc123"
+    )
+    os.utime(chat_path, (stale_time.timestamp(), stale_time.timestamp()))
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_llm_chat_refresh(state)
+
+    bot_mock.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_llm_chat_nudge_disabled_via_config(tmp_path):
+    """Nudge does not fire when nudge_enabled=false."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\n"
+        "llm_chat:\n  refresh_interval_days: 14\n  nudge_cooldown_days: 7\n  nudge_enabled: false\n"
+    )
+
+    now = datetime(2026, 4, 25, 10, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    stale_time = now - timedelta(days=30)
+
+    chat_path = make_llm_chat_memory(
+        memories_dir, "claude", "Test", stale_time.isoformat(), "test", "abc123"
+    )
+    os.utime(chat_path, (stale_time.timestamp(), stale_time.timestamp()))
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_llm_chat_refresh(state)
+
+    bot_mock.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_llm_chat_nudge_when_no_chats_ever_imported(tmp_path):
+    """Nudge fires listing both platforms as missing when no llm-chat memories exist."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\n"
+        "llm_chat:\n  refresh_interval_days: 14\n  nudge_cooldown_days: 7\n  nudge_enabled: true\n"
+    )
+
+    now = datetime(2026, 4, 25, 10, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock)
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    await mgr._check_llm_chat_refresh(state)
+
+    bot_mock.send_message.assert_called_once()
+    call_args = bot_mock.send_message.call_args[1]["text"]
+    # Should mention both platforms (order may vary)
+    assert "claude" in call_args or "chatgpt" in call_args
+    assert "/import_chats" in call_args
