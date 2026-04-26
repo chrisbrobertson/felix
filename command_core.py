@@ -47,6 +47,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("wrong",       "Mark extracted commitment N as a false positive"),
         ("missed",      "Manually add a commitment the bot missed"),
         ("accuracy",    "Show extraction precision per source type"),
+        ("quota",       "Track Claude.ai Pro / ChatGPT Plus message quotas. /quota | /quota report <p> <u>/<c> [reset <min>] | /quota reset <p>"),
     ],
     "Goals": [
         ("addgoal",       "Add a new goal"),

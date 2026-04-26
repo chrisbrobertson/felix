@@ -110,6 +110,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("wrong", self.cmd_wrong))
         self.app.add_handler(CommandHandler("missed", self.cmd_missed))
         self.app.add_handler(CommandHandler("accuracy", self.cmd_accuracy))
+        self.app.add_handler(CommandHandler("quota", self.cmd_quota))
         self.app.add_handler(CommandHandler("contacts", self.cmd_contacts))
         self.app.add_handler(CommandHandler("contact", self.cmd_contact))
         self.app.add_handler(CommandHandler("people", self.cmd_contacts))
@@ -1982,6 +1983,80 @@ class TelegramChatHandler:
         lines.append("")
         lines.append("Use /wrong N to flag false positives. Use /missed to add skipped commitments.")
         await update.message.reply_text("\n".join(lines))
+
+    # ── Quota tracking ────────────────────────────────────────────────────────
+
+    async def cmd_quota(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Track Claude.ai Pro / ChatGPT Plus message quotas."""
+        if not self._check_auth(update):
+            return
+
+        args = context.args or []
+
+        # Get quota scanner from scanners dict
+        quota_scanner = self.scanners.get("quota_scanner")
+        if quota_scanner is None:
+            await update.message.reply_text(
+                "Quota scanner not available (requires role=full)."
+            )
+            return
+
+        # No args: show status
+        if not args:
+            status = quota_scanner.render_status()
+            await update.message.reply_text(status)
+            return
+
+        # report subcommand
+        if args[0] == "report":
+            if len(args) < 3:
+                await update.message.reply_text(
+                    "Usage: /quota report <platform> <used>/<cap> [reset <minutes>]"
+                )
+                return
+
+            platform = args[1]
+            used_cap = args[2]
+
+            # Parse used/cap
+            if "/" not in used_cap:
+                await update.message.reply_text("Format: <used>/<cap>, e.g. 23/40")
+                return
+
+            try:
+                used, cap = map(int, used_cap.split("/"))
+            except ValueError:
+                await update.message.reply_text("Invalid format. Use integers: <used>/<cap>")
+                return
+
+            # Parse optional reset minutes
+            reset_min = None
+            if len(args) >= 5 and args[3] == "reset":
+                try:
+                    reset_min = int(args[4])
+                except ValueError:
+                    await update.message.reply_text("Invalid reset minutes. Use an integer.")
+                    return
+
+            quota_scanner.report(platform, used, cap, reset_min)
+            await update.message.reply_text(f"OK — {platform} at {used}/{cap}.")
+            return
+
+        # reset subcommand
+        if args[0] == "reset":
+            if len(args) < 2:
+                await update.message.reply_text("Usage: /quota reset <platform>")
+                return
+
+            platform = args[1]
+            quota_scanner.clear(platform)
+            await update.message.reply_text(f"Cleared {platform} state.")
+            return
+
+        # Unknown subcommand
+        await update.message.reply_text(
+            "Usage: /quota | /quota report <platform> <used>/<cap> [reset <min>] | /quota reset <platform>"
+        )
 
     # ── Agent actions commands ────────────────────────────────────────────────
 
