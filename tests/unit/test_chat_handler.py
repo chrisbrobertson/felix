@@ -949,9 +949,13 @@ async def test_cmd_help_renders_all_groups(handler):
 async def test_cmd_help_all_registry_commands_listed(handler):
     update, ctx = _make_update(12345)
     await handler.cmd_help(update, ctx)
-    # Collect all chunks across multiple calls
+    # Collect all chunks across multiple calls. _send_reply uses fixed-size
+    # 4096-char slicing (chunks are direct substrings of the original text),
+    # so concatenate without a separator to faithfully reconstruct the source —
+    # otherwise commands that happen to land on a chunk boundary appear split
+    # by a stray newline and the substring search misses them.
     calls = update.message.reply_text.call_args_list
-    full_text = "\n".join(c[0][0] for c in calls)
+    full_text = "".join(c[0][0] for c in calls)
     for commands in ch.COMMAND_REGISTRY.values():
         for cmd, _ in commands:
             assert f"/{cmd}" in full_text, f"/{cmd} not found in /help output"
