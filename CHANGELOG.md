@@ -6,6 +6,18 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-04-25
+
+### Added
+- `MemoryCache` module backed by `~/secondbrain/memory-cache.sqlite` — derived SQLite read-cache of all iCloud memory files; eliminates EDEADLK from the hot read path
+- `/rebuild_cache` Telegram command — force-rescan memories into cache
+- `chat_handler._load_context` migrated to SQLite; drops `_header_cache` (now redundant)
+- `daemon.memory_cache.enabled` config gate (default `true`)
+- `specs/feat-memory-cache.md` — design spec capturing architecture and constraints
+- Cache sweep loop runs every 60s on full-role daemon to catch iCloud-arrived files from watcher
+
+## [1.7.0] — 2026-04-25
+
 ### Added
 - `/aichat` command — list, detail, and search for imported Claude/ChatGPT conversations. Default list mode groups by platform, `/aichat <N>` shows summary and topics, `/aichat search <q>` keyword-filters headers. Integrates imported llm_chat memories from v1.4.0 into first-class browse surface (closes FR-12 from feat-llm-chat-import).
 - `/comms llm` filter — surface llm_chat memories alongside email and slack threads. Updated `/comms` to accept `email|slack|llm` filter, extended `_list_comms_text` and `cmd_comm` detail view with llm_chat branches.
