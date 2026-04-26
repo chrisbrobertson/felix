@@ -324,10 +324,15 @@ code_scanner:
 /meetings [N]            # list meeting transcripts, newest first
 /meeting <N>             # show meeting detail: attendees, summary, transcript
 
-/comms [N]               # unified email + Slack threads, most recent first
+/comms [N]               # unified email + Slack + LLM chat threads, most recent first
 /comms email [N]         # filter to email only
 /comms slack [N]         # filter to Slack only
+/comms llm [N]           # filter to imported Claude/ChatGPT chats only
 /comm <N>                # show thread detail
+
+/aichat [N]              # list imported Claude/ChatGPT conversations, grouped by platform
+/aichat <N>              # show conversation detail: summary, topics, tags
+/aichat search <query>   # keyword search across imported conversations
 
 /events [N]              # calendar events in a ±7-day window, sorted by start time
 /event <N>               # event detail: time, location, attendees, description, related commitments
@@ -452,6 +457,7 @@ When unmuted, the bot sends:
 - **Daily briefing** at the configured time (default 7:30 AM): today's calendar, due/overdue commitments, new memories since yesterday
 - **Pre-meeting context** 10 minutes before each calendar event: attendees, related commitments, recent email/Slack threads
 - **Commitment deadline alerts** when items are due today or tomorrow
+- **LLM chat refresh nudge** when imported Claude/ChatGPT conversations are stale (default: 14 days since last import, with 7-day cooldown between nudges)
 
 Muted state persists across daemon restarts. `/briefing` works even when muted — useful for manually checking in without turning on auto-notifications.
 
@@ -509,13 +515,16 @@ Muted state persists across daemon restarts. `/briefing` works even when muted �
 | `/event <N>` | Event detail: time, location, attendees, description, related commitments |
 | `/meetings [N]` | Zoom meeting transcripts, newest first (default 10, max 50) |
 | `/meeting <N>` | Meeting detail: date, attendees, summary, transcript |
-| **Email & Slack** | |
-| `/comms [email\|slack] [N]` | Unified email + Slack threads, most recent first (default 10, max 50). Optional filter arg. |
-| `/messages [email\|slack] [N]` | Alias for `/comms` |
-| `/communications [email\|slack] [N]` | Alias for `/comms` |
-| `/comm <N>` | Thread detail (email-shaped or Slack-shaped based on type) |
+| **Communications** | |
+| `/comms [email\|slack\|llm] [N]` | Unified email + Slack + imported LLM chats, most recent first (default 10, max 50). Optional filter arg. |
+| `/messages [email\|slack\|llm] [N]` | Alias for `/comms` |
+| `/communications [email\|slack\|llm] [N]` | Alias for `/comms` |
+| `/comm <N>` | Thread detail (email-shaped, Slack-shaped, or llm_chat-shaped based on type) |
 | `/message <N>` | Alias for `/comm` |
 | `/communication <N>` | Alias for `/comm` |
+| `/aichat [N]` | List imported Claude/ChatGPT conversations, grouped by platform (default 20) |
+| `/aichat <N>` | Show conversation detail: summary, topics, tags |
+| `/aichat search <query>` | Keyword search across imported conversation headers |
 | **Commitments** | |
 | `/commitments [type]` | Active commitments. Optional type filter: `outbound`, `inbound`, `waiting`. Items with confidence 0.5–0.69 show ⚠️. |
 | `/complete <N>` | Mark commitment N completed |
