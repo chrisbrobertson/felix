@@ -181,11 +181,11 @@ async def main():
 
         # Instantiate tier-2 scanners and services
         optimizer = SkillOptimizer(config)
-        indexer = IndexBuilder()
+        indexer = IndexBuilder(cache=cache)
         zoom_scanner = ZoomScanner(role=role)
         commitment_tracker = CommitmentTracker(role=role)
         contact_tracker = ContactTracker(role=role)
-        project_inference_scanner = ProjectInferenceScanner(role=role)
+        project_inference_scanner = ProjectInferenceScanner(role=role, cache=cache)
         goal_agent = GoalProjectAgent(role=role)
         synthesis_scanner = SynthesisScanner(role=role)
         quota_scanner = QuotaScanner(deploy_dir, config, role)
