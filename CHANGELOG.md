@@ -7,6 +7,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `/aichat` command — list, detail, and search for imported Claude/ChatGPT conversations. Default list mode groups by platform, `/aichat <N>` shows summary and topics, `/aichat search <q>` keyword-filters headers. Integrates imported llm_chat memories from v1.4.0 into first-class browse surface (closes FR-12 from feat-llm-chat-import).
+- `/comms llm` filter — surface llm_chat memories alongside email and slack threads. Updated `/comms` to accept `email|slack|llm` filter, extended `_list_comms_text` and `cmd_comm` detail view with llm_chat branches.
+- Refresh nudge — daily check that nudges the user when llm_chat memories are >14 days stale (configurable via `llm_chat.refresh_interval_days` and `llm_chat.nudge_cooldown_days`). Kill-switch via `llm_chat.nudge_enabled: false`.
+- `search_memories` tool now recognizes `type=llm_chat` — chat skill can pull imported conversations naturally into context when answering questions about prior AI discussions.
 - `scripts/work_reports.sh` — autonomous backlog drainer. Promotes any local `feature-request-*.md` files to GitHub issues (via `scripts/promote_local_features.py`), then loops `claude -p` against open `kind:bug` / `kind:feature` issues, picking one per iteration, branching, implementing, testing, committing, and opening a PR. Stops on `STOP` token, stuck loop, or `MAX_ITER`. Modeled on `~/repos/scripts/babysit.sh`. Documented in README under "Working the backlog autonomously".
 - `scripts/promote_local_features.py` — standalone CLI that mirrors the promotion half of `/feature_import` (uses `gh` directly, no daemon required). Supports `--dry-run` and `--repo`.
 - Circles Phase B: add `/circles`, `/circle <N>`, `/circle_status` host Telegram commands for inspecting circle sync state and ruleset details

@@ -161,6 +161,11 @@ notifications:
   stale_waiting_on_days: 7         # waiting-ons older than N days appear in briefing
   telegram_chat_id: null           # auto-detected from first message if null
 
+llm_chat:
+  refresh_interval_days: 14        # nudge user when last import is older than this
+  nudge_cooldown_days: 7           # minimum days between refresh nudges
+  nudge_enabled: true              # set false to disable refresh notifications
+
 # GitHub Issues backing for /feature and /bug (optional)
 # If GITHUB_PAT and GITHUB_REPO env vars are set (via install.sh), they take
 # precedence. Set github.repo here to configure the repo without an env var.

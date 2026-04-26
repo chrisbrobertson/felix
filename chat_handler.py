@@ -123,6 +123,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("comm", self.cmd_comm))
         self.app.add_handler(CommandHandler("message", self.cmd_comm))
         self.app.add_handler(CommandHandler("communication", self.cmd_comm))
+        self.app.add_handler(CommandHandler("aichat", self.cmd_aichat))
         self.app.add_handler(CommandHandler("insights", self.cmd_insights))
         self.app.add_handler(CommandHandler("help", self.cmd_help))
         self.app.add_handler(CommandHandler("commands", self.cmd_help))
@@ -4537,14 +4538,19 @@ class TelegramChatHandler:
 
     def _list_comms_text(self, kind: Optional[str] = None, limit: int = 20, show_all: bool = False) -> str:
         """Return formatted comms list text (called by cmd_comms and tool dispatch).
-        kind: 'email' or 'slack' or None for both.
+        kind: 'email', 'slack', 'llm', or None for all.
         show_all: if True, show all email threads including marketing/automated."""
         limit = max(1, min(limit, 100))
-        type_map = {"email": "email_thread", "slack": "slack_thread"}
-        wanted_types = {type_map[kind]} if kind else {"email_thread", "slack_thread"}
+        type_map = {"email": "email_thread", "slack": "slack_thread", "llm": "llm_chat"}
+        wanted_types = {type_map[kind]} if kind else {"email_thread", "slack_thread", "llm_chat"}
 
         comms = []
-        for glob_pattern, mem_type in [("email-thread-*.md", "email_thread"), ("slack-thread-*.md", "slack_thread")]:
+        patterns = [
+            ("email-thread-*.md", "email_thread"),
+            ("slack-thread-*.md", "slack_thread"),
+            ("llm-chat-*.md", "llm_chat"),
+        ]
+        for glob_pattern, mem_type in patterns:
             if mem_type not in wanted_types:
                 continue
             for f in (BRAIN_DIR / "memories").glob(glob_pattern):
@@ -4569,8 +4575,10 @@ class TelegramChatHandler:
             _, fm, mem_type = item
             if mem_type == "email_thread":
                 return fm.get("last_message") or ""
-            # For slack: use mtime of file as fallback
-            return fm.get("last_reply") or fm.get("last_message") or ""
+            elif mem_type == "slack_thread":
+                return fm.get("last_reply") or fm.get("last_message") or ""
+            else:  # llm_chat
+                return fm.get("created") or ""
 
         comms.sort(key=_sort_key, reverse=True)
         comms = comms[:limit]
@@ -4579,8 +4587,8 @@ class TelegramChatHandler:
 
         lines = [f"Communications ({len(comms)} shown):"]
         for i, (_, fm, mem_type) in enumerate(comms, 1):
-            source_tag = "[email]" if mem_type == "email_thread" else "[slack]"
             if mem_type == "email_thread":
+                source_tag = "[email]"
                 subject = (fm.get("source_title") or "(no subject)")[:45]
                 sender = (fm.get("participants") or [""])[0]
                 sender_str = f" — {str(sender)[:25]}" if sender else ""
@@ -4598,12 +4606,19 @@ class TelegramChatHandler:
                         classification_suffix = " [auto]"
 
                 lines.append(f"{i}. {source_tag} {subject}{sender_str} ({date}){classification_suffix}")
-            else:
+            elif mem_type == "slack_thread":
+                source_tag = "[slack]"
                 channel = fm.get("channel") or fm.get("source_title") or "(no channel)"
                 opener = (fm.get("participants") or [""])[0]
                 opener_str = f" — {str(opener)[:25]}" if opener else ""
                 date = (fm.get("last_reply") or fm.get("created") or "")[:10]
                 lines.append(f"{i}. {source_tag} #{channel[:30]}{opener_str} ({date})")
+            else:  # llm_chat
+                platform = fm.get("platform", "llm")
+                source_tag = f"[{platform}]"
+                title = (fm.get("source_title") or "(no title)")[:45]
+                date = (fm.get("created") or "")[:10]
+                lines.append(f"{i}. {source_tag} {title} ({date})")
         lines.append("\nUse /comm <N> for details.")
         return "\n".join(lines)
 
@@ -4616,14 +4631,14 @@ class TelegramChatHandler:
         limit = 10
         show_all = False
 
-        # Parse: /comms [email|slack] [forget N...] [all] [N]
-        if args and args[0].lower() in ("email", "slack"):
+        # Parse: /comms [email|slack|llm] [forget N...] [all] [N]
+        if args and args[0].lower() in ("email", "slack", "llm"):
             type_filter = args[0].lower()
             args = args[1:]
         elif args and not args[0].isdigit() and args[0].lower() not in ("all", "forget"):
             await update.message.reply_text(
-                "Usage: /comms [email|slack] [all] [N]\n"
-                "Filter must be 'email' or 'slack'. Add 'all' to show marketing/automated emails."
+                "Usage: /comms [email|slack|llm] [all] [N]\n"
+                "Filter must be 'email', 'slack', or 'llm'. Add 'all' to show marketing/automated emails."
             )
             return
 
@@ -4683,13 +4698,25 @@ class TelegramChatHandler:
                 "",
                 summary,
             ]
-        else:
+        elif mem_type == "slack_thread":
             channel = fm.get("channel") or title
             date = (fm.get("last_reply") or fm.get("created") or "")[:10]
             lines = [
                 f"[slack] #{channel}",
                 f"Participants: {parts_str}",
                 f"Last reply: {date}",
+                "",
+                summary,
+            ]
+        else:  # llm_chat
+            platform = fm.get("platform", "llm")
+            date = (fm.get("created") or "")[:10]
+            topics = fm.get("topics", [])
+            topics_str = ", ".join(topics[:5]) if topics else "none"
+            lines = [
+                f"[{platform}] {title}",
+                f"Date: {date}",
+                f"Topics: {topics_str}",
                 "",
                 summary,
             ]
@@ -4725,6 +4752,147 @@ class TelegramChatHandler:
             lines.append(f"{i}. {title} — {date}")
 
         await update.message.reply_text("\n".join(lines))
+
+    def _llm_chat_memories(self) -> list[dict]:
+        """Load all llm-chat memories, parse frontmatter, return sorted by most-recent first.
+
+        Returns list of dicts with keys: path, platform, title, created, summary, topics, tags, header.
+        """
+        memories_dir = BRAIN_DIR / "memories"
+        chats = []
+        for f in memories_dir.glob("llm-chat-*.md"):
+            try:
+                # Get cached header (first 500 chars)
+                header = self._get_header(f)
+                fm = self._parse_frontmatter(f)
+                if fm.get("type") != "llm_chat":
+                    continue
+
+                chats.append({
+                    "path": f,
+                    "platform": fm.get("platform", "unknown"),
+                    "title": fm.get("source_title", "(no title)"),
+                    "created": fm.get("created", ""),
+                    "summary": fm.get("summary", ""),
+                    "topics": fm.get("topics", []),
+                    "tags": fm.get("tags", []),
+                    "header": header,
+                })
+            except Exception:
+                continue
+
+        # Sort by created timestamp, most recent first
+        chats.sort(key=lambda x: x["created"], reverse=True)
+        return chats
+
+    def _format_aichat_list(self, memories: list[dict]) -> str:
+        """Format llm_chat memories as a simple list (for search results)."""
+        if not memories:
+            return "No matching conversations found."
+
+        lines = [f"LLM chat history ({len(memories)} shown):\n"]
+        for i, m in enumerate(memories, 1):
+            platform = m["platform"]
+            title = m["title"][:50]
+            date = m["created"][:10] if m["created"] else "unknown"
+            lines.append(f"{i}. [{platform}] {title} ({date})")
+        lines.append("\nUse /aichat <N> for details.")
+        return "\n".join(lines)
+
+    def _format_aichat_list_grouped(self, memories: list[dict]) -> str:
+        """Format llm_chat memories grouped by platform."""
+        if not memories:
+            return "No imported LLM chats yet. Use /import_chats to get started."
+
+        # Group by platform
+        by_platform = {}
+        for m in memories:
+            platform = m["platform"]
+            by_platform.setdefault(platform, []).append(m)
+
+        lines = [f"LLM chat history ({len(memories)} shown):\n"]
+        idx = 1
+        for platform in sorted(by_platform.keys()):
+            lines.append(f"\n{platform.title()}:")
+            for m in by_platform[platform]:
+                title = m["title"][:50]
+                date = m["created"][:10] if m["created"] else "unknown"
+                # Calculate days ago
+                from datetime import datetime
+                try:
+                    created_dt = datetime.fromisoformat(m["created"])
+                    now_dt = datetime.now(created_dt.tzinfo) if created_dt.tzinfo else datetime.now()
+                    days_ago = (now_dt - created_dt).days
+                    if days_ago == 0:
+                        ago_str = "today"
+                    elif days_ago == 1:
+                        ago_str = "1 day ago"
+                    else:
+                        ago_str = f"{days_ago} days ago"
+                except Exception:
+                    ago_str = date
+
+                lines.append(f"{idx}. {title} ({ago_str})")
+                idx += 1
+
+        lines.append("\nUse /aichat <N> for details or /aichat search <query> to filter.")
+        return "\n".join(lines)
+
+    def _format_aichat_detail(self, memory: dict) -> str:
+        """Format a single llm_chat memory with full detail."""
+        title = memory["title"]
+        platform = memory["platform"]
+        created = memory["created"][:10] if memory["created"] else "unknown"
+        summary = memory["summary"] or "(no summary)"
+        topics = memory.get("topics", [])
+        tags = memory.get("tags", [])
+
+        lines = [
+            f"[{platform}] {title}",
+            f"Date: {created}",
+            "",
+            "Summary:",
+            summary,
+        ]
+
+        if topics:
+            lines.append("")
+            lines.append(f"Key topics: {', '.join(topics[:10])}")
+
+        if tags:
+            lines.append(f"Tags: {', '.join(tags[:10])}")
+
+        return "\n".join(lines)
+
+    async def cmd_aichat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Browse imported Claude/ChatGPT conversation history."""
+        if not self._check_auth(update):
+            return
+
+        args = list(context.args) if context.args else []
+        memories = self._llm_chat_memories()
+
+        # Search mode: /aichat search <query>
+        if args and args[0].lower() == "search":
+            query = " ".join(args[1:]).lower()
+            if not query:
+                await update.message.reply_text("Usage: /aichat search <query>")
+                return
+            filtered = [m for m in memories if query in m["header"].lower()]
+            await update.message.reply_text(self._format_aichat_list(filtered[:20]))
+            return
+
+        # Detail mode: /aichat <N>
+        if args and args[0].isdigit():
+            idx = int(args[0]) - 1
+            if not (0 <= idx < len(memories)):
+                await update.message.reply_text("No such entry.")
+                return
+            await update.message.reply_text(self._format_aichat_detail(memories[idx]))
+            return
+
+        # List mode (default): /aichat
+        await update.message.reply_text(self._format_aichat_list_grouped(memories[:20]))
 
     # ── Notification commands ─────────────────────────────────────────────────
 
