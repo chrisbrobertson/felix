@@ -52,7 +52,7 @@ class CircleSyncScanner:
     Circle sync scanner — rule-based one-way memory file sync to iCloud shared folders.
     """
 
-    def __init__(self, role: str = "full"):
+    def __init__(self, role: str = "full", cache=None):
         self.role = role
         self._config: dict = {}
         self._enabled: bool = False
@@ -60,6 +60,11 @@ class CircleSyncScanner:
         self._icloud_root: Path = DEFAULT_ICLOUD_ROOT
         self._scan_interval: int = DEFAULT_SCAN_INTERVAL
         self._state: dict = {}   # {circle_slug: {synced_files: {filename: mtime}, last_run: str}}
+        # Cache: MemoryCache instance for queries, or None (defaults to pass-through)
+        if cache is None:
+            from memory_cache import MemoryCache
+            cache = MemoryCache(None, MEMORIES_DIR, enabled=False)
+        self._cache = cache
 
     async def run_loop(self, stop_event: asyncio.Event) -> None:
         """Main async loop — runs every N seconds until stop_event is set."""
@@ -144,7 +149,7 @@ class CircleSyncScanner:
             return
 
         # Load all memory file frontmatters once
-        memory_files = self._load_memory_frontmatters()
+        memory_files = await self._load_memory_frontmatters()
 
         for ruleset_path in ruleset_files:
             try:
@@ -156,25 +161,23 @@ class CircleSyncScanner:
 
         self._save_state()
 
-    def _load_memory_frontmatters(self) -> dict[str, dict]:
+    async def _load_memory_frontmatters(self) -> dict[str, dict]:
         """
-        Load frontmatter from all .md files in MEMORIES_DIR.
+        Load frontmatter from all .md files in MEMORIES_DIR via cache.
         Returns {filename: frontmatter_dict}.
         """
         result = {}
         if not MEMORIES_DIR.exists():
             return result
 
-        for path in MEMORIES_DIR.glob("*.md"):
+        all_rows = await self._cache.query_all()
+        for row in all_rows:
             try:
-                # Read first 500 chars (same pattern as chat_handler caching)
-                with path.open("r", encoding="utf-8") as f:
-                    text = f.read(500)
-                fm = _parse_frontmatter(text)
+                fm = json.loads(row["frontmatter"])
                 if fm:
-                    result[path.name] = fm
+                    result[row["filename"]] = fm
             except Exception as e:
-                log.debug("Circle sync: failed to read %s: %s", path.name, e)
+                log.debug("Circle sync: failed to parse frontmatter for %s: %s", row["filename"], e)
                 continue
 
         return result

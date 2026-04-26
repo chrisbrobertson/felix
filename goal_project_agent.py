@@ -73,11 +73,16 @@ def _title_similarity(title1: str, title2: str) -> float:
 class GoalProjectAgent:
     """Fourteenth async loop: generates reports and actions for active goals/projects."""
 
-    def __init__(self, role: str = "full"):
+    def __init__(self, role: str = "full", cache=None):
         self.role = role
         self.notification_callback = None  # Set by daemon.py
         self.STATE_FILE = DEPLOY_DIR / "goal-agent-state.json"
         self.REJECTED_ACTIONS_FILE = DEPLOY_DIR / "rejected-actions.json"
+        # Cache: MemoryCache instance for queries, or None (defaults to pass-through)
+        if cache is None:
+            from memory_cache import MemoryCache
+            cache = MemoryCache(None, MEMORIES_DIR, enabled=False)
+        self._cache = cache
 
     # ── Config ────────────────────────────────────────────────────────────────
 
@@ -111,61 +116,62 @@ class GoalProjectAgent:
 
     # ── Item selection ────────────────────────────────────────────────────────
 
-    def _select_items(self) -> list:
+    async def _select_items(self) -> list:
         """Walk MEMORIES_DIR for active goals/projects. Returns list of (path, fm_dict)."""
         items = []
 
         # Goals
-        for path in MEMORIES_DIR.glob("goal-*.md"):
-            try:
-                text = path.read_text(encoding="utf-8")
-                fm = _parse_frontmatter(text)
-                if fm.get("type") != "goal":
-                    continue
-                if fm.get("agent") is False:
-                    continue
-                if fm.get("status") == "active":
-                    items.append((path, fm))
-            except Exception:
+        goal_rows = await self._cache.query_by_type("goal", status="active")
+        for row in goal_rows:
+            fm = json.loads(row["frontmatter"])
+            if fm.get("agent") is False:
                 continue
+            path = MEMORIES_DIR / row["filename"]
+            items.append((path, fm))
 
         # Projects
         ac = self._agent_config()
         include_on_hold = ac.get("include_on_hold_projects", False)
 
-        for path in MEMORIES_DIR.glob("project-*.md"):
-            # Skip candidates
-            if "project-candidate-" in path.name:
+        # Active projects
+        active_rows = await self._cache.query_by_type("project", status="active")
+        for row in active_rows:
+            # Skip candidates by filename prefix
+            if row["filename"].startswith("project-candidate-"):
                 continue
-            try:
-                text = path.read_text(encoding="utf-8")
-                fm = _parse_frontmatter(text)
-                if fm.get("type") != "project":
+            fm = json.loads(row["frontmatter"])
+            # Exclude code repos (category == "code" is now type == "code")
+            if fm.get("category") == "code":
+                continue
+            if fm.get("agent") is False:
+                continue
+            path = MEMORIES_DIR / row["filename"]
+            items.append((path, fm))
+
+        # On-hold projects if configured
+        if include_on_hold:
+            onhold_rows = await self._cache.query_by_type("project", status="on-hold")
+            for row in onhold_rows:
+                if row["filename"].startswith("project-candidate-"):
                     continue
-                # Exclude code repos (category == "code" is now type == "code")
-                # But old projects might have category field, so check both
+                fm = json.loads(row["frontmatter"])
                 if fm.get("category") == "code":
                     continue
                 if fm.get("agent") is False:
                     continue
-                status = fm.get("status")
-                if status == "active":
-                    items.append((path, fm))
-                elif status == "on-hold" and include_on_hold:
-                    items.append((path, fm))
-            except Exception:
-                continue
+                path = MEMORIES_DIR / row["filename"]
+                items.append((path, fm))
 
         return items
 
     # ── Related memory discovery ──────────────────────────────────────────────
 
-    def _find_related_memories(self, item_path: Path, item_fm: dict, last_checked: Optional[str]) -> list:
+    async def _find_related_memories(self, item_path: Path, item_fm: dict, last_checked: Optional[str]) -> list:
         """Find memories related to this goal/project. Returns list of (path, fm_dict)."""
         ac = self._agent_config()
         max_memories = ac.get("max_memories_per_item", 20)
 
-        related = set()
+        related = []
         item_tags = set(item_fm.get("tags") or [])
         item_title = item_fm.get("source_title", "")
         inferred_from = item_fm.get("inferred_from") or []
@@ -182,72 +188,60 @@ class GoalProjectAgent:
             except Exception:
                 pass
 
-        # Walk all memories
-        for mem_path in MEMORIES_DIR.glob("*.md"):
-            # Skip self, action files, commitment files, calendar events
-            if mem_path == item_path:
+        # Query all memories excluding action/commitment/goal/project/calendar_event
+        exclude_types = ["action", "commitment", "goal", "project", "calendar_event"]
+        all_rows = await self._cache.query_all(exclude_types=exclude_types)
+
+        for row in all_rows:
+            filename = row["filename"]
+            mtime = row["mtime"]
+
+            # Skip self
+            if filename == item_path.name:
                 continue
-            if mem_path.name.startswith("action-"):
-                continue
-            if mem_path.name.startswith("commitment-"):
-                continue
-            if mem_path.name.startswith("calendar-event-"):
-                continue
-            if mem_path.name.startswith("goal-"):
-                continue
-            if mem_path.name.startswith("project-"):
+
+            # Recency filter
+            if cutoff_ts and mtime <= cutoff_ts:
                 continue
 
             try:
-                # Recency filter
-                if cutoff_ts:
-                    mtime = mem_path.stat().st_mtime
-                    if mtime <= cutoff_ts:
-                        continue
-
-                # Read header only
-                header = mem_path.read_text(encoding="utf-8")[:500]
-                mem_fm = _parse_frontmatter(header)
+                mem_fm = json.loads(row["frontmatter"])
 
                 # Source 1: inferred_from
-                if mem_path.name in inferred_from:
-                    related.add(mem_path)
+                if filename in inferred_from:
+                    related.append((row, mem_fm, mtime))
                     continue
 
                 # Source 2: tag overlap
                 mem_tags = set(mem_fm.get("tags") or [])
                 if item_tags & mem_tags:
-                    related.add(mem_path)
+                    related.append((row, mem_fm, mtime))
                     continue
 
                 # Source 3: title Jaccard >= 0.3
                 mem_title = mem_fm.get("source_title", "")
                 if _title_similarity(item_title, mem_title) >= 0.3:
-                    related.add(mem_path)
+                    related.append((row, mem_fm, mtime))
                     continue
 
                 # Source 4: participant overlap
                 mem_participants = set(mem_fm.get("participants") or [])
                 if note_words & mem_participants:
-                    related.add(mem_path)
+                    related.append((row, mem_fm, mtime))
                     continue
 
             except Exception:
                 continue
 
         # Sort by mtime descending, cap at max
-        related_sorted = sorted(related, key=lambda p: p.stat().st_mtime, reverse=True)
+        related_sorted = sorted(related, key=lambda x: x[2], reverse=True)
         related_sorted = related_sorted[:max_memories]
 
-        # Return with frontmatter dicts
+        # Return as list of (path, fm_dict)
         result = []
-        for p in related_sorted:
-            try:
-                header = p.read_text(encoding="utf-8")[:500]
-                fm = _parse_frontmatter(header)
-                result.append((p, fm))
-            except Exception:
-                continue
+        for row, fm, _ in related_sorted:
+            path = MEMORIES_DIR / row["filename"]
+            result.append((path, fm))
 
         return result
 
@@ -259,15 +253,12 @@ class GoalProjectAgent:
         min_confidence = ac.get("min_confidence", 0.6)
 
         # Count pending actions already proposed for this item
-        pending_actions_count = 0
         source_slug = _slugify(item_fm.get("source_title", item_path.stem))
-        for action_file in MEMORIES_DIR.glob(f"action-{source_slug}-*.md"):
-            try:
-                action_fm = _parse_frontmatter(action_file.read_text(encoding="utf-8"))
-                if action_fm.get("status") == "pending":
-                    pending_actions_count += 1
-            except Exception:
-                continue
+        action_rows = await self._cache.query_by_prefix(f"action-{source_slug}")
+        pending_actions_count = sum(
+            1 for row in action_rows
+            if json.loads(row["frontmatter"]).get("status") == "pending"
+        )
 
         # Build prompt
         item_type = item_fm.get("type", "goal")
@@ -645,7 +636,7 @@ class GoalProjectAgent:
         last_checked = state_entry.get("last_checked")
 
         # Find related memories
-        related = self._find_related_memories(item_path, item_fm, last_checked)
+        related = await self._find_related_memories(item_path, item_fm, last_checked)
 
         # Staleness check
         report = None
@@ -741,7 +732,7 @@ class GoalProjectAgent:
         self._check_superseded_actions()
 
         # Select items
-        items = self._select_items()
+        items = await self._select_items()
         if max_items > 0:
             items = items[:max_items]
 

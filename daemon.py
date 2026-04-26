@@ -186,13 +186,13 @@ async def main():
         commitment_tracker = CommitmentTracker(role=role)
         contact_tracker = ContactTracker(role=role)
         project_inference_scanner = ProjectInferenceScanner(role=role, cache=cache)
-        goal_agent = GoalProjectAgent(role=role)
-        synthesis_scanner = SynthesisScanner(role=role)
+        goal_agent = GoalProjectAgent(role=role, cache=cache)
+        synthesis_scanner = SynthesisScanner(role=role, cache=cache)
         quota_scanner = QuotaScanner(deploy_dir, config, role)
 
         # Instantiate circle sync scanner if enabled
         circles_cfg = config.get("circles", {})
-        circle_sync_scanner = CircleSyncScanner(role=role) if circles_cfg.get("enabled", False) else None
+        circle_sync_scanner = CircleSyncScanner(role=role, cache=cache) if circles_cfg.get("enabled", False) else None
 
         # Build scanners dict for backfill command (tier-1 scanners already instantiated)
         scanners_dict = {

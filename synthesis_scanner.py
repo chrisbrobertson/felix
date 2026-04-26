@@ -105,7 +105,7 @@ def _cluster_hash(paths: list[Path]) -> str:
     return hashlib.sha1(key.encode()).hexdigest()
 
 
-def _build_clusters(memories_dir: Path) -> list[list[Path]]:
+async def _build_clusters(cache, memories_dir: Path) -> list[list[Path]]:
     """
     Build clusters of related memories.
 
@@ -115,17 +115,14 @@ def _build_clusters(memories_dir: Path) -> list[list[Path]]:
     memory_files = []
     metadata = {}
 
-    # Read all memory files and parse frontmatter
-    for f in memories_dir.glob("*.md"):
-        fm = _parse_frontmatter(f)
-        mem_type = fm.get("type", "")
+    # Read all memory files and parse frontmatter via cache
+    all_rows = await cache.query_all(exclude_types=list(SKIP_TYPES))
 
-        # Skip excluded types
-        if mem_type in SKIP_TYPES:
-            continue
-
-        memory_files.append(f)
-        metadata[f] = fm
+    for row in all_rows:
+        fm = json.loads(row["frontmatter"])
+        path = memories_dir / row["filename"]
+        memory_files.append(path)
+        metadata[path] = fm
 
     # Build adjacency list for graph
     related = {f: set() for f in memory_files}
@@ -224,8 +221,13 @@ async def _synthesize(cluster_paths: list[Path], config: dict) -> Optional[str]:
 
 
 class SynthesisScanner:
-    def __init__(self, role: str = "full"):
+    def __init__(self, role: str = "full", cache=None):
         self.role = role
+        # Cache: MemoryCache instance for queries, or None (defaults to pass-through)
+        if cache is None:
+            from memory_cache import MemoryCache
+            cache = MemoryCache(None, MEMORIES_DIR, enabled=False)
+        self._cache = cache
 
     async def run_loop(self, stop_event: asyncio.Event):
         """Main loop — runs every 3600 seconds (1 hour) by default."""
@@ -253,7 +255,7 @@ class SynthesisScanner:
         Returns:
             Number of synthesis memories written
         """
-        clusters = _build_clusters(MEMORIES_DIR)
+        clusters = await _build_clusters(self._cache, MEMORIES_DIR)
         state = load_state()
         processed = set(state.get("processed_clusters", []))
 
