@@ -101,7 +101,7 @@ def _chunk_message(text: str, max_len: int = TG_MAX_CHARS) -> list:
 # ── NotificationManager ───────────────────────────────────────────────────────
 
 class NotificationManager:
-    def __init__(self, bot=None, deploy_dir: Path = DEPLOY_DIR, transports: Optional[list] = None):
+    def __init__(self, bot=None, deploy_dir: Path = DEPLOY_DIR, transports: Optional[list] = None, cache=None):
         self.bot = bot
         self.deploy_dir = deploy_dir
         self._state_cache = None
@@ -109,6 +109,7 @@ class NotificationManager:
         # When set, send_message delivers to each transport instead of (or in addition to)
         # the legacy self.bot. Phase 4 will make this the primary path.
         self._transports: list = transports or []
+        self._cache = cache  # MemoryCache instance for queries
 
     def _load_config(self) -> dict:
         """Read config.yaml via the shared iCloud-resilient loader in utils."""
@@ -319,8 +320,9 @@ class NotificationManager:
 
         # Calendar events for today
         calendar_events = []
-        for f in MEMORIES_DIR.glob("calendar-event-*.md"):
-            fm = _parse_frontmatter(await read_text_with_retry_async(f))
+        entries = await self._cache.query_by_prefix("calendar-event-")
+        for entry in entries:
+            fm = json.loads(entry["frontmatter"])
             if fm.get("type") != "calendar_event":
                 continue
             start_time_str = fm.get("start_time")
@@ -349,12 +351,9 @@ class NotificationManager:
         # Commitments due today and overdue
         due_today = []
         overdue = []
-        for f in MEMORIES_DIR.glob("commitment-*.md"):
-            fm = _parse_frontmatter(await read_text_with_retry_async(f))
-            if fm.get("type") != "commitment":
-                continue
-            if fm.get("status") != "active":
-                continue
+        entries = await self._cache.query_by_type("commitment", status="active")
+        for entry in entries:
+            fm = json.loads(entry["frontmatter"])
             due_date_str = fm.get("due_date")
             if not due_date_str:
                 continue
@@ -402,12 +401,9 @@ class NotificationManager:
         stale_days = config.get("stale_waiting_on_days", 7)
         cutoff = now - timedelta(days=stale_days)
         stale_waiting = []
-        for f in MEMORIES_DIR.glob("commitment-*.md"):
-            fm = _parse_frontmatter(await read_text_with_retry_async(f))
-            if fm.get("type") != "commitment":
-                continue
-            if fm.get("status") != "active":
-                continue
+        entries = await self._cache.query_by_type("commitment", status="active")
+        for entry in entries:
+            fm = json.loads(entry["frontmatter"])
             if fm.get("commitment_type") != "waiting_on":
                 continue
             last_scanned_str = fm.get("last_scanned")
@@ -434,11 +430,12 @@ class NotificationManager:
         # Agent-proposed actions (pending, last 24h)
         pending_actions = []
         cutoff_24h = now - timedelta(hours=24)
-        for f in sorted(MEMORIES_DIR.glob("action-*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
+        entries = await self._cache.query_by_type("agent_action", status="pending")
+        # Sort by mtime descending
+        entries_sorted = sorted(entries, key=lambda e: e["mtime"], reverse=True)
+        for entry in entries_sorted:
             try:
-                fm = _parse_frontmatter(await read_text_with_retry_async(f))
-                if fm.get("type") != "agent_action" or fm.get("status") != "pending":
-                    continue
+                fm = json.loads(entry["frontmatter"])
                 proposed_at_str = fm.get("proposed_at", "")
                 if proposed_at_str:
                     proposed_at = datetime.fromisoformat(str(proposed_at_str))
@@ -493,12 +490,13 @@ class NotificationManager:
         new_count = 0
         yesterday_midnight = datetime.combine(yesterday, datetime.min.time())
         yesterday_midnight = yesterday_midnight.replace(tzinfo=now.tzinfo)
-        for f in MEMORIES_DIR.glob("*.md"):
-            if f.name.startswith("commitment-") or f.name.startswith("calendar-event-"):
-                continue
+        # Query cache for all memories, exclude transient types
+        all_entries = []
+        for type_ in ["webpage", "email_thread", "meeting_transcript", "slack_thread", "code", "goal", "project", "contact"]:
+            all_entries.extend(await self._cache.query_by_type(type_))
+        for entry in all_entries:
             try:
-                mtime = f.stat().st_mtime
-                mtime_dt = datetime.fromtimestamp(mtime, tz=now.tzinfo)
+                mtime_dt = datetime.fromtimestamp(entry["mtime"], tz=now.tzinfo)
                 if mtime_dt > yesterday_midnight:
                     new_count += 1
             except Exception:
@@ -521,12 +519,9 @@ class NotificationManager:
 
         sent_alerts = set(state.get("sent_commitment_alerts", []))
 
-        for f in MEMORIES_DIR.glob("commitment-*.md"):
-            fm = _parse_frontmatter(await read_text_with_retry_async(f))
-            if fm.get("type") != "commitment":
-                continue
-            if fm.get("status") != "active":
-                continue
+        entries = await self._cache.query_by_type("commitment", status="active")
+        for entry in entries:
+            fm = json.loads(entry["frontmatter"])
 
             due_date_str = fm.get("due_date")
             if not due_date_str:
@@ -538,7 +533,7 @@ class NotificationManager:
                 continue
 
             # Extract commitment ID from filename
-            match = re.search(r'-([a-f0-9]{12})\.md$', f.name)
+            match = re.search(r'-([a-f0-9]{12})\.md$', entry["filename"])
             if not match:
                 continue
             commitment_id = match.group(1)
@@ -605,13 +600,10 @@ class NotificationManager:
         now = self._get_local_now()
         today = now.date()
 
-        for path in MEMORIES_DIR.glob("goal-*.md"):
+        entries = await self._cache.query_by_type("goal", status="active")
+        for entry in entries:
             try:
-                text = await read_text_with_retry_async(path)
-                fm = _parse_frontmatter(text)
-
-                if fm.get("status") != "active":
-                    continue
+                fm = json.loads(entry["frontmatter"])
 
                 due_raw = fm.get("due_date")
                 if not due_raw:
@@ -623,7 +615,7 @@ class NotificationManager:
                     continue
 
                 # Stable ID from filename: extract the 6-char hex suffix
-                goal_id = path.stem.rsplit("-", 1)[-1]
+                goal_id = Path(entry["filename"]).stem.rsplit("-", 1)[-1]
 
                 days_until = (due - today).days
 
@@ -636,7 +628,7 @@ class NotificationManager:
                     if 0 <= days_until <= horizon:
                         # Haven't fired yet, within horizon - fire and stop
                         msg = (
-                            f"⏰ Goal deadline approaching: \"{fm.get('source_title', path.stem)}\" "
+                            f"⏰ Goal deadline approaching: \"{fm.get('source_title', Path(entry['filename']).stem)}\" "
                             f"— due in {days_until} day{'s' if days_until != 1 else ''} ({due})"
                         )
                         await self.send_message(msg)
@@ -644,7 +636,7 @@ class NotificationManager:
                         log.info("Sent %d-day goal alert for %s", horizon, goal_id)
                         break  # Only fire one alert per goal per check
             except Exception:
-                log.exception("Error checking goal alerts for %s", path.name)
+                log.exception("Error checking goal alerts for %s", entry["filename"])
 
         state["sent_goal_alerts"] = list(sent_alerts)
 
@@ -660,18 +652,14 @@ class NotificationManager:
         now = self._get_local_now()
         today = now.date()
 
-        for path in MEMORIES_DIR.glob("project-*.md"):
+        entries = await self._cache.query_by_type("project")
+        for entry in entries:
             # Skip candidates
-            if "project-candidate-" in path.name:
+            if "project-candidate-" in entry["filename"]:
                 continue
 
             try:
-                text = await read_text_with_retry_async(path)
-                fm = _parse_frontmatter(text)
-
-                # Skip candidates that might slip through
-                if fm.get("type") != "project":
-                    continue
+                fm = json.loads(entry["frontmatter"])
 
                 # Status filter: active or on-hold
                 status = fm.get("status")
@@ -688,7 +676,7 @@ class NotificationManager:
                     continue
 
                 # Stable ID from filename: extract the 6-char hex suffix
-                project_id = path.stem.rsplit("-", 1)[-1]
+                project_id = Path(entry["filename"]).stem.rsplit("-", 1)[-1]
 
                 days_until = (due - today).days
 
@@ -701,7 +689,7 @@ class NotificationManager:
                     if 0 <= days_until <= horizon:
                         # Haven't fired yet, within horizon - fire and stop
                         msg = (
-                            f"⏰ Project deadline approaching: \"{fm.get('source_title', path.stem)}\" "
+                            f"⏰ Project deadline approaching: \"{fm.get('source_title', Path(entry['filename']).stem)}\" "
                             f"— due in {days_until} day{'s' if days_until != 1 else ''} ({due})"
                         )
                         await self.send_message(msg)
@@ -709,7 +697,7 @@ class NotificationManager:
                         log.info("Sent %d-day project alert for %s", horizon, project_id)
                         break  # Only fire one alert per project per check
             except Exception:
-                log.exception("Error checking project alerts for %s", path.name)
+                log.exception("Error checking project alerts for %s", entry["filename"])
 
         state["sent_project_alerts"] = list(sent_alerts)
 
@@ -726,8 +714,9 @@ class NotificationManager:
 
         sent_meetings = set(state.get("sent_pre_meeting", []))
 
-        for f in MEMORIES_DIR.glob("calendar-event-*.md"):
-            fm = _parse_frontmatter(await read_text_with_retry_async(f))
+        entries = await self._cache.query_by_prefix("calendar-event-")
+        for entry in entries:
+            fm = json.loads(entry["frontmatter"])
             if fm.get("type") != "calendar_event":
                 continue
 
@@ -754,7 +743,7 @@ class NotificationManager:
 
             # Use the full filename stem as the dedup key so _prune_sent_alerts
             # can look up the file directly (no wildcard glob needed).
-            event_id = f.stem  # e.g. "calendar-event-macstudio-2026-04-16-dentist-def456"
+            event_id = Path(entry["filename"]).stem  # e.g. "calendar-event-macstudio-2026-04-16-dentist-def456"
 
             if event_id in sent_meetings:
                 continue  # Already sent
@@ -780,13 +769,13 @@ class NotificationManager:
         if not config.get("enabled", True):
             return
 
-        cal_files = list(MEMORIES_DIR.glob("calendar-event-*.md"))
-        if not cal_files:
+        entries = await self._cache.query_by_prefix("calendar-event-")
+        if not entries:
             # No files ever written — could be a fresh install; stay silent.
             return
 
         try:
-            most_recent = max(f.stat().st_mtime for f in cal_files)
+            most_recent = max(e["mtime"] for e in entries)
         except Exception:
             return
 
@@ -853,10 +842,10 @@ class NotificationManager:
             lines.append("\nAttendees:")
             for participant in participants[:10]:  # Limit to 10
                 # Try to find contact file
-                contact_files = list(MEMORIES_DIR.glob(f"contact-*.md"))
+                contact_entries = await self._cache.query_by_prefix("contact-")
                 contact_fm = None
-                for cf in contact_files:
-                    cfm = _parse_frontmatter(await read_text_with_retry_async(cf))
+                for entry in contact_entries:
+                    cfm = json.loads(entry["frontmatter"])
                     name = cfm.get("name", "")
                     email = cfm.get("email", "")
                     if participant.lower() in name.lower() or participant.lower() in email.lower():
@@ -872,12 +861,9 @@ class NotificationManager:
 
         # Open commitments involving attendees
         open_commitments = []
-        for f in MEMORIES_DIR.glob("commitment-*.md"):
-            fm = _parse_frontmatter(await read_text_with_retry_async(f))
-            if fm.get("type") != "commitment":
-                continue
-            if fm.get("status") != "active":
-                continue
+        commitment_entries = await self._cache.query_by_type("commitment", status="active")
+        for entry in commitment_entries:
+            fm = json.loads(entry["frontmatter"])
 
             owner = fm.get("owner", "").lower()
             recipient = fm.get("recipient", "").lower()

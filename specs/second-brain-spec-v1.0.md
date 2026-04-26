@@ -23,6 +23,10 @@
 4. **The daemon is the brain stem.** One Python process, always running, three jobs.
 5. **Telegram is the terminal.** All human interaction goes through the bot.
 
+## 1.1. Key Design Decisions
+
+**Local SQLite read-cache:** All 14 daemon loops on the full-role machine read memories via `MemoryCache` (backed by `~/secondbrain/memory-cache.sqlite`), never directly from `MEMORIES_DIR`. iCloud remains the authoritative store and the watcher → full transport; the cache is a derived read-side accelerator only. The watcher role does not run the cache — it reads only its own write-namespace from iCloud directly. Cache misses fall through to `read_text_with_retry_async`. Two-layer invalidation: immediate `cache.invalidate()` on local writes, 60-second sweep for iCloud-arrived files. The cache is fully derivative — `rm memory-cache.sqlite` at any time and it repopulates lazily.
+
 ---
 
 ## 2. Directory Layout

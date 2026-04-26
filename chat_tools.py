@@ -6,8 +6,12 @@ but add_goal and add_project are deliberate exceptions — natural-language
 creation is the whole point of those operations.
 """
 import logging
+from pathlib import Path
 
 log = logging.getLogger("chat-tools")
+
+# iCloud memories directory — distinct from SECOND_BRAIN_DIR (deploy dir)
+MEMORIES_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain/memories"
 
 TOOLS: list[dict] = [
     {
@@ -419,10 +423,7 @@ async def _call(name: str, arguments: dict, handler):
         return await _discard_pending(handler)
     if name == "add_goal":
         from goals_tracker import GoalManager
-        from pathlib import Path
-        import os
-        memories_dir = Path(os.environ.get("SECOND_BRAIN_DIR", Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain")) / "memories"
-        gm = GoalManager(memories_dir, handler._config if hasattr(handler, "_config") else {})
+        gm = GoalManager(MEMORIES_DIR, handler._config if hasattr(handler, "_config") else {})
         try:
             path = gm.create_goal(
                 title=arguments.get("title", ""),
@@ -436,10 +437,7 @@ async def _call(name: str, arguments: dict, handler):
             return f"Error: {e}"
     if name == "add_project":
         from goals_tracker import GoalManager
-        from pathlib import Path
-        import os
-        memories_dir = Path(os.environ.get("SECOND_BRAIN_DIR", Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain")) / "memories"
-        gm = GoalManager(memories_dir, handler._config if hasattr(handler, "_config") else {})
+        gm = GoalManager(MEMORIES_DIR, handler._config if hasattr(handler, "_config") else {})
         try:
             path = gm.create_project(
                 title=arguments.get("title", ""),
@@ -494,16 +492,14 @@ async def _call(name: str, arguments: dict, handler):
                 f"## Context\n\nCaptured via add_feature tool at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n\n"
                 f"## Notes\n\n"
             )
-        memories_dir = Path(os.environ.get(
-            "SECOND_BRAIN_DIR",
-            Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
-        )) / "memories"
-        memories_dir.mkdir(parents=True, exist_ok=True)
+        MEMORIES_DIR.mkdir(parents=True, exist_ok=True)
         content = f"---\n{yaml.dump(fm, sort_keys=False, allow_unicode=True)}---\n\n{body}"
-        target = memories_dir / filename
+        target = MEMORIES_DIR / filename
         tmp = target.with_suffix(".tmp")
         tmp.write_text(content)
         os.rename(tmp, target)
+        # NOTE: This write bypasses memory_writer, so cache won't auto-invalidate.
+        # The 60s sweep loop will catch it.
         label = "Bug" if kind == "bug" else "Feature"
         return f"{label} captured: '{clean_desc[:60]}' (ID: {id_hash})"
     raise ValueError(f"unknown tool {name!r}")

@@ -538,6 +538,7 @@ Muted state persists across daemon restarts. `/briefing` works even when muted �
 | `/search <type> <query>` | Filter to one type: `email`, `slack`, `meeting`, `goal`, `project`, `code`, `commitment`, `event`, `contact`, `web` |
 | `/memory <N>` | Show full detail of item N from last list or search |
 | `/delete <N>` | Delete item N from last list or search |
+| `/rebuild_cache` | Force full rebuild of the SQLite memory cache. Use when cache seems stale or after manual edits to iCloud memories. |
 | **Proactive notifications** | |
 | `/briefing` | Trigger today's briefing now (works even when muted): today's calendar, due/overdue commitments, new memories |
 | `/mute` | Suppress all proactive notifications (briefings, pre-meeting pushes, deadline alerts) |
@@ -586,6 +587,7 @@ Runtime state (local per machine):
 ├── seen-urls                       # processed URLs (browser watcher)
 ├── errors.log                      # LLM API errors
 ├── execution-log.jsonl             # watcher-node skill execution log
+├── memory-cache.sqlite             # derived SQLite read-cache of all memory files; rebuilds automatically
 ├── email-scanner-state.json        # high-water ROWID for email scanner
 ├── zoom-scanner-state.json         # processed meeting UUIDs
 ├── commitment-scanner-state.json   # processed file mtimes
@@ -1081,7 +1083,19 @@ skill_creation:
   model_route: chat                 # LiteLLM route for seed generation (claude-sonnet)
   rejection_cooldown_hours: 24      # hours before a rejected content type can re-trigger
   max_graduation_attempts: 3        # skill marked 'failed' after this many failed graduations
+
+daemon:
+  memory_cache:
+    enabled: true                   # SQLite read-cache for memory files (full role only)
 ```
+
+The memory cache (`~/secondbrain/memory-cache.sqlite`) is a derived SQLite database that mirrors all iCloud memory files for fast queries. It eliminates read amplification during chat context loading and notification assembly — query operations that would otherwise glob and parse hundreds of files now run as indexed SQL queries.
+
+**Two-layer invalidation:**
+1. Immediate invalidation after local writes (via `memory_writer.py`)
+2. 60-second sweep loop to catch watcher-originated iCloud arrivals
+
+Safe to delete at any time — it rebuilds lazily on next query. Use `/rebuild_cache` via Telegram to force a full rebuild. Disable with `daemon.memory_cache.enabled: false` to revert to direct iCloud reads.
 
 ---
 

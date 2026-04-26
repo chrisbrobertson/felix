@@ -36,6 +36,7 @@ def brain_dir(tmp_path):
 
 @pytest.fixture
 def handler(brain_dir, tmp_path):
+    from memory_cache import MemoryCache
     mock_app = MagicMock()
     mock_builder = MagicMock()
     mock_builder.token.return_value = mock_builder
@@ -44,6 +45,9 @@ def handler(brain_dir, tmp_path):
     deploy_dir = tmp_path / "deploy"
     deploy_dir.mkdir(exist_ok=True)
 
+    # Create cache in pass-through mode for tests
+    cache = MemoryCache(None, brain_dir / "memories", enabled=False)
+
     with patch.object(ch, "BRAIN_DIR", brain_dir), \
          patch.object(ch, "DEPLOY_DIR", deploy_dir), \
          patch.object(ch.TelegramChatHandler, "PENDING_FILE", deploy_dir / "pending-replies.json"), \
@@ -51,7 +55,7 @@ def handler(brain_dir, tmp_path):
          patch("chat_handler.ApplicationBuilder", return_value=mock_builder), \
          patch("chat_handler.SkillExecutor"), \
          patch.dict(os.environ, {"GITHUB_PAT": "", "GITHUB_REPO": ""}, clear=False):
-        h = ch.TelegramChatHandler()
+        h = ch.TelegramChatHandler(cache=cache)
         h.allowed_user_id = 12345
         yield h
 

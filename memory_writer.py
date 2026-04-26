@@ -55,6 +55,10 @@ def _extract_summary(body: str) -> str:
 
 
 class MemoryWriter:
+    def __init__(self, cache=None):
+        """Initialize MemoryWriter with optional cache for invalidation."""
+        self._cache = cache
+
     async def write(self, entry: dict, body: str, depth: str = "standard") -> str:
         MEMORIES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -108,5 +112,9 @@ class MemoryWriter:
         tmp_path = target.with_suffix(".tmp")
         tmp_path.write_text(content)
         os.rename(tmp_path, target)
+
+        # Invalidate cache to pick up the new file
+        if self._cache is not None:
+            await self._cache.invalidate(filename)
 
         return filename

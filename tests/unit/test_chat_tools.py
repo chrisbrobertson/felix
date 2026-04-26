@@ -120,35 +120,38 @@ async def test_dispatch_logs_success(mock_handler, caplog):
 
 async def test_add_feature_writes_file(mock_handler, tmp_path, monkeypatch):
     """add_feature creates a feature_request file with kind:feature."""
-    import os
-    monkeypatch.setenv("SECOND_BRAIN_DIR", str(tmp_path))
+    from unittest.mock import patch
     memories_dir = tmp_path / "memories"
-    result = await chat_tools.dispatch(
-        "add_feature", {"description": "add dark mode support"}, mock_handler
-    )
-    assert "Feature captured" in result
-    files = list(memories_dir.glob("feature-request-*.md"))
-    assert len(files) == 1
-    content = files[0].read_text()
-    assert "kind: feature" in content
-    assert "add dark mode support" in content
-    assert "status: new" in content
+    memories_dir.mkdir()
+    with patch.object(chat_tools, "MEMORIES_DIR", memories_dir):
+        result = await chat_tools.dispatch(
+            "add_feature", {"description": "add dark mode support"}, mock_handler
+        )
+        assert "Feature captured" in result
+        files = list(memories_dir.glob("feature-request-*.md"))
+        assert len(files) == 1
+        content = files[0].read_text()
+        assert "kind: feature" in content
+        assert "add dark mode support" in content
+        assert "status: new" in content
 
 
 async def test_add_bug_writes_file(mock_handler, tmp_path, monkeypatch):
     """add_bug creates a feature_request file with kind:bug."""
-    monkeypatch.setenv("SECOND_BRAIN_DIR", str(tmp_path))
+    from unittest.mock import patch
     memories_dir = tmp_path / "memories"
-    result = await chat_tools.dispatch(
-        "add_bug", {"description": "calendar alerts fire twice"}, mock_handler
-    )
-    assert "Bug captured" in result
-    files = list(memories_dir.glob("feature-request-*.md"))
-    assert len(files) == 1
-    content = files[0].read_text()
-    assert "kind: bug" in content
-    assert "calendar alerts fire twice" in content
-    assert "## Bug" in content
+    memories_dir.mkdir()
+    with patch.object(chat_tools, "MEMORIES_DIR", memories_dir):
+        result = await chat_tools.dispatch(
+            "add_bug", {"description": "calendar alerts fire twice"}, mock_handler
+        )
+        assert "Bug captured" in result
+        files = list(memories_dir.glob("feature-request-*.md"))
+        assert len(files) == 1
+        content = files[0].read_text()
+        assert "kind: bug" in content
+        assert "calendar alerts fire twice" in content
+        assert "## Bug" in content
 
 
 async def test_add_feature_empty_description(mock_handler, tmp_path, monkeypatch):
@@ -304,7 +307,7 @@ async def test_add_goal_tool_dispatch_creates_file(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
-    with patch.dict("os.environ", {"SECOND_BRAIN_DIR": str(tmp_path)}, clear=False):
+    with patch.object(chat_tools, "MEMORIES_DIR", memories_dir):
         result = await chat_tools.dispatch(
             "add_goal",
             {"title": "Run a 5K", "category": "personal", "due_date": "2026-06-30", "priority": "medium"},
@@ -338,7 +341,7 @@ async def test_add_project_tool_dispatch_creates_file(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
-    with patch.dict("os.environ", {"SECOND_BRAIN_DIR": str(tmp_path)}, clear=False):
+    with patch.object(chat_tools, "MEMORIES_DIR", memories_dir):
         result = await chat_tools.dispatch(
             "add_project",
             {"title": "Q2 rollout", "category": "work", "due_date": "2026-07-01"},

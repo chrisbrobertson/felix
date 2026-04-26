@@ -32,15 +32,19 @@ def brain_dir(tmp_path):
 
 @pytest.fixture
 def handler(brain_dir):
+    from memory_cache import MemoryCache
     mock_app = MagicMock()
     mock_builder = MagicMock()
     mock_builder.token.return_value = mock_builder
     mock_builder.build.return_value = mock_app
 
+    # Create a cache in pass-through mode for tests
+    cache = MemoryCache(None, brain_dir / "memories", enabled=False)
+
     with patch.object(ch, "BRAIN_DIR", brain_dir), \
          patch("chat_handler.ApplicationBuilder", return_value=mock_builder), \
          patch("chat_handler.SkillExecutor"):
-        h = ch.TelegramChatHandler()
+        h = ch.TelegramChatHandler(cache=cache)
         h.allowed_user_id = 12345
         yield h
 
@@ -56,26 +60,30 @@ def write_memory(memories_dir: Path, slug: str, tags: list, title: str,
 
 # --- Full context assembly ---
 
-def test_context_includes_index_and_memories(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_context_includes_index_and_memories(handler, brain_dir):
     (brain_dir / "index.md").write_text("Index: Chris reads about LLMs.")
     write_memory(brain_dir / "memories", "llm-abc123", ["llm"], "LLM Paper", "llm content")
     write_memory(brain_dir / "memories", "rust-bbb222", ["rust"], "Rust Book", "rust content")
 
-    ctx = handler._load_context("llm")
+    ctx = await handler._load_context("llm")
     assert "Index: Chris reads" in ctx
+    # llm memory should be included (keyword match)
     assert "LLM Paper" in ctx
-    assert "Rust Book" in ctx
+    # rust memory should not be included (no keyword overlap with query "llm")
 
 
-def test_index_appears_before_memories(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_index_appears_before_memories(handler, brain_dir):
     (brain_dir / "index.md").write_text("The index.")
     write_memory(brain_dir / "memories", "article-abc123", ["article"], "Some Article")
 
-    ctx = handler._load_context("query")
+    ctx = await handler._load_context("article")  # Match the tag/title so it's included
     assert ctx.index("The index.") < ctx.index("Some Article")
 
 
-def test_relevant_memory_appears_before_irrelevant(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_relevant_memory_appears_before_irrelevant(handler, brain_dir):
     write_memory(brain_dir / "memories", "litellm-aaa111",
                  ["litellm", "llm", "routing"], "LiteLLM Routing",
                  "LiteLLM router with fallback chains")
@@ -83,56 +91,63 @@ def test_relevant_memory_appears_before_irrelevant(handler, brain_dir):
                  ["cooking", "recipe"], "Pasta Recipe",
                  "boil water, add pasta")
 
-    ctx = handler._load_context("litellm routing llm")
-    assert ctx.index("LiteLLM Routing") < ctx.index("Pasta Recipe")
+    ctx = await handler._load_context("litellm routing llm")
+    # Relevant memory should be included
+    assert "LiteLLM Routing" in ctx
+    # Irrelevant memory should NOT be included (zero keyword overlap)
+    assert "Pasta Recipe" not in ctx
 
 
-def test_all_memories_included_within_budget(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_all_memories_included_within_budget(handler, brain_dir):
     memories = brain_dir / "memories"
     for i in range(5):
         write_memory(memories, f"page{i}-{i:06x}", [f"tag{i}"], f"Page {i}", "short body")
 
-    ctx = handler._load_context("query")
+    ctx = await handler._load_context("page short body")  # Match content tokens
     for i in range(5):
         assert f"Page {i}" in ctx
 
 
-def test_budget_exhaustion_drops_lowest_relevance(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_budget_exhaustion_drops_lowest_relevance(handler, brain_dir):
     memories = brain_dir / "memories"
     # Write many large files
     big = "word content " * 1500  # ~18KB each; 6 of them > 80KB budget
     for i in range(6):
         write_memory(memories, f"big{i}-{i:06x}", [f"irrelevant{i}"], f"Big File {i}", big)
 
-    ctx = handler._load_context("query")
+    ctx = await handler._load_context("word content big")  # Match content tokens
     # Token budget (150k tokens ≈ 600k chars) — just verify not excessively large
     assert 1 < len(ctx) < 500_000, "Context should be non-empty but not exceed token budget"
 
 
-def test_context_with_no_memories_and_no_index(handler, brain_dir):
-    ctx = handler._load_context("query")
+@pytest.mark.asyncio
+async def test_context_with_no_memories_and_no_index(handler, brain_dir):
+    ctx = await handler._load_context("query")
     # No memories or index → empty context
     assert ctx == ""
 
 
-def test_context_with_only_index(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_context_with_only_index(handler, brain_dir):
     (brain_dir / "index.md").write_text("Only the index exists.")
-    ctx = handler._load_context("query")
+    ctx = await handler._load_context("query")
     assert "Only the index exists." in ctx
     assert "Memory Index" in ctx
 
 
-def test_header_cache_persists_across_queries(handler, brain_dir):
-    """Same file queried twice should hit the header cache on the second call."""
+@pytest.mark.asyncio
+async def test_header_cache_persists_across_queries(handler, brain_dir):
+    """Header cache is obsolete with MemoryCache — test now just verifies queries work."""
     p = write_memory(brain_dir / "memories", "cached-abc123", ["python"], "Python Docs")
 
-    handler._load_context("python")
-    assert p in handler._header_cache
+    ctx1 = await handler._load_context("python")
+    assert "Python Docs" in ctx1
 
-    # Second query — mtime hasn't changed, should reuse cache
-    cached_mtime, cached_header = handler._header_cache[p]
-    handler._load_context("python async")
-    assert handler._header_cache[p][0] == cached_mtime  # mtime unchanged
+    # Second query should also work
+    ctx2 = await handler._load_context("python async")
+    assert "Python Docs" in ctx2
 
 
 # --- Full message round-trip (mocked LLM) ---

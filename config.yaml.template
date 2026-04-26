@@ -15,6 +15,9 @@ daemon:
   #              Only needs GEMINI_API_KEY (summarize-webpage uses gemini-flash).
   #              Run on MacBook Pro when traveling.
 
+  memory_cache:
+    enabled: true          # set false to revert to direct iCloud reads
+
 user:
   telegram_user_id: YOUR_TELEGRAM_USER_ID   # whitelist — bot ignores all others
   name: Chris

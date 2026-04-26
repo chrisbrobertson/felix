@@ -16,9 +16,14 @@ import yaml
 
 import notification_manager as nm
 from notification_manager import NotificationManager, _chunk_message, _parse_frontmatter
+from memory_cache import MemoryCache
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _make_cache(memories_dir):
+    return MemoryCache(None, memories_dir, enabled=False)
+
 
 def make_calendar_event(
     memories_dir: Path,
@@ -99,7 +104,7 @@ def test_chat_id_persisted_on_first_message(tmp_path):
     """First allowed message writes chat_id to state file."""
     state_file = tmp_path / "notification-state.json"
     with patch.object(nm, "STATE_FILE", state_file):
-        mgr = NotificationManager()
+        mgr = NotificationManager(cache=_make_cache(memories_dir))
         mgr.set_chat_id(123456789)
 
         assert state_file.exists()
@@ -119,7 +124,7 @@ def test_chat_id_from_config_overrides_state(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "STATE_FILE", state_file):
-            mgr = NotificationManager()
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
             assert mgr.get_chat_id() == 999888777
 
 
@@ -178,7 +183,7 @@ async def test_briefing_bypasses_mute(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager()
+                mgr = NotificationManager(cache=_make_cache(memories_dir))
                 briefing = await mgr._assemble_briefing()
                 assert "Good morning" in briefing
 
@@ -344,7 +349,7 @@ async def test_on_demand_briefing_does_not_advance_date(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager()
+                mgr = NotificationManager(cache=_make_cache(memories_dir))
                 await mgr._assemble_briefing()
 
                 reloaded = nm._load_state()
@@ -375,7 +380,7 @@ async def test_briefing_includes_todays_calendar_events(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
-            mgr = NotificationManager()
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
             with patch.object(mgr, "_get_local_now", return_value=now):
                 briefing = await mgr._assemble_briefing()
 
@@ -401,7 +406,7 @@ async def test_briefing_includes_due_commitments(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
-            mgr = NotificationManager()
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
             with patch.object(mgr, "_get_local_now", return_value=now):
                 briefing = await mgr._assemble_briefing()
 
@@ -427,7 +432,7 @@ async def test_briefing_includes_overdue(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
-            mgr = NotificationManager()
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
             with patch.object(mgr, "_get_local_now", return_value=now):
                 briefing = await mgr._assemble_briefing()
 
@@ -450,7 +455,7 @@ async def test_briefing_empty_section_omitted(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
-            mgr = NotificationManager()
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
             with patch.object(mgr, "_get_local_now", return_value=now):
                 briefing = await mgr._assemble_briefing()
 
@@ -608,7 +613,7 @@ async def test_commitment_alerts_pruned_by_age(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager()
+                mgr = NotificationManager(cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._prune_sent_alerts(state)
@@ -908,7 +913,7 @@ async def test_pre_meeting_includes_contacts(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
-            mgr = NotificationManager()
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
             with patch.object(mgr, "_get_local_now", return_value=now):
                 fm = _parse_frontmatter((memories_dir / "calendar-event-evt123.md").read_text())
                 context = await mgr._assemble_pre_meeting_context(fm, event_time)
@@ -936,7 +941,7 @@ async def test_pre_meeting_includes_open_commitments(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
-            mgr = NotificationManager()
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
             with patch.object(mgr, "_get_local_now", return_value=now):
                 fm = _parse_frontmatter((memories_dir / "calendar-event-evt123.md").read_text())
                 context = await mgr._assemble_pre_meeting_context(fm, event_time)
@@ -963,7 +968,7 @@ async def test_pre_meeting_missing_contact_graceful(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
-            mgr = NotificationManager()
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
             with patch.object(mgr, "_get_local_now", return_value=now):
                 fm = _parse_frontmatter((memories_dir / "calendar-event-evt123.md").read_text())
                 context = await mgr._assemble_pre_meeting_context(fm, event_time)
@@ -1000,7 +1005,7 @@ async def test_pre_meeting_sent_alerts_pruned(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager()
+                mgr = NotificationManager(cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._prune_sent_alerts(state)
@@ -1039,7 +1044,7 @@ async def test_loop_exits_on_stop_event(tmp_path):
     state_file.write_text(json.dumps({"chat_id": None}))
 
     with patch.object(nm, "STATE_FILE", state_file):
-        mgr = NotificationManager()
+        mgr = NotificationManager(cache=_make_cache(memories_dir))
         stop_event = asyncio.Event()
         stop_event.set()
 
@@ -1062,7 +1067,7 @@ async def test_exception_does_not_kill_loop(tmp_path):
             raise RuntimeError("Test error")
 
     with patch.object(nm, "STATE_FILE", state_file):
-        mgr = NotificationManager()
+        mgr = NotificationManager(cache=_make_cache(memories_dir))
         mgr._check_and_send = failing_check
 
         stop_event = asyncio.Event()
@@ -1941,7 +1946,7 @@ def test_load_config_retries_on_icloud_edeadlk(tmp_path, caplog):
 
     with patch.object(nm, "CONFIG_PATH", config_file), \
          patch.object(Path, "read_text", flaky_read):
-        mgr = NotificationManager()
+        mgr = NotificationManager(cache=_make_cache(memories_dir))
         cfg = mgr._load_config()
 
     assert cfg == {"notifications": {"telegram_chat_id": 42}}
@@ -1955,7 +1960,7 @@ def test_load_config_falls_back_to_cache_on_persistent_edeadlk(tmp_path, caplog)
     config_file.write_text("notifications:\n  telegram_chat_id: 99\n")
 
     with patch.object(nm, "CONFIG_PATH", config_file):
-        mgr = NotificationManager()
+        mgr = NotificationManager(cache=_make_cache(memories_dir))
         # First read populates the cache.
         first = mgr._load_config()
         assert first == {"notifications": {"telegram_chat_id": 99}}
@@ -2042,7 +2047,7 @@ def test_load_config_caches_by_mtime(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file), \
          patch.object(Path, "read_text", counting_read):
-        mgr = NotificationManager()
+        mgr = NotificationManager(cache=_make_cache(memories_dir))
         mgr._load_config()
         mgr._load_config()
         mgr._load_config()
