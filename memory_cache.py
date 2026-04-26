@@ -275,6 +275,54 @@ class MemoryCache:
 
         return [dict(row) for row in rows]
 
+    async def query_all(
+        self, *, exclude_types: Optional[list] = None
+    ) -> list:
+        """Return every cached memory row, optionally excluding given type values.
+
+        Used by full-corpus consumers (index_builder, circle_sync_scanner,
+        synthesis_scanner, goal_project_agent's related-memory scan). Pass-through
+        mode globs MEMORIES_DIR and reads each file directly — no worse than the
+        glob+read pattern these consumers do today.
+        """
+        excluded = set(exclude_types or ())
+
+        if not self._enabled:
+            # Pass-through mode
+            results = []
+            for path in glob_memories(self._memories_dir, "*.md"):
+                text = await read_text_with_retry_async(path, default=None)
+                if text is None:
+                    continue
+                fm = _parse_frontmatter(text)
+                t = fm.get("type")
+                if t in excluded:
+                    continue
+                stat = path.stat()
+                results.append({
+                    "filename": path.name,
+                    "mtime": stat.st_mtime,
+                    "type": t,
+                    "status": fm.get("status"),
+                    "prefix": _extract_prefix(path.name),
+                    "frontmatter": json.dumps(fm),
+                    "header500": text[:500],
+                    "body": text,
+                })
+            return results
+
+        # Cache mode
+        if not excluded:
+            rows = self._conn.execute("SELECT * FROM memories").fetchall()
+        else:
+            placeholders = ",".join("?" * len(excluded))
+            rows = self._conn.execute(
+                f"SELECT * FROM memories WHERE type IS NULL OR type NOT IN ({placeholders})",
+                tuple(excluded),
+            ).fetchall()
+
+        return [dict(row) for row in rows]
+
     async def score_keywords(self, query: str, top_n: int = 50) -> list:
         """Score all memories by keyword intersection against header500.
 

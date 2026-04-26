@@ -223,6 +223,67 @@ async def test_query_by_prefix(cache_db, memories_dir):
 
 
 @pytest.mark.asyncio
+async def test_query_all_returns_all(cache_db, memories_dir):
+    """query_all returns every cached row."""
+    from memory_cache import MemoryCache
+
+    _write_memory(memories_dir, "commitment-1.md", {"type": "commitment"}, "C1")
+    _write_memory(memories_dir, "goal-1.md", {"type": "goal"}, "G1")
+    _write_memory(memories_dir, "email-thread-1.md", {"type": "email_thread"}, "E1")
+
+    cache = MemoryCache(cache_db, memories_dir)
+    await cache.rebuild()
+
+    results = await cache.query_all()
+    assert len(results) == 3
+    types = {r["type"] for r in results}
+    assert types == {"commitment", "goal", "email_thread"}
+
+    cache.close()
+
+
+@pytest.mark.asyncio
+async def test_query_all_with_exclude_types(cache_db, memories_dir):
+    """query_all skips rows whose type matches exclude_types."""
+    from memory_cache import MemoryCache
+
+    _write_memory(memories_dir, "commitment-1.md", {"type": "commitment"}, "C1")
+    _write_memory(memories_dir, "action-1.md", {"type": "action"}, "A1")
+    _write_memory(memories_dir, "goal-1.md", {"type": "goal"}, "G1")
+    _write_memory(memories_dir, "email-thread-1.md", {"type": "email_thread"}, "E1")
+
+    cache = MemoryCache(cache_db, memories_dir)
+    await cache.rebuild()
+
+    results = await cache.query_all(exclude_types=["commitment", "action"])
+    types = {r["type"] for r in results}
+    assert types == {"goal", "email_thread"}
+
+    cache.close()
+
+
+@pytest.mark.asyncio
+async def test_query_all_pass_through_mode(memories_dir):
+    """query_all works in pass-through mode (no SQLite)."""
+    from memory_cache import MemoryCache
+
+    _write_memory(memories_dir, "commitment-1.md", {"type": "commitment"}, "C1")
+    _write_memory(memories_dir, "action-1.md", {"type": "action"}, "A1")
+    _write_memory(memories_dir, "goal-1.md", {"type": "goal"}, "G1")
+
+    cache = MemoryCache(None, memories_dir, enabled=False)
+
+    results = await cache.query_all()
+    assert len(results) == 3
+
+    results = await cache.query_all(exclude_types=["action"])
+    types = {r["type"] for r in results}
+    assert types == {"commitment", "goal"}
+
+    cache.close()
+
+
+@pytest.mark.asyncio
 async def test_score_keywords(cache_db, memories_dir):
     """score_keywords uses same algorithm as _score_relevance."""
     from memory_cache import MemoryCache
