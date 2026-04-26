@@ -193,7 +193,7 @@ class QuotaScanner:
             lines.append(render_one(platform, self._state))
         return "\n".join(lines)
 
-    async def run_loop(self):
+    async def run_loop(self, stop_event: asyncio.Event):
         """Async loop — 30-min cadence by default. Idles when scrape disabled."""
         if self.role != "full":
             log.info("QuotaScanner disabled on role=%s", self.role)
@@ -202,9 +202,12 @@ class QuotaScanner:
         interval = self.config.get("poll_interval_minutes", 30) * 60
         log.info("QuotaScanner started — interval: %d seconds", interval)
 
-        while True:
+        while not stop_event.is_set():
             await self._tick()
-            await asyncio.sleep(interval)
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
 
     async def _tick(self):
         """Poll tick — scrapes if enabled, otherwise idles."""
