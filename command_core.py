@@ -33,6 +33,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("meeting",        "Show meeting N from last list"),
         ("comms",          "List recent email + slack threads (optional 'email' or 'slack' filter)"),
         ("comm",           "Show comm N from last list"),
+        ("aichat",         "Browse imported Claude/ChatGPT history. /aichat | /aichat <N> | /aichat search <q>"),
         ("messages",       "Alias of /comms"),
         ("communications", "Alias of /comms"),
         ("message",        "Alias of /comm"),

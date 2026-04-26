@@ -4619,3 +4619,143 @@ class TestCircleCommands:
         update, context = self._make_update(user_id=99999)
         await h.cmd_circles(update, context)
         update.message.reply_text.assert_not_called()
+
+
+# ── LLM Chat Tests ────────────────────────────────────────────────────────────
+
+def write_llm_chat_memory(memories_dir: Path, platform: str, title: str,
+                          created: str, slug: str, chat_id: str,
+                          summary: str = "", topics: list = None) -> Path:
+    """Create an llm-chat memory file."""
+    date = created[:10]
+    path = memories_dir / f"llm-chat-{platform}-{date}-{slug}-{chat_id}.md"
+    fm = {
+        "type": "llm_chat",
+        "platform": platform,
+        "source_title": title,
+        "created": created,
+        "summary": summary or f"Conversation about {title}",
+        "topics": topics or ["test"],
+        "tags": [],
+    }
+    import yaml
+    frontmatter = yaml.dump(fm, sort_keys=False)
+    path.write_text(f"---\n{frontmatter}---\n\n## Summary\nTest conversation.\n")
+    return path
+
+
+@pytest.mark.asyncio
+async def test_cmd_aichat_list_groups_by_platform(handler, brain_dir):
+    """Default list mode groups by platform."""
+    h = handler
+    memories_dir = brain_dir / "memories"
+    write_llm_chat_memory(memories_dir, "claude", "RAG discussion", "2026-04-20T10:00:00", "rag", "abc123")
+    write_llm_chat_memory(memories_dir, "claude", "Python tips", "2026-04-21T10:00:00", "python", "def456")
+    write_llm_chat_memory(memories_dir, "chatgpt", "Docker setup", "2026-04-22T10:00:00", "docker", "ghi789")
+
+    update, context = _make_update(12345, args=[])
+    await h.cmd_aichat(update, context)
+    text = update.message.reply_text.call_args[0][0]
+
+    assert "Claude:" in text
+    assert "Chatgpt:" in text
+    assert "RAG discussion" in text
+    assert "Python tips" in text
+    assert "Docker setup" in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_aichat_detail_shows_summary(handler, brain_dir):
+    """Detail mode shows full summary and topics."""
+    h = handler
+    memories_dir = brain_dir / "memories"
+    write_llm_chat_memory(
+        memories_dir, "claude", "RAG implementation",
+        "2026-04-20T10:00:00", "rag-impl", "abc123",
+        summary="Discussed vector search and embedding strategies.",
+        topics=["RAG", "embeddings", "vector search"]
+    )
+
+    update, context = _make_update(12345, args=["1"])
+    await h.cmd_aichat(update, context)
+    text = update.message.reply_text.call_args[0][0]
+
+    assert "[claude]" in text
+    assert "RAG implementation" in text
+    assert "Discussed vector search" in text
+    assert "RAG, embeddings, vector search" in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_aichat_search_keyword_filter(handler, brain_dir):
+    """Search mode filters by keyword in header."""
+    h = handler
+    memories_dir = brain_dir / "memories"
+    write_llm_chat_memory(memories_dir, "claude", "RAG discussion", "2026-04-20T10:00:00", "rag", "abc123")
+    write_llm_chat_memory(memories_dir, "claude", "Python tips", "2026-04-21T10:00:00", "python", "def456")
+
+    update, context = _make_update(12345, args=["search", "rag"])
+    await h.cmd_aichat(update, context)
+    text = update.message.reply_text.call_args[0][0]
+
+    assert "RAG discussion" in text
+    assert "Python tips" not in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_aichat_invalid_index(handler, brain_dir):
+    """Out-of-range index returns error message."""
+    h = handler
+    memories_dir = brain_dir / "memories"
+    write_llm_chat_memory(memories_dir, "claude", "Test", "2026-04-20T10:00:00", "test", "abc123")
+
+    update, context = _make_update(12345, args=["99"])
+    await h.cmd_aichat(update, context)
+    text = update.message.reply_text.call_args[0][0]
+
+    assert "No such entry" in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_comms_llm_filter(handler, brain_dir):
+    """'/comms llm' returns only llm_chat memories."""
+    h = handler
+    memories_dir = brain_dir / "memories"
+
+    # Create mixed types
+    write_llm_chat_memory(memories_dir, "claude", "RAG discussion", "2026-04-20T10:00:00", "rag", "abc123")
+    email_path = memories_dir / "email-thread-test-conv123.md"
+    email_path.write_text(
+        "---\ntype: email_thread\nsource_title: Project update\nlast_message: '2026-04-21T10:00:00'\n---\n\nTest."
+    )
+
+    update, context = _make_update(12345, args=["llm"])
+    await h.cmd_comms(update, context)
+    text = update.message.reply_text.call_args[0][0]
+
+    assert "[claude]" in text
+    assert "RAG discussion" in text
+    assert "Project update" not in text
+
+
+@pytest.mark.asyncio
+async def test_search_memories_tool_accepts_llm_chat_type(handler, brain_dir):
+    """Tool schema includes llm_chat in type description."""
+    from chat_tools import TOOLS
+    search_tool = next(t for t in TOOLS if t["function"]["name"] == "search_memories")
+    type_desc = search_tool["function"]["parameters"]["properties"]["type"]["description"]
+    assert "llm_chat" in type_desc
+
+
+@pytest.mark.asyncio
+async def test_command_registry_includes_aichat(handler):
+    """Registry-completeness test passes for aichat."""
+    # This is covered by the existing test_registry_completeness test which
+    # automatically checks all registered handlers against COMMAND_REGISTRY.
+    # We just verify that aichat was added.
+    all_in_registry = {
+        cmd
+        for commands in ch.COMMAND_REGISTRY.values()
+        for cmd, _ in commands
+    }
+    assert "aichat" in all_in_registry

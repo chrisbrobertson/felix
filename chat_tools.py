@@ -117,7 +117,7 @@ TOOLS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Search query"},
-                    "type": {"type": "string", "description": "Optional type filter: email, slack, meeting, project, commitment, event, contact, web"},
+                    "type": {"type": "string", "description": "Optional type filter: email, slack, meeting, project, commitment, event, contact, web, llm_chat"},
                 },
                 "required": ["query"],
             },
