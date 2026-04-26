@@ -14,6 +14,12 @@ from synthesis_scanner import (
     load_state,
     save_state,
 )
+from memory_cache import MemoryCache
+
+
+def _make_cache(memories_dir):
+    """Create a pass-through MemoryCache for testing."""
+    return MemoryCache(None, memories_dir, enabled=False)
 
 
 @pytest.fixture
@@ -69,7 +75,8 @@ def test_cluster_hash_deterministic(tmp_memories):
 # ── Test build_clusters ───────────────────────────────────────────────────────
 
 
-def test_build_clusters_finds_related_by_tags(tmp_memories, mock_paths):
+@pytest.mark.asyncio
+async def test_build_clusters_finds_related_by_tags(tmp_memories, mock_paths):
     """Memories sharing ≥2 tags should form a cluster."""
     # Create 3 memories with shared tags
     _write_memory(
@@ -85,14 +92,15 @@ def test_build_clusters_finds_related_by_tags(tmp_memories, mock_paths):
         {"type": "web", "source_title": "Deep Learning", "tags": ["ai", "research", "neural"], "summary": "Summary 3"}
     )
 
-    clusters = _build_clusters(tmp_memories)
+    clusters = await _build_clusters(_make_cache(tmp_memories), tmp_memories)
 
     # All 3 should be in one cluster (each pair shares ≥2 tags)
     assert len(clusters) == 1
     assert len(clusters[0]) == 3
 
 
-def test_build_clusters_finds_related_by_title_similarity(tmp_memories, mock_paths):
+@pytest.mark.asyncio
+async def test_build_clusters_finds_related_by_title_similarity(tmp_memories, mock_paths):
     """Memories with similar titles (Jaccard ≥ 0.40) should form a cluster."""
     _write_memory(
         tmp_memories / "mem1.md",
@@ -107,14 +115,15 @@ def test_build_clusters_finds_related_by_title_similarity(tmp_memories, mock_pat
         {"type": "web", "source_title": "Getting Started with Neural Networks", "tags": [], "summary": "Summary 3"}
     )
 
-    clusters = _build_clusters(tmp_memories)
+    clusters = await _build_clusters(_make_cache(tmp_memories), tmp_memories)
 
     # Should form one cluster based on title similarity
     assert len(clusters) == 1
     assert len(clusters[0]) == 3
 
 
-def test_build_clusters_skips_synthesis_type(tmp_memories, mock_paths):
+@pytest.mark.asyncio
+async def test_build_clusters_skips_synthesis_type(tmp_memories, mock_paths):
     """Synthesis memories should not be clustered."""
     _write_memory(
         tmp_memories / "synth1.md",
@@ -129,13 +138,14 @@ def test_build_clusters_skips_synthesis_type(tmp_memories, mock_paths):
         {"type": "synthesis", "source_title": "Third Synthesis", "tags": ["ai", "ml"], "summary": "Summary"}
     )
 
-    clusters = _build_clusters(tmp_memories)
+    clusters = await _build_clusters(_make_cache(tmp_memories), tmp_memories)
 
     # No clusters should be formed
     assert len(clusters) == 0
 
 
-def test_build_clusters_skips_excluded_types(tmp_memories, mock_paths):
+@pytest.mark.asyncio
+async def test_build_clusters_skips_excluded_types(tmp_memories, mock_paths):
     """Code, goal, project, calendar_event, commitment types should be skipped."""
     _write_memory(
         tmp_memories / "code1.md",
@@ -158,13 +168,14 @@ def test_build_clusters_skips_excluded_types(tmp_memories, mock_paths):
         {"type": "commitment", "source_title": "Task", "tags": ["work"], "summary": "Task"}
     )
 
-    clusters = _build_clusters(tmp_memories)
+    clusters = await _build_clusters(_make_cache(tmp_memories), tmp_memories)
 
     # No clusters from excluded types
     assert len(clusters) == 0
 
 
-def test_small_cluster_below_threshold_excluded(tmp_memories, mock_paths):
+@pytest.mark.asyncio
+async def test_small_cluster_below_threshold_excluded(tmp_memories, mock_paths):
     """Clusters with <3 members should not be returned."""
     # Create 2 related memories (below threshold)
     _write_memory(
@@ -176,7 +187,7 @@ def test_small_cluster_below_threshold_excluded(tmp_memories, mock_paths):
         {"type": "web", "source_title": "ML", "tags": ["ai", "ml"], "summary": "Summary"}
     )
 
-    clusters = _build_clusters(tmp_memories)
+    clusters = await _build_clusters(_make_cache(tmp_memories), tmp_memories)
 
     # No cluster should be returned (size < 3)
     assert len(clusters) == 0
@@ -209,7 +220,7 @@ async def test_run_once_skips_already_processed(tmp_memories, tmp_deploy, mock_p
     state_file = tmp_deploy / "synthesis-state.json"
     state_file.write_text(json.dumps(state))
 
-    scanner = SynthesisScanner()
+    scanner = SynthesisScanner(cache=_make_cache(tmp_memories))
 
     # Mock MemoryWriter
     with patch("synthesis_scanner.MemoryWriter") as mock_writer_class:
@@ -240,7 +251,7 @@ async def test_run_once_writes_synthesis_memory(tmp_memories, tmp_deploy, mock_p
         {"type": "web", "source_title": "Research Methods", "tags": ["ai", "ml", "research"], "summary": "Research summary"}
     )
 
-    scanner = SynthesisScanner()
+    scanner = SynthesisScanner(cache=_make_cache(tmp_memories))
 
     # Mock MemoryWriter and acompletion
     mock_synthesis_text = "**Synthesis**: This is a test synthesis.\n**Cross-cutting themes**:\n- Theme 1\n- Theme 2"

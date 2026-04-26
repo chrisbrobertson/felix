@@ -187,7 +187,7 @@ async def main():
         contact_tracker = ContactTracker(role=role)
         project_inference_scanner = ProjectInferenceScanner(role=role)
         goal_agent = GoalProjectAgent(role=role, cache=cache)
-        synthesis_scanner = SynthesisScanner(role=role)
+        synthesis_scanner = SynthesisScanner(role=role, cache=cache)
         quota_scanner = QuotaScanner(deploy_dir, config, role)
 
         # Instantiate circle sync scanner if enabled
