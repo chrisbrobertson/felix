@@ -155,7 +155,7 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 `GITHUB_PAT` + `GITHUB_REPO` (optional) enable GitHub-Issues backing for `/feature` and `/bug`. Both must be set; if either is missing, the local-file fallback is used.
 
-## Architecture: Fourteen Async Loops
+## Architecture: Fifteen Async Loops
 
 1. **Browser Watcher** (every 5 min) — reads Chrome/Firefox SQLite DBs, filters by dwell time and skip-domain list, fetches page content, runs `summarize-webpage` skill, writes memory file.
 
@@ -185,11 +185,13 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 14. **Goal/Project Agent** (every 6 hours, `full` role only) — checks all active goals/projects for new related memories (via `inferred_from`, tag overlap, title Jaccard, participant overlap), calls LLM to generate reports and proposed actions, writes `action-{source-slug}-{action-id}.md` files with `status: pending`, sends urgent pings via Telegram (with 24h cooldown). Auto-supersedes actions when preconditions no longer hold. Exposes `/actions [filter]`, `/action <N>`, `/run <N>`, `/drop <N>`, `/defer <N> [hours]` Telegram commands. Integrates into daily briefing (shows pending actions and recent goal/project updates). State persisted in `DEPLOY_DIR/goal-agent-state.json` and `rejected-actions.json`.
 
+15. **Quota Scanner** (every 30 min, `full` role only) — tracks Claude.ai Pro and ChatGPT Plus 5-hour rolling-window message quotas. Primary path is manual self-report via `/quota report <platform> <used>/<cap> [reset <min>]`. Optional scraping path (disabled by default; requires `quota.scrape_enabled: true` and cookie file) — WARNING: may violate vendor ToS. Threshold alerts at 75% (warning) and 90% (critical) with per-threshold per-platform 60-min cooldown. Exposes `/quota`, `/quota report`, `/quota reset` Telegram commands. Integrates into daily briefing when `quota.briefing_enabled: true`. State persisted in `DEPLOY_DIR/quota-scanner-state.json`.
+
 **Zoom Scanner** also exposes `/meetings [N]` and `/meeting <N>` Telegram commands for browsing meeting transcripts.
 
 ## Two Deployment Roles
 
-- **`full`** — all fourteen loops. Runs on always-on machine (Mac Studio/Mini). Needs `ANTHROPIC_API_KEY` + `GEMINI_API_KEY`.
+- **`full`** — all fifteen loops. Runs on always-on machine (Mac Studio/Mini). Needs `ANTHROPIC_API_KEY` + `GEMINI_API_KEY`.
 - **`watcher`** — five capture loops (browser watcher + code/email/calendar/slack scanners). Runs on MacBook. Needs only `GEMINI_API_KEY`. Full-node imports (`python-telegram-bot`, etc.) must be deferred inside the `role == "full"` block to avoid crashing on watcher nodes that don't have those packages installed.
 
 ## LLM Routing
@@ -239,7 +241,8 @@ All runtime state lives in `~/secondbrain/` — separate from the repo and from 
 ├── commitment-corrections.jsonl    # /wrong and /missed feedback log
 ├── commitment-accuracy.json        # extraction precision stats per source type
 ├── rejected-candidates.json        # rejected candidate sources to prevent re-proposal
-└── notification-state.json         # chat_id, mute state, sent alerts for notification manager
+├── notification-state.json         # chat_id, mute state, sent alerts for notification manager
+└── quota-scanner-state.json        # Claude.ai Pro and ChatGPT Plus quota tracking state
 ```
 
 `SECOND_BRAIN_DIR` env var overrides the deploy dir location (defaults to `~/secondbrain`). The launchd plist sets this explicitly so the daemon always finds its runtime files.
