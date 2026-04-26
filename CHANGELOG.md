@@ -6,6 +6,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-04-25
+
 ### Added
 - `quota_scanner.py` loop — tracks Claude.ai Pro and ChatGPT Plus 5-hour rolling-window message quotas.
 - `/quota` Telegram command — show current quota state, self-report via `/quota report <platform> <used>/<cap> [reset <min>]`, clear via `/quota reset <platform>`.

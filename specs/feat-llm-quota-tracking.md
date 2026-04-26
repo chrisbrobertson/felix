@@ -5,7 +5,7 @@ id: feat-llm-quota-tracking
 version: 1.0.0
 created: 2026-04-25
 status: implemented
-shipped_version: "1.8.0"
+shipped_version: "1.9.0"
 complexity: moderate
 maturity: 0
 parent_system: second-brain
