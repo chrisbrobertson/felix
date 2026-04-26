@@ -189,7 +189,7 @@ async def test_process_url_adds_to_seen_set(infra):
          patch("browser_watcher.SkillExecutor",
                side_effect=lambda *a, **kw: se.SkillExecutor(*a, **kw)), \
          patch("browser_watcher.MemoryWriter",
-               side_effect=lambda: mw.MemoryWriter()):
+               side_effect=lambda **kw: mw.MemoryWriter()):
 
         w = bw.BrowserWatcher(role="full")
         w.seen_urls = {}  # dict, not set (maintains insertion order for FIFO eviction)
@@ -219,7 +219,7 @@ async def test_process_url_skips_short_content(infra):
          patch("browser_watcher.SkillExecutor",
                side_effect=lambda *a, **kw: se.SkillExecutor(*a, **kw)), \
          patch("browser_watcher.MemoryWriter",
-               side_effect=lambda: mw.MemoryWriter()):
+               side_effect=lambda **kw: mw.MemoryWriter()):
 
         w = bw.BrowserWatcher(role="full")
         w.seen_urls = {}  # dict, not set (maintains insertion order for FIFO eviction)

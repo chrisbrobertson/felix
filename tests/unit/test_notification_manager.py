@@ -16,9 +16,14 @@ import yaml
 
 import notification_manager as nm
 from notification_manager import NotificationManager, _chunk_message, _parse_frontmatter
+from memory_cache import MemoryCache
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _make_cache(memories_dir):
+    return MemoryCache(None, memories_dir, enabled=False)
+
 
 def make_calendar_event(
     memories_dir: Path,
@@ -97,9 +102,11 @@ def make_contact(memories_dir: Path, name: str, email: str, last_interaction: st
 
 def test_chat_id_persisted_on_first_message(tmp_path):
     """First allowed message writes chat_id to state file."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
     state_file = tmp_path / "notification-state.json"
     with patch.object(nm, "STATE_FILE", state_file):
-        mgr = NotificationManager()
+        mgr = NotificationManager(cache=_make_cache(memories_dir))
         mgr.set_chat_id(123456789)
 
         assert state_file.exists()
@@ -109,6 +116,8 @@ def test_chat_id_persisted_on_first_message(tmp_path):
 
 def test_chat_id_from_config_overrides_state(tmp_path):
     """Non-null telegram_chat_id in config takes precedence."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     config_file = config_dir / "config.yaml"
@@ -119,18 +128,20 @@ def test_chat_id_from_config_overrides_state(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "STATE_FILE", state_file):
-            mgr = NotificationManager()
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
             assert mgr.get_chat_id() == 999888777
 
 
 def test_no_send_when_chat_id_null(tmp_path):
     """send_message not called when chat_id is None."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
     state_file = tmp_path / "notification-state.json"
     state_file.write_text(json.dumps({"chat_id": None}))
 
     bot_mock = AsyncMock()
     with patch.object(nm, "STATE_FILE", state_file):
-        mgr = NotificationManager(bot=bot_mock)
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
         asyncio.run(mgr.send_message("Test"))
 
     bot_mock.send_message.assert_not_called()
@@ -156,7 +167,7 @@ async def test_no_send_when_muted(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 await mgr._check_and_send()
 
     bot_mock.send_message.assert_not_called()
@@ -178,7 +189,7 @@ async def test_briefing_bypasses_mute(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager()
+                mgr = NotificationManager(cache=_make_cache(memories_dir))
                 briefing = await mgr._assemble_briefing()
                 assert "Good morning" in briefing
 
@@ -235,7 +246,7 @@ async def test_daily_briefing_at_configured_time(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     await mgr._check_daily_briefing(nm._load_state())
 
@@ -264,7 +275,7 @@ async def test_daily_briefing_not_before_configured_time(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     await mgr._check_daily_briefing(nm._load_state())
 
@@ -292,7 +303,7 @@ async def test_daily_briefing_not_repeated_same_day(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     await mgr._check_daily_briefing(nm._load_state())
 
@@ -319,7 +330,7 @@ async def test_daily_briefing_updates_last_date(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_daily_briefing(state)
@@ -344,7 +355,7 @@ async def test_on_demand_briefing_does_not_advance_date(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager()
+                mgr = NotificationManager(cache=_make_cache(memories_dir))
                 await mgr._assemble_briefing()
 
                 reloaded = nm._load_state()
@@ -375,7 +386,7 @@ async def test_briefing_includes_todays_calendar_events(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
-            mgr = NotificationManager()
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
             with patch.object(mgr, "_get_local_now", return_value=now):
                 briefing = await mgr._assemble_briefing()
 
@@ -401,7 +412,7 @@ async def test_briefing_includes_due_commitments(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
-            mgr = NotificationManager()
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
             with patch.object(mgr, "_get_local_now", return_value=now):
                 briefing = await mgr._assemble_briefing()
 
@@ -427,7 +438,7 @@ async def test_briefing_includes_overdue(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
-            mgr = NotificationManager()
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
             with patch.object(mgr, "_get_local_now", return_value=now):
                 briefing = await mgr._assemble_briefing()
 
@@ -450,7 +461,7 @@ async def test_briefing_empty_section_omitted(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
-            mgr = NotificationManager()
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
             with patch.object(mgr, "_get_local_now", return_value=now):
                 briefing = await mgr._assemble_briefing()
 
@@ -483,7 +494,7 @@ async def test_commitment_alert_due_today(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_commitment_alerts(state)
@@ -515,7 +526,7 @@ async def test_commitment_alert_due_tomorrow(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_commitment_alerts(state)
@@ -547,7 +558,7 @@ async def test_commitment_alert_deduplication(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_commitment_alerts(state)
@@ -578,7 +589,7 @@ async def test_commitment_alert_not_for_completed(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_commitment_alerts(state)
@@ -608,7 +619,7 @@ async def test_commitment_alerts_pruned_by_age(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager()
+                mgr = NotificationManager(cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._prune_sent_alerts(state)
@@ -658,7 +669,7 @@ async def test_commitment_alert_fallback_to_summary(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_commitment_alerts(state)
@@ -709,7 +720,7 @@ async def test_commitment_alert_fallback_to_placeholder(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_commitment_alerts(state)
@@ -744,7 +755,7 @@ async def test_pre_meeting_in_window(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_pre_meeting_alerts(state)
@@ -776,7 +787,7 @@ async def test_pre_meeting_outside_window(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_pre_meeting_alerts(state)
@@ -806,7 +817,7 @@ async def test_pre_meeting_all_day_skipped(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_pre_meeting_alerts(state)
@@ -838,7 +849,7 @@ async def test_pre_meeting_deduplication(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_pre_meeting_alerts(state)
@@ -873,7 +884,7 @@ async def test_pre_meeting_dedup_survives_prune(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     # First cycle: alert fires
                     state = nm._load_state()
@@ -908,7 +919,7 @@ async def test_pre_meeting_includes_contacts(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
-            mgr = NotificationManager()
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
             with patch.object(mgr, "_get_local_now", return_value=now):
                 fm = _parse_frontmatter((memories_dir / "calendar-event-evt123.md").read_text())
                 context = await mgr._assemble_pre_meeting_context(fm, event_time)
@@ -936,7 +947,7 @@ async def test_pre_meeting_includes_open_commitments(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
-            mgr = NotificationManager()
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
             with patch.object(mgr, "_get_local_now", return_value=now):
                 fm = _parse_frontmatter((memories_dir / "calendar-event-evt123.md").read_text())
                 context = await mgr._assemble_pre_meeting_context(fm, event_time)
@@ -963,7 +974,7 @@ async def test_pre_meeting_missing_contact_graceful(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
-            mgr = NotificationManager()
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
             with patch.object(mgr, "_get_local_now", return_value=now):
                 fm = _parse_frontmatter((memories_dir / "calendar-event-evt123.md").read_text())
                 context = await mgr._assemble_pre_meeting_context(fm, event_time)
@@ -1000,7 +1011,7 @@ async def test_pre_meeting_sent_alerts_pruned(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager()
+                mgr = NotificationManager(cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._prune_sent_alerts(state)
@@ -1035,11 +1046,13 @@ def test_message_chunking_at_line_boundary():
 @pytest.mark.asyncio
 async def test_loop_exits_on_stop_event(tmp_path):
     """Clean shutdown when stop_event is set."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
     state_file = tmp_path / "notification-state.json"
     state_file.write_text(json.dumps({"chat_id": None}))
 
     with patch.object(nm, "STATE_FILE", state_file):
-        mgr = NotificationManager()
+        mgr = NotificationManager(cache=_make_cache(memories_dir))
         stop_event = asyncio.Event()
         stop_event.set()
 
@@ -1050,6 +1063,8 @@ async def test_loop_exits_on_stop_event(tmp_path):
 @pytest.mark.asyncio
 async def test_exception_does_not_kill_loop(tmp_path):
     """RuntimeError in _check_and_send → loop continues."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
     state_file = tmp_path / "notification-state.json"
     state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False}))
 
@@ -1062,7 +1077,7 @@ async def test_exception_does_not_kill_loop(tmp_path):
             raise RuntimeError("Test error")
 
     with patch.object(nm, "STATE_FILE", state_file):
-        mgr = NotificationManager()
+        mgr = NotificationManager(cache=_make_cache(memories_dir))
         mgr._check_and_send = failing_check
 
         stop_event = asyncio.Event()
@@ -1150,7 +1165,7 @@ async def test_daily_briefing_state_saved_before_send(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file), \
          patch.object(nm, "CONFIG_PATH", config_file), \
          patch.object(nm, "MEMORIES_DIR", memories_dir):
-        mgr = NotificationManager(bot=bot_mock)
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
         mgr.send_message = capturing_send
         with patch.object(mgr, "_get_local_now", return_value=now):
             await mgr._check_daily_briefing(nm._load_state())
@@ -1181,7 +1196,7 @@ async def test_daily_briefing_rolls_back_date_on_send_failure(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file), \
          patch.object(nm, "CONFIG_PATH", config_file), \
          patch.object(nm, "MEMORIES_DIR", memories_dir):
-        mgr = NotificationManager(bot=bot_mock)
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
         with patch.object(mgr, "_get_local_now", return_value=now):
             with pytest.raises(RuntimeError):
                 await mgr._check_daily_briefing(nm._load_state())
@@ -1288,7 +1303,7 @@ async def test_goal_alert_fires_at_7_days(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_goal_alerts(state)
@@ -1327,7 +1342,7 @@ async def test_goal_alert_fires_at_1_day(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_goal_alerts(state)
@@ -1370,7 +1385,7 @@ async def test_goal_alert_dedup(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_goal_alerts(state)
@@ -1405,7 +1420,7 @@ async def test_alert_skips_completed_goals(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_goal_alerts(state)
@@ -1439,7 +1454,7 @@ async def test_alert_skips_goals_without_due_date(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_goal_alerts(state)
@@ -1476,7 +1491,7 @@ async def test_project_alert_fires_at_1_day(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_project_alerts(state)
@@ -1515,7 +1530,7 @@ async def test_onhold_project_still_alerts(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_project_alerts(state)
@@ -1557,7 +1572,7 @@ async def test_project_alert_dedup(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_project_alerts(state)
@@ -1592,7 +1607,7 @@ async def test_project_alert_skips_completed(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_project_alerts(state)
@@ -1636,7 +1651,7 @@ async def test_project_alert_skips_candidates(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file):
         with patch.object(nm, "CONFIG_PATH", config_file):
             with patch.object(nm, "MEMORIES_DIR", memories_dir):
-                mgr = NotificationManager(bot=bot_mock)
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
                 with patch.object(mgr, "_get_local_now", return_value=now):
                     state = nm._load_state()
                     await mgr._check_project_alerts(state)
@@ -1752,7 +1767,7 @@ async def test_calendar_staleness_alert_fires_after_24h(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file), \
          patch.object(nm, "CONFIG_PATH", config_file), \
          patch.object(nm, "MEMORIES_DIR", memories_dir):
-        mgr = NotificationManager(bot=bot_mock)
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
         with patch.object(mgr, "_get_local_now", return_value=now):
             state = nm._load_state()
             await mgr._check_calendar_staleness(state)
@@ -1787,7 +1802,7 @@ async def test_calendar_staleness_alert_deduped_same_day(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file), \
          patch.object(nm, "CONFIG_PATH", config_file), \
          patch.object(nm, "MEMORIES_DIR", memories_dir):
-        mgr = NotificationManager(bot=bot_mock)
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
         with patch.object(mgr, "_get_local_now", return_value=now):
             state = nm._load_state()
             await mgr._check_calendar_staleness(state)
@@ -1815,7 +1830,7 @@ async def test_calendar_staleness_alert_not_fired_when_recent(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file), \
          patch.object(nm, "CONFIG_PATH", config_file), \
          patch.object(nm, "MEMORIES_DIR", memories_dir):
-        mgr = NotificationManager(bot=bot_mock)
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
         with patch.object(mgr, "_get_local_now", return_value=now):
             state = nm._load_state()
             await mgr._check_calendar_staleness(state)
@@ -1840,7 +1855,7 @@ async def test_calendar_staleness_alert_not_fired_when_no_files(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file), \
          patch.object(nm, "CONFIG_PATH", config_file), \
          patch.object(nm, "MEMORIES_DIR", memories_dir):
-        mgr = NotificationManager(bot=bot_mock)
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
         with patch.object(mgr, "_get_local_now", return_value=now):
             state = nm._load_state()
             await mgr._check_calendar_staleness(state)
@@ -1869,7 +1884,7 @@ async def test_calendar_staleness_alert_prunes_state_after_7_days(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file), \
          patch.object(nm, "CONFIG_PATH", config_file), \
          patch.object(nm, "MEMORIES_DIR", memories_dir):
-        mgr = NotificationManager(bot=bot_mock)
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
         with patch.object(mgr, "_get_local_now", return_value=now):
             state = nm._load_state()
             await mgr._prune_sent_alerts(state)
@@ -1902,7 +1917,7 @@ async def test_calendar_staleness_send_failure_rolls_back_state(tmp_path):
     with patch.object(nm, "STATE_FILE", state_file), \
          patch.object(nm, "CONFIG_PATH", config_file), \
          patch.object(nm, "MEMORIES_DIR", memories_dir):
-        mgr = NotificationManager(bot=bot_mock)
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
         with patch.object(mgr, "_get_local_now", return_value=now):
             state = nm._load_state()
             await mgr._check_calendar_staleness(state)
@@ -1926,6 +1941,8 @@ def test_load_config_retries_on_icloud_edeadlk(tmp_path, caplog):
     that routed through _check_auth → get_chat_id → _load_config).
     """
     _reset_config_cache()
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
     config_file = tmp_path / "config.yaml"
     config_file.write_text("notifications:\n  telegram_chat_id: 42\n")
 
@@ -1941,7 +1958,7 @@ def test_load_config_retries_on_icloud_edeadlk(tmp_path, caplog):
 
     with patch.object(nm, "CONFIG_PATH", config_file), \
          patch.object(Path, "read_text", flaky_read):
-        mgr = NotificationManager()
+        mgr = NotificationManager(cache=_make_cache(memories_dir))
         cfg = mgr._load_config()
 
     assert cfg == {"notifications": {"telegram_chat_id": 42}}
@@ -1951,11 +1968,13 @@ def test_load_config_retries_on_icloud_edeadlk(tmp_path, caplog):
 def test_load_config_falls_back_to_cache_on_persistent_edeadlk(tmp_path, caplog):
     """If EDEADLK persists through all retries, return last-good cache — don't crash."""
     _reset_config_cache()
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
     config_file = tmp_path / "config.yaml"
     config_file.write_text("notifications:\n  telegram_chat_id: 99\n")
 
     with patch.object(nm, "CONFIG_PATH", config_file):
-        mgr = NotificationManager()
+        mgr = NotificationManager(cache=_make_cache(memories_dir))
         # First read populates the cache.
         first = mgr._load_config()
         assert first == {"notifications": {"telegram_chat_id": 99}}
@@ -2019,7 +2038,7 @@ async def test_assemble_briefing_survives_icloud_edeadlk_on_memory_file(tmp_path
     with patch.object(nm, "MEMORIES_DIR", memories_dir), \
          patch.object(nm, "STATE_FILE", state_file), \
          patch.object(Path, "read_text", flaky):
-        mgr = NotificationManager(bot=bot_mock)
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
         text = await mgr._assemble_briefing()
 
     # Must complete without raising and include the good event.
@@ -2029,6 +2048,8 @@ async def test_assemble_briefing_survives_icloud_edeadlk_on_memory_file(tmp_path
 def test_load_config_caches_by_mtime(tmp_path):
     """Unchanged mtime → no re-read of iCloud file."""
     _reset_config_cache()
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
     config_file = tmp_path / "config.yaml"
     config_file.write_text("notifications:\n  telegram_chat_id: 7\n")
 
@@ -2042,7 +2063,7 @@ def test_load_config_caches_by_mtime(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file), \
          patch.object(Path, "read_text", counting_read):
-        mgr = NotificationManager()
+        mgr = NotificationManager(cache=_make_cache(memories_dir))
         mgr._load_config()
         mgr._load_config()
         mgr._load_config()

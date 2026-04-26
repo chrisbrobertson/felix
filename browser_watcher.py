@@ -28,10 +28,10 @@ _MAX_SEEN_URLS = 50_000
 
 
 class BrowserWatcher:
-    def __init__(self, role: str = "full"):
+    def __init__(self, role: str = "full", cache=None):
         self._executor_pool: dict[str, SkillExecutor] = {}
         self._default_executor = SkillExecutor("summarize-webpage", role=role)
-        self.writer = MemoryWriter()
+        self.writer = MemoryWriter(cache=cache)
         self.seen_urls: dict = self._load_seen_urls()
         # References set by daemon.py after construction
         self.skill_creator = None   # SkillCreator instance

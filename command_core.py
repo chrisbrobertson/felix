@@ -151,10 +151,11 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("version",  "Show the running daemon version"),
     ],
     "System": [
-        ("backfill", "Reprocess historical data: /backfill <type> [days] [host]. Types: readings, email, zoom, calendar, slack, projects"),
-        ("remember", "Fetch a URL and save a reading memory: /remember <url>"),
-        ("deepen",   "Re-process reading N with deep analysis: /deepen N"),
-        ("note",     "Fetch a URL and save detailed study notes: /note <url>"),
+        ("backfill",       "Reprocess historical data: /backfill <type> [days] [host]. Types: readings, email, zoom, calendar, slack, projects"),
+        ("remember",       "Fetch a URL and save a reading memory: /remember <url>"),
+        ("deepen",         "Re-process reading N with deep analysis: /deepen N"),
+        ("note",           "Fetch a URL and save detailed study notes: /note <url>"),
+        ("rebuild_cache",  "Rebuild the memory cache from scratch (full role only)"),
     ],
 }
 

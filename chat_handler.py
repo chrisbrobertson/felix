@@ -68,7 +68,7 @@ class TelegramChatHandler:
     PENDING_FILE = DEPLOY_DIR / "pending-replies.json"
     HISTORY_FILE = DEPLOY_DIR / "chat-history.json"
 
-    def __init__(self, scanners: dict = None):
+    def __init__(self, scanners: dict = None, cache=None):
         # Use the shared iCloud-resilient loader (retries EDEADLK with backoff).
         try:
             from utils import load_config
@@ -77,6 +77,7 @@ class TelegramChatHandler:
             log.warning("Could not read config.yaml at startup: %s — using defaults", e)
             config = {}
         self._config = config  # Store for access by tools and helpers
+        self._cache = cache  # MemoryCache instance for reading memories
         self.token = config["telegram"]["bot_token"]
         self.allowed_user_id = int(config["user"]["telegram_user_id"])
         self.executor = SkillExecutor("chat")
@@ -198,6 +199,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("remember", self.cmd_remember))
         self.app.add_handler(CommandHandler("deepen", self.cmd_deepen))
         self.app.add_handler(CommandHandler("note", self.cmd_note))
+        self.app.add_handler(CommandHandler("rebuild_cache", self.cmd_rebuild_cache))
         # Circles
         self.app.add_handler(CommandHandler("circles", self.cmd_circles))
         self.app.add_handler(CommandHandler("circle", self.cmd_circle))
@@ -491,7 +493,7 @@ class TelegramChatHandler:
 
         return "\n".join(lines) if lines else ""
 
-    def _load_context(self, query: str, history: list = None, deadline: float = 0.0) -> str:
+    async def _load_context(self, query: str, history: list = None) -> str:
         """Load memory files into context with relevance sorting and token-aware budget."""
         parts = []
         budget_tokens = MAX_CONTEXT_TOKENS
@@ -516,8 +518,6 @@ class TelegramChatHandler:
             budget_tokens -= goal_tokens
             total_tokens += goal_tokens
 
-        memory_files = list((BRAIN_DIR / "memories").glob("*.md"))
-
         # Augment short queries with recent user messages for better memory scoring
         score_query = query
         if history:
@@ -529,23 +529,19 @@ class TelegramChatHandler:
                 )
                 score_query = query + " " + recent_text
 
-        # Score using cached headers — O(cache_size) not O(files * file_size)
-        scored = sorted(
-            memory_files,
-            key=lambda p: (self._score_relevance(p, score_query), p.stat().st_mtime),
-            reverse=True
-        )
+        # Score using cache keyword intersection (same algorithm as old _score_relevance)
+        scored = await self._cache.score_keywords(score_query, top_n=50)
 
-        for f in scored:
+        for filename, score in scored:
             if budget_tokens <= 0:
                 log.info(f"Chat context assembled: {len(parts)} files, ~{total_tokens} tokens")
                 break
-            if deadline and time.monotonic() > deadline:
-                log.warning("_load_context deadline exceeded — returning partial context (%d files)", len(parts))
-                break
-            text = read_text_with_retry(f, default=None)
-            if text is None:
+
+            entry = await self._cache.get(filename)
+            if entry is None:
                 continue
+
+            text = entry["body"]
             text_tokens = self._count_tokens(text)
             if text_tokens > budget_tokens:
                 # Truncate proportionally to fit remaining budget
@@ -608,7 +604,7 @@ class TelegramChatHandler:
         except Exception:
             return False
 
-    def _purge_domain(self, domain: str) -> int:
+    async def _purge_domain(self, domain: str) -> int:
         """Delete all memory files whose source_url frontmatter contains domain.
 
         Returns the count of deleted files.
@@ -619,6 +615,8 @@ class TelegramChatHandler:
             url = fm.get("source_url", "")
             if url and self._url_matches_domain(url, domain):
                 f.unlink()
+                if self._cache:
+                    await self._cache.invalidate(f.name)
                 deleted += 1
         return deleted
 
@@ -1573,7 +1571,7 @@ class TelegramChatHandler:
 
         # Non-numeric → domain purge
         domain = context.args[0].lower()
-        count = self._purge_domain(domain)
+        count = await self._purge_domain(domain)
         if count:
             await update.message.reply_text(f"Forgotten {count} captures from {domain}.")
         else:
@@ -3854,6 +3852,23 @@ class TelegramChatHandler:
         version = version_file.read_text().strip() if version_file.exists() else "unknown"
         await update.message.reply_text(f"second-brain v{version}")
 
+    async def cmd_rebuild_cache(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Rebuild the memory cache from scratch."""
+        if not self._check_auth(update):
+            return
+
+        if self._cache is None:
+            await update.message.reply_text("Cache not available (pass-through mode or watcher role).")
+            return
+
+        await update.message.reply_text("Rebuilding cache...")
+        try:
+            count = await self._cache.rebuild()
+            await update.message.reply_text(f"Cache rebuilt: {count} files indexed.")
+        except Exception as e:
+            log.exception("Cache rebuild failed")
+            await update.message.reply_text(f"Cache rebuild failed: {_safe_error(e)}")
+
     # ── /code command ─────────────────────────────────────────────────────────
 
     def _resolve_code_index(self, n: str):
@@ -5984,9 +5999,7 @@ class TelegramChatHandler:
           try:
             history = self._chat_history.get(chat_id, [])
 
-            memory_context = await asyncio.to_thread(
-                self._load_context, query, history, time.monotonic() + 25.0
-            )
+            memory_context = await self._load_context(query, history)
             log.info(f"Context loaded: {len(memory_context)} chars")
 
             from chat_tools import TOOLS, dispatch as _tool_dispatch
