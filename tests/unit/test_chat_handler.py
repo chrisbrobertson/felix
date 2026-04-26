@@ -137,52 +137,63 @@ def test_header_cache_reused_when_mtime_unchanged(handler, brain_dir):
 
 # --- _load_context ---
 
-def test_context_prepends_index_when_present(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_context_prepends_index_when_present(handler, brain_dir):
     (brain_dir / "index.md").write_text("Weekly index content.")
-    ctx = handler._load_context("anything")
+    ctx = await handler._load_context("anything")
     # Index is prepended when present
     assert "Weekly index content." in ctx
     assert "Memory Index" in ctx
 
 
-def test_context_includes_all_memories(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_context_includes_all_memories(handler, brain_dir):
     m = brain_dir / "memories"
     write_memory(m, "page-one-aaa111", ["python"], "Python Guide")
     write_memory(m, "page-two-bbb222", ["rust"], "Rust Guide")
-    ctx = handler._load_context("anything")
+    # Query matches "guide" which appears in both memory titles
+    ctx = await handler._load_context("guide")
     assert "Python Guide" in ctx
     assert "Rust Guide" in ctx
 
 
-def test_context_sorts_by_relevance(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_context_sorts_by_relevance(handler, brain_dir):
     m = brain_dir / "memories"
     write_memory(m, "relevant-aaa111", ["litellm", "llm", "routing"], "LiteLLM Guide")
     write_memory(m, "unrelated-bbb222", ["cooking", "food"], "Cooking Tips")
-    ctx = handler._load_context("litellm routing llm")
-    assert ctx.index("LiteLLM Guide") < ctx.index("Cooking Tips")
+    ctx = await handler._load_context("litellm routing llm")
+    # The relevant file should be included
+    assert "LiteLLM Guide" in ctx
+    # The unrelated file (no keyword match) should not be included
+    assert "Cooking Tips" not in ctx
 
 
-def test_context_respects_char_budget(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_context_respects_char_budget(handler, brain_dir):
     """Context respects token budget (was char budget before M9)."""
     m = brain_dir / "memories"
     big = "word " * 3000  # ~15KB
     for i in range(10):
         write_memory(m, f"big-{i:02d}-{i:06x}", [f"t{i}"], f"File {i}", big)
-    ctx = handler._load_context("test")
+    # Query "word" which appears in all the files' bodies
+    ctx = await handler._load_context("word")
     # Token budget of 150k tokens ≈ 600k chars (rough 1:4 ratio), but actual tokens will be lower
     # Just verify context was generated and isn't unreasonably large
     assert 10_000 < len(ctx) < 1_000_000  # sanity check, not strict budget test
 
 
-def test_context_empty_when_no_memories_and_no_index(handler, brain_dir):
-    ctx = handler._load_context("anything")
+@pytest.mark.asyncio
+async def test_context_empty_when_no_memories_and_no_index(handler, brain_dir):
+    ctx = await handler._load_context("anything")
     # Context is empty when no memories or index exist
     assert ctx == ""
 
 
-def test_context_index_only_when_no_memories(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_context_index_only_when_no_memories(handler, brain_dir):
     (brain_dir / "index.md").write_text("Just the index.")
-    ctx = handler._load_context("anything")
+    ctx = await handler._load_context("anything")
     assert "Just the index." in ctx
 
 
@@ -490,48 +501,53 @@ def test_edit_skip_domains_writes_atomically(handler, brain_dir, monkeypatch):
 
 # ── _purge_domain ─────────────────────────────────────────────────────────────
 
-def test_purge_domain_deletes_matching_memories(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_purge_domain_deletes_matching_memories(handler, brain_dir):
     m = brain_dir / "memories"
     write_memory(m, "ex-aaa111", [], "Example Page", source_url="https://example.com/page")
     write_memory(m, "other-bbb222", [], "Other Page", source_url="https://other.com/page")
-    count = handler._purge_domain("example.com")
+    count = await handler._purge_domain("example.com")
     assert count == 1
     assert not (m / "2026-04-11-ex-aaa111.md").exists()
     assert (m / "2026-04-11-other-bbb222.md").exists()
 
 
-def test_purge_domain_no_matches(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_purge_domain_no_matches(handler, brain_dir):
     m = brain_dir / "memories"
     write_memory(m, "other-bbb222", [], "Other Page", source_url="https://other.com/page")
-    count = handler._purge_domain("nowhere.com")
+    count = await handler._purge_domain("nowhere.com")
     assert count == 0
     assert len(list(m.glob("*.md"))) == 1
 
 
-def test_purge_domain_skips_files_without_source_url(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_purge_domain_skips_files_without_source_url(handler, brain_dir):
     m = brain_dir / "memories"
     p = m / "2026-04-11-no-url-aaa111.md"
     p.write_text("---\ntags: []\nsource_title: No URL File\n---\n\n## Summary\ncontent")
-    count = handler._purge_domain("example.com")
+    count = await handler._purge_domain("example.com")
     assert count == 0
     assert p.exists()
 
 
-def test_purge_domain_skips_files_without_frontmatter(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_purge_domain_skips_files_without_frontmatter(handler, brain_dir):
     m = brain_dir / "memories"
     p = m / "2026-04-11-no-fm-aaa111.md"
     p.write_text("## Summary\nJust plain markdown, no frontmatter.")
-    count = handler._purge_domain("example.com")
+    count = await handler._purge_domain("example.com")
     assert count == 0
     assert p.exists()
 
 
-def test_purge_domain_deletes_multiple_matches(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_purge_domain_deletes_multiple_matches(handler, brain_dir):
     m = brain_dir / "memories"
     write_memory(m, "ex1-aaa111", [], "Ex 1", source_url="https://example.com/a")
     write_memory(m, "ex2-bbb222", [], "Ex 2", source_url="https://example.com/b")
     write_memory(m, "other-ccc333", [], "Other", source_url="https://other.com/c")
-    count = handler._purge_domain("example.com")
+    count = await handler._purge_domain("example.com")
     assert count == 2
     assert len(list(m.glob("*.md"))) == 1
 
@@ -2746,6 +2762,7 @@ async def test_pending_tools_scoped_per_chat_id(handler, brain_dir):
     assert "discard_pending_replies" not in tool_names
 
 
+@pytest.mark.asyncio
 async def test_load_context_short_query_uses_history(handler, brain_dir):
     """Short queries (< 3 tokens ≥ 3 chars) should augment scoring with recent user history."""
     # Create memory file with "commitments" keyword
@@ -2759,18 +2776,17 @@ async def test_load_context_short_query_uses_history(handler, brain_dir):
         {"role": "assistant", "content": "You have 3 commitments..."}
     ]
 
-    # Patch _score_relevance to capture what it's called with
-    with patch.object(handler, '_score_relevance', wraps=handler._score_relevance) as mock_score:
-        ctx = handler._load_context("ok", history)
+    # Patch cache.score_keywords to capture what it's called with
+    with patch.object(handler._cache, 'score_keywords', wraps=handler._cache.score_keywords) as mock_score:
+        ctx = await handler._load_context("ok", history)
 
-        # Verify _score_relevance was called
+        # Verify score_keywords was called
         assert mock_score.call_count > 0
 
-        # Check that at least one call had "commitments" in the score_query
-        # (second argument to _score_relevance)
-        score_queries = [call.args[1] for call in mock_score.call_args_list]
-        assert any("commitments" in sq.lower() for sq in score_queries), \
-            f"Expected 'commitments' in augmented query, got: {score_queries}"
+        # Check that the query included augmented text from history
+        score_query = mock_score.call_args[0][0]
+        assert "commitments" in score_query.lower(), \
+            f"Expected 'commitments' in augmented query, got: {score_query}"
 
 
 async def test_pending_tools_hidden_when_not_last_notification(handler, brain_dir):
@@ -3023,7 +3039,8 @@ def test_build_goal_project_context_empty_when_no_active(handler, brain_dir):
     assert result == ""
 
 
-def test_load_context_includes_goal_project_context(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_load_context_includes_goal_project_context(handler, brain_dir):
     """_load_context includes active goals/projects even without keyword match."""
     # Write an active goal
     goal_path = brain_dir / "memories" / "goal-run-5k-abc123.md"
@@ -3044,7 +3061,7 @@ def test_load_context_includes_goal_project_context(handler, brain_dir):
     )
 
     # Query has no keyword match with the goal
-    context = handler._load_context("litellm routing config")
+    context = await handler._load_context("litellm routing config")
 
     # Goal should still appear in context
     assert "## Active Goals" in context
