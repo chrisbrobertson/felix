@@ -17,6 +17,7 @@ from project_inference_scanner import (
     _slugify,
     _title_similarity,
 )
+from memory_cache import MemoryCache
 
 
 @pytest.fixture(autouse=True)
@@ -114,7 +115,8 @@ async def test_skips_unchanged_mtime(tmp_path):
          patch.object(pis, "CONFIG_PATH", config_file), \
          patch("litellm.acompletion", new=AsyncMock()) as mock_llm:
 
-        scanner = ProjectInferenceScanner(role="full")
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        scanner = ProjectInferenceScanner(role="full", cache=cache)
         await scanner._scan()
 
         # LLM should not be called because mtime is unchanged
@@ -153,7 +155,8 @@ async def test_processes_new_mtime(tmp_path):
          patch.object(pis, "CONFIG_PATH", config_file), \
          patch("litellm.acompletion", new=AsyncMock(return_value=mock_response)) as mock_llm:
 
-        scanner = ProjectInferenceScanner(role="full")
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        scanner = ProjectInferenceScanner(role="full", cache=cache)
         await scanner._scan()
 
         # LLM should be called because mtime changed
@@ -197,7 +200,8 @@ async def test_confidence_filter_below_threshold(tmp_path):
          patch.object(pis, "CONFIG_PATH", config_file), \
          patch("litellm.acompletion", new=AsyncMock(return_value=mock_response)):
 
-        scanner = ProjectInferenceScanner(role="full")
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        scanner = ProjectInferenceScanner(role="full", cache=cache)
         await scanner._scan()
 
         # No candidate file should be written (below 0.7 threshold)
@@ -242,7 +246,8 @@ async def test_confidence_filter_above_threshold(tmp_path):
          patch.object(pis, "CONFIG_PATH", config_file), \
          patch("litellm.acompletion", new=AsyncMock(return_value=mock_response)):
 
-        scanner = ProjectInferenceScanner(role="full")
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        scanner = ProjectInferenceScanner(role="full", cache=cache)
         await scanner._scan()
 
         # Candidate file should be written
@@ -294,7 +299,8 @@ async def test_dedup_existing_project_by_title(tmp_path):
          patch.object(pis, "CONFIG_PATH", config_file), \
          patch("litellm.acompletion", new=AsyncMock(return_value=mock_response)):
 
-        scanner = ProjectInferenceScanner(role="full")
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        scanner = ProjectInferenceScanner(role="full", cache=cache)
         await scanner._scan()
 
         # No candidate should be written (duplicate detected)
@@ -349,7 +355,8 @@ async def test_dedup_rejected_evidence(tmp_path):
          patch.object(pis, "CONFIG_PATH", config_file), \
          patch("litellm.acompletion", new=AsyncMock(return_value=mock_response)):
 
-        scanner = ProjectInferenceScanner(role="full")
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        scanner = ProjectInferenceScanner(role="full", cache=cache)
         await scanner._scan()
 
         # No candidate should be written (source is rejected)
@@ -392,7 +399,8 @@ async def test_candidate_file_format(tmp_path):
          patch.object(pis, "CONFIG_PATH", config_file), \
          patch("litellm.acompletion", new=AsyncMock(return_value=mock_response)):
 
-        scanner = ProjectInferenceScanner(role="full")
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        scanner = ProjectInferenceScanner(role="full", cache=cache)
         await scanner._scan()
 
         # Check candidate was written
@@ -443,7 +451,8 @@ async def test_cap_20_files_per_cycle(tmp_path):
          patch.object(pis, "CONFIG_PATH", config_file), \
          patch("litellm.acompletion", new=AsyncMock(return_value=mock_response)) as mock_llm:
 
-        scanner = ProjectInferenceScanner(role="full")
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        scanner = ProjectInferenceScanner(role="full", cache=cache)
         await scanner._scan()
 
         # LLM should be called exactly 20 times (cap enforced)
@@ -476,7 +485,8 @@ def test_unmangle_collapses_injected_hostname(tmp_path):
 
     with patch.object(pis, "MEMORIES_DIR", memories_dir), \
          patch.object(pis, "DEPLOY_DIR", deploy):
-        ProjectInferenceScanner(role="full")
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        ProjectInferenceScanner(role="full", cache=cache)
 
     canonical = memories_dir / "project-candidate-foo-abc123.md"
     assert canonical.exists(), "canonical file should exist after unmangle"
@@ -497,7 +507,8 @@ def test_unmangle_collapses_stacked_hostnames(tmp_path):
 
     with patch.object(pis, "MEMORIES_DIR", memories_dir), \
          patch.object(pis, "DEPLOY_DIR", deploy):
-        ProjectInferenceScanner(role="full")
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        ProjectInferenceScanner(role="full", cache=cache)
 
     canonical = memories_dir / "project-candidate-foo-abc123.md"
     assert canonical.exists()
@@ -528,7 +539,8 @@ def test_unmangle_prefers_status_confirmed_over_pending(tmp_path):
 
     with patch.object(pis, "MEMORIES_DIR", memories_dir), \
          patch.object(pis, "DEPLOY_DIR", deploy):
-        ProjectInferenceScanner(role="full")
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        ProjectInferenceScanner(role="full", cache=cache)
 
     # Canonical path should now hold the confirmed content
     assert canonical.exists()
@@ -561,7 +573,8 @@ def test_unmangle_prefers_newer_created_when_statuses_equal(tmp_path):
 
     with patch.object(pis, "MEMORIES_DIR", memories_dir), \
          patch.object(pis, "DEPLOY_DIR", deploy):
-        ProjectInferenceScanner(role="full")
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        ProjectInferenceScanner(role="full", cache=cache)
 
     assert canonical.exists()
     fm = _parse_frontmatter(canonical.read_text())
@@ -588,7 +601,8 @@ def test_unmangle_skips_malformed_filename(tmp_path, caplog):
 
     with patch.object(pis, "MEMORIES_DIR", memories_dir), \
          patch.object(pis, "DEPLOY_DIR", deploy):
-        scanner = ProjectInferenceScanner(role="full")
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        scanner = ProjectInferenceScanner(role="full", cache=cache)
 
     # Post-init: sentinel was written (no files to process) → idempotent.
     sentinel = deploy / pis.UNMANGLE_SENTINEL_NAME
@@ -606,13 +620,15 @@ def test_unmangle_sentinel_makes_idempotent(tmp_path):
 
     with patch.object(pis, "MEMORIES_DIR", memories_dir), \
          patch.object(pis, "DEPLOY_DIR", deploy):
-        ProjectInferenceScanner(role="full")  # first: unmangles
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        ProjectInferenceScanner(role="full", cache=cache)  # first: unmangles
         canonical = memories_dir / "project-candidate-foo-abc123.md"
         assert canonical.exists()
 
         # Delete canonical, re-run: sentinel should prevent rescanning
         canonical.unlink()
-        ProjectInferenceScanner(role="full")
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        ProjectInferenceScanner(role="full", cache=cache)
         assert not canonical.exists(), "sentinel should have prevented re-run"
 
 
@@ -639,7 +655,8 @@ def test_unmangle_survives_icloud_edeadlk(tmp_path, monkeypatch):
 
     with patch.object(pis, "MEMORIES_DIR", memories_dir), \
          patch.object(pis, "DEPLOY_DIR", deploy):
-        ProjectInferenceScanner(role="full")
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        ProjectInferenceScanner(role="full", cache=cache)
 
     # Good file was renamed
     assert (memories_dir / "project-candidate-good-abc123.md").exists()

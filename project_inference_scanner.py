@@ -14,10 +14,12 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
 from llm_routes import resolve
+from memory_cache import MemoryCache
 
 log = logging.getLogger("project-inference")
 
@@ -77,12 +79,13 @@ def _title_similarity(title1: str, title2: str) -> float:
 class ProjectInferenceScanner:
     """Thirteenth async loop: infers projects from comms memories."""
 
-    def __init__(self, role: str = "full"):
+    def __init__(self, role: str = "full", cache: Optional[MemoryCache] = None):
         self.role = role
         self.SCAN_INTERVAL = 900  # 15 minutes
         self.SOURCE_TYPES = ["email_thread", "meeting_transcript", "slack_thread"]
         self.STATE_FILE = DEPLOY_DIR / "project-inference-state.json"
         self.REJECTED_FILE = DEPLOY_DIR / "rejected-candidates.json"
+        self._cache = cache if cache is not None else MemoryCache(None, MEMORIES_DIR, enabled=False)
         self._unmangle_candidate_filenames()
 
     def _unmangle_candidate_filenames(self):
@@ -194,8 +197,7 @@ class ProjectInferenceScanner:
             except Exception:
                 log.exception("Failed to write project-candidate unmangle sentinel")
 
-    @staticmethod
-    def _pick_candidate_winner(a: Path, b: Path) -> tuple:
+    def _pick_candidate_winner(self, a: Path, b: Path) -> tuple:
         """Return (winner, loser) tuple for two competing candidate paths.
 
         Precedence (highest → lowest):
@@ -206,6 +208,8 @@ class ProjectInferenceScanner:
         """
         def _signal(path: Path) -> tuple:
             try:
+                # Use cache if available; fallback to direct read for unmangle-time access
+                # Note: unmangle runs in __init__ before async context, so we must use sync read
                 text = path.read_text()
                 fm = _parse_frontmatter(text)
             except OSError:
@@ -286,16 +290,26 @@ class ProjectInferenceScanner:
 
     # ── Deduplication ─────────────────────────────────────────────────────────
 
-    def _is_duplicate(self, title: str) -> bool:
+    async def _is_duplicate(self, title: str) -> bool:
         """Check if title is too similar to an existing project or candidate."""
-        # Glob existing projects and candidates
-        existing_paths = list(MEMORIES_DIR.glob("project-*.md"))
-        existing_paths.extend(MEMORIES_DIR.glob("project-candidate-*.md"))
+        # Query both project and project-candidate prefixes via cache
+        # Note: cache.query_by_prefix("project-") returns both "project" and "project-candidate"
+        # since _extract_prefix returns "project-candidate" for project-candidate-*.md files
+        # We need to query both separately
+        project_rows = await self._cache.query_by_prefix("project-")
+        candidate_rows = await self._cache.query_by_prefix("project-candidate-")
 
-        for path in existing_paths:
+        # Combine and deduplicate by filename
+        seen = set()
+        all_rows = []
+        for row in project_rows + candidate_rows:
+            if row["filename"] not in seen:
+                seen.add(row["filename"])
+                all_rows.append(row)
+
+        for row in all_rows:
             try:
-                header = path.read_text(encoding="utf-8")[:500]
-                fm = _parse_frontmatter(header)
+                fm = _parse_frontmatter(row["header500"])
                 existing_title = fm.get("source_title", "")
                 if _title_similarity(title, existing_title) >= 0.8:
                     return True
@@ -392,7 +406,7 @@ class ProjectInferenceScanner:
 
     # ── Candidate file write ──────────────────────────────────────────────────
 
-    def _write_candidate(self, item: dict, source_path: Path) -> None:
+    async def _write_candidate(self, item: dict, source_path: Path) -> None:
         """Write a project-candidate-*.md file for a discovered project."""
         title = item.get("title", "").strip()
         if not title:
@@ -403,7 +417,7 @@ class ProjectInferenceScanner:
             log.debug("Skipping project from rejected source: %s", source_path.name)
             return
 
-        if self._is_duplicate(title):
+        if await self._is_duplicate(title):
             log.debug("Skipping duplicate project: %s", title)
             return
 
@@ -462,38 +476,23 @@ class ProjectInferenceScanner:
         processed = state.get("processed", {})
 
         # Collect candidates: source-type files changed since last processed
+        # Query for each source type via cache
         candidates = []
-        for f in MEMORIES_DIR.glob("*.md"):
-            # Skip candidate files themselves
-            if f.name.startswith("project-candidate-"):
-                continue
+        for source_type in self.SOURCE_TYPES:
+            rows = await self._cache.query_by_type(source_type)
+            for row in rows:
+                filename = row["filename"]
+                mtime = row["mtime"]
 
-            try:
-                mtime = f.stat().st_mtime
-            except Exception:
-                continue
+                # Skip candidate files themselves (shouldn't happen with type query, but guard)
+                if filename.startswith("project-candidate-"):
+                    continue
 
-            stored_mtime = processed.get(f.name)
-            if stored_mtime is not None and abs(mtime - stored_mtime) < 1.0:
-                continue  # Unchanged since last scan
+                stored_mtime = processed.get(filename)
+                if stored_mtime is not None and abs(mtime - stored_mtime) < 1.0:
+                    continue  # Unchanged since last scan
 
-            # Check type field from frontmatter header
-            try:
-                header = f.read_text(encoding="utf-8")[:500]
-            except Exception:
-                continue
-
-            fm_type = ""
-            for line in header.split("\n"):
-                stripped = line.strip()
-                if stripped.startswith("type:"):
-                    fm_type = stripped[5:].strip().strip('"').strip("'")
-                    break
-
-            if fm_type not in self.SOURCE_TYPES:
-                continue
-
-            candidates.append((f, mtime))
+                candidates.append((row, mtime))
 
         if not candidates:
             log.debug("No new/updated source files to process for project inference")
@@ -505,24 +504,27 @@ class ProjectInferenceScanner:
         )
 
         processed_count = 0
-        for f, mtime in candidates[:MAX_FILES_PER_CYCLE]:
+        for row, mtime in candidates[:MAX_FILES_PER_CYCLE]:
             try:
-                content = f.read_text(encoding="utf-8")
-                fm = _parse_frontmatter(content)
+                # Parse frontmatter from the cached body
+                fm = json.loads(row["frontmatter"])
+                # Reconstruct a minimal Path object for _extract_projects compatibility
+                filename = row["filename"]
+                f = MEMORIES_DIR / filename
 
                 items = await self._extract_projects(f, fm)
                 for item in items:
-                    self._write_candidate(item, f)
+                    await self._write_candidate(item, f)
 
                 # Persist state after each file to survive mid-cycle crashes
-                processed[f.name] = mtime
+                processed[filename] = mtime
                 state["processed"] = processed
                 state["last_scan"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
                 self._save_state(state)
                 processed_count += 1
 
             except Exception:
-                log.exception("Error processing %s for project inference", f.name)
+                log.exception("Error processing %s for project inference", filename)
 
         if processed_count:
             log.info("Project inference scan complete — %d source file(s) processed", processed_count)

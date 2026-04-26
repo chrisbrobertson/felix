@@ -17,6 +17,7 @@ from code_scanner import CodeScanner
 from email_scanner import EmailScanner
 from calendar_scanner import CalendarScanner
 from slack_scanner import SlackScanner
+from memory_cache import MemoryCache
 
 LOG_FORMAT = "%(asctime)s [%(name)s] %(levelname)s %(message)s"
 LOG_MAX_BYTES = 10_000_000   # 10 MB per file
@@ -70,6 +71,8 @@ def _configure_logging(deploy_dir: Path) -> None:
 log = logging.getLogger("second-brain")
 
 CONFIG_PATH = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain/config.yaml"
+BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
+MEMORIES_DIR = BRAIN_DIR / "memories"
 
 
 def _build_slack_adapter(config: dict, chat):
@@ -124,8 +127,26 @@ async def main():
     role = os.environ.get("SECOND_BRAIN_ROLE") or config.get("daemon", {}).get("role", "full")
     log.info(f"Starting second-brain daemon v{version} — role: {role}")
 
+    # ── Memory cache setup ────────────────────────────────────────────────────
+    # Full role: SQLite cache at ~/secondbrain/memory-cache.sqlite
+    # Watcher role: pass-through mode (enabled=False, no SQLite)
+    cache_enabled = config.get("daemon", {}).get("memory_cache", {}).get("enabled", True)
+    if role == "full":
+        cache = MemoryCache(
+            db_path=deploy_dir / "memory-cache.sqlite",
+            memories_dir=MEMORIES_DIR,
+            enabled=cache_enabled
+        )
+    else:
+        # Watcher role: pass-through mode
+        cache = MemoryCache(
+            db_path=None,
+            memories_dir=MEMORIES_DIR,
+            enabled=False
+        )
+
     # Tier 1: local-source scanners — run on both watcher and full roles
-    watcher = BrowserWatcher(role=role)
+    watcher = BrowserWatcher(role=role, cache=cache)
     code_scanner = CodeScanner(role=role)
     email_scanner = EmailScanner(role=role)
     calendar_scanner = CalendarScanner(role=role)
@@ -156,16 +177,18 @@ async def main():
         from goal_project_agent import GoalProjectAgent
         from synthesis_scanner import SynthesisScanner
         from circle_sync_scanner import CircleSyncScanner
+        from quota_scanner import QuotaScanner
 
         # Instantiate tier-2 scanners and services
         optimizer = SkillOptimizer(config)
-        indexer = IndexBuilder()
+        indexer = IndexBuilder(cache=cache)
         zoom_scanner = ZoomScanner(role=role)
         commitment_tracker = CommitmentTracker(role=role)
         contact_tracker = ContactTracker(role=role)
-        project_inference_scanner = ProjectInferenceScanner(role=role)
+        project_inference_scanner = ProjectInferenceScanner(role=role, cache=cache)
         goal_agent = GoalProjectAgent(role=role)
         synthesis_scanner = SynthesisScanner(role=role)
+        quota_scanner = QuotaScanner(deploy_dir, config, role)
 
         # Instantiate circle sync scanner if enabled
         circles_cfg = config.get("circles", {})
@@ -179,10 +202,11 @@ async def main():
             "calendar": calendar_scanner,
             "slack": slack_scanner,
             "code": code_scanner,
+            "quota_scanner": quota_scanner,
         }
 
-        # Instantiate chat handler with scanners
-        chat = TelegramChatHandler(scanners=scanners_dict)
+        # Instantiate chat handler with scanners and cache
+        chat = TelegramChatHandler(scanners=scanners_dict, cache=cache)
         await chat.start()
 
         # ── Slack chat adapter (Phase 3+4) — built before notification_mgr ─────
@@ -199,6 +223,7 @@ async def main():
             bot=chat.app.bot,
             deploy_dir=DEPLOY_DIR,
             transports=active_transports,
+            cache=cache,
         )
         chat.notification_manager = notification_mgr
         goal_agent.notification_callback = notification_mgr.send_message
@@ -224,6 +249,21 @@ async def main():
         )
         chat.report_scheduler = report_scheduler
 
+        # Cache sweep loop — 60s cadence, full role only
+        async def cache_sweep_loop(stop_event):
+            """Sweep cache every 60s to catch iCloud-arrived files from watcher."""
+            while not stop_event.is_set():
+                try:
+                    added, updated, removed = await cache.sweep()
+                    if added or updated or removed:
+                        log.info(f"Cache sweep: {added} added, {updated} updated, {removed} removed")
+                except Exception:
+                    log.exception("Cache sweep failed")
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=60)
+                except asyncio.TimeoutError:
+                    pass
+
         tasks += [
             chat.poll_loop,
             optimizer.run_loop,
@@ -237,6 +277,8 @@ async def main():
             project_inference_scanner.run_loop,
             goal_agent.run_loop,
             synthesis_scanner.run_loop,
+            cache_sweep_loop,
+            quota_scanner.run_loop,
         ]
 
         # Add circle sync scanner task if enabled
@@ -278,6 +320,8 @@ async def main():
         # Stop Slack adapter if running (only available in full role)
         if role == "full" and 'slack_adapter' in locals() and slack_adapter is not None:
             await slack_adapter.stop()
+        # Close cache connection
+        cache.close()
 
 
 if __name__ == "__main__":
