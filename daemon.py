@@ -192,7 +192,7 @@ async def main():
 
         # Instantiate circle sync scanner if enabled
         circles_cfg = config.get("circles", {})
-        circle_sync_scanner = CircleSyncScanner(role=role) if circles_cfg.get("enabled", False) else None
+        circle_sync_scanner = CircleSyncScanner(role=role, cache=cache) if circles_cfg.get("enabled", False) else None
 
         # Build scanners dict for backfill command (tier-1 scanners already instantiated)
         scanners_dict = {

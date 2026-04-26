@@ -10,6 +10,12 @@ from unittest.mock import patch, AsyncMock, MagicMock
 
 import circle_sync_scanner as css_module
 from circle_sync_scanner import CircleSyncScanner
+from memory_cache import MemoryCache
+
+
+def _make_cache(memories_dir):
+    """Create a pass-through MemoryCache for testing."""
+    return MemoryCache(None, memories_dir, enabled=False)
 
 
 @pytest.fixture
@@ -54,7 +60,7 @@ def scanner(dirs):
         DEFAULT_ICLOUD_ROOT=dirs["icloud_root"],
         DEFAULT_CIRCLES_DIR=dirs["circles"],
     ):
-        s = CircleSyncScanner(role="full")
+        s = CircleSyncScanner(role="full", cache=_make_cache(dirs["memories"]))
         s._load_config()
         yield s
 
