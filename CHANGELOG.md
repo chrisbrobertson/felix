@@ -9,6 +9,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [1.9.2] — 2026-04-26
 
 ### Added
+- `/review purge [N]` command to bulk-delete pending project candidates older than N days (default 30)
+- Automatic candidate cleanup in `ProjectInferenceScanner`: files older than `candidate_ttl_days` days (default 30) or exceeding `max_pending_candidates` total (default 200) are deleted each scan cycle
+- Config options `project_inference.candidate_ttl_days` and `project_inference.max_pending_candidates` to tune cleanup behaviour
 - `scripts/babysit-with-review.sh` — review-gated backlog drainer: promotes local feature/bug files, loops `claude -p` against open `kind:bug`/`kind:feature` issues, runs a codex<->claude review cycle on each PR, and automatically merges + deploys (`NONINTERACTIVE=1 ./install.sh`) when codex reports zero blocking findings.
 
 ### Fixed

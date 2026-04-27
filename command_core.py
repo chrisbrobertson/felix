@@ -72,6 +72,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("review",   "List pending project/repo candidates (/review N for detail)"),
         ("confirm",  "Confirm candidate N (/confirm N [category])"),
         ("reject",   "Reject candidate N"),
+        ("review_purge", "Bulk-delete pending candidates older than N days (/review purge [N])"),
         ("edit",     "Edit a candidate field (/edit N field=value)"),
     ],
     "Agent actions": [

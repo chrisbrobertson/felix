@@ -4,6 +4,7 @@ Unit tests for project_inference_scanner.
 All external access (LiteLLM, filesystem) is mocked.
 """
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -685,3 +686,178 @@ def test_production_memories_dir_never_touched_during_tests(tmp_path):
         for f in prod.glob("project-*.md")
     )
     assert before == after, "production MEMORIES_DIR was mutated"
+
+
+# ── Candidate cleanup tests (v1.10.0) ─────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_cleanup_expires_stale_candidates(tmp_path):
+    """Candidates older than TTL are deleted."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    config_file = tmp_path / "config.yaml"
+
+    # Create a candidate 40 days old (default TTL is 30 days)
+    old_date = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%dT%H:%M:%S")
+    old_candidate = _write_candidate(
+        memories_dir,
+        "project-candidate-old-abc123.md",
+        created=old_date,
+        status="pending_confirmation",
+    )
+
+    config_file.write_text(yaml.dump({
+        "project_inference": {"enabled": True}
+    }))
+
+    with patch.object(pis, "MEMORIES_DIR", memories_dir), \
+         patch.object(pis, "DEPLOY_DIR", deploy), \
+         patch.object(pis, "CONFIG_PATH", config_file):
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        scanner = ProjectInferenceScanner(role="full", cache=cache)
+        deleted = await scanner._cleanup_stale_candidates()
+
+    # Old candidate should be deleted
+    assert deleted == 1
+    assert not old_candidate.exists()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_preserves_confirmed_and_rejected(tmp_path):
+    """Confirmed and rejected candidates are not deleted regardless of age."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    config_file = tmp_path / "config.yaml"
+
+    # Create old candidates with different statuses
+    old_date = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%dT%H:%M:%S")
+    confirmed = _write_candidate(
+        memories_dir,
+        "project-candidate-confirmed-abc123.md",
+        created=old_date,
+        status="confirmed",
+    )
+    rejected = _write_candidate(
+        memories_dir,
+        "project-candidate-rejected-def456.md",
+        created=old_date,
+        status="rejected",
+    )
+
+    config_file.write_text(yaml.dump({
+        "project_inference": {"enabled": True}
+    }))
+
+    with patch.object(pis, "MEMORIES_DIR", memories_dir), \
+         patch.object(pis, "DEPLOY_DIR", deploy), \
+         patch.object(pis, "CONFIG_PATH", config_file):
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        scanner = ProjectInferenceScanner(role="full", cache=cache)
+        deleted = await scanner._cleanup_stale_candidates()
+
+    # No files should be deleted (confirmed and rejected are preserved)
+    assert deleted == 0
+    assert confirmed.exists()
+    assert rejected.exists()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_caps_pending_at_max(tmp_path):
+    """When pending count exceeds max_pending_candidates, oldest are deleted."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    config_file = tmp_path / "config.yaml"
+
+    # Create 250 pending candidates all within TTL (5 days old)
+    recent_date = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%S")
+    for i in range(250):
+        # Stagger creation times slightly so we can test "oldest first" behavior
+        created = (datetime.now() - timedelta(days=5, hours=i)).strftime("%Y-%m-%dT%H:%M:%S")
+        _write_candidate(
+            memories_dir,
+            f"project-candidate-item-{i:03d}-{i:06x}.md",
+            created=created,
+            status="pending_confirmation",
+        )
+
+    # Set max to 200
+    config_file.write_text(yaml.dump({
+        "project_inference": {
+            "enabled": True,
+            "max_pending_candidates": 200,
+        }
+    }))
+
+    with patch.object(pis, "MEMORIES_DIR", memories_dir), \
+         patch.object(pis, "DEPLOY_DIR", deploy), \
+         patch.object(pis, "CONFIG_PATH", config_file):
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        scanner = ProjectInferenceScanner(role="full", cache=cache)
+        deleted = await scanner._cleanup_stale_candidates()
+
+    # Exactly 50 should be deleted (250 - 200 cap)
+    assert deleted == 50
+    # 200 should remain
+    remaining = list(memories_dir.glob("project-candidate-*.md"))
+    assert len(remaining) == 200
+
+
+@pytest.mark.asyncio
+async def test_cleanup_oldest_first_deletion_order(tmp_path):
+    """When capping, oldest candidates are deleted first."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    config_file = tmp_path / "config.yaml"
+
+    # Create 5 candidates with different ages
+    dates = [
+        (datetime.now() - timedelta(days=20)).strftime("%Y-%m-%dT%H:%M:%S"),  # oldest
+        (datetime.now() - timedelta(days=15)).strftime("%Y-%m-%dT%H:%M:%S"),
+        (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%S"),
+        (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%dT%H:%M:%S"),
+        (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S"),   # newest
+    ]
+
+    for i, created in enumerate(dates):
+        _write_candidate(
+            memories_dir,
+            f"project-candidate-item-{i}-{i:06x}.md",
+            created=created,
+            status="pending_confirmation",
+        )
+
+    # Set max to 3 (should delete 2 oldest)
+    config_file.write_text(yaml.dump({
+        "project_inference": {
+            "enabled": True,
+            "max_pending_candidates": 3,
+            "candidate_ttl_days": 999,  # No TTL expiry
+        }
+    }))
+
+    with patch.object(pis, "MEMORIES_DIR", memories_dir), \
+         patch.object(pis, "DEPLOY_DIR", deploy), \
+         patch.object(pis, "CONFIG_PATH", config_file):
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        scanner = ProjectInferenceScanner(role="full", cache=cache)
+        deleted = await scanner._cleanup_stale_candidates()
+
+    # 2 should be deleted
+    assert deleted == 2
+
+    # The 2 oldest should be gone
+    assert not (memories_dir / "project-candidate-item-0-000000.md").exists()
+    assert not (memories_dir / "project-candidate-item-1-000001.md").exists()
+
+    # The 3 newest should remain
+    assert (memories_dir / "project-candidate-item-2-000002.md").exists()
+    assert (memories_dir / "project-candidate-item-3-000003.md").exists()
+    assert (memories_dir / "project-candidate-item-4-000004.md").exists()

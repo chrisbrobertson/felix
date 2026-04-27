@@ -300,6 +300,7 @@ Discovered items appear as candidates until you confirm or reject them:
 /confirm 3               # confirm candidate #3 as a real project or code repo
 /confirm 3 work          # confirm and override the category guess
 /reject 3                # reject candidate #3 (won't be re-proposed)
+/review purge [N]        # bulk-delete pending candidates older than N days (default 30)
 /edit 3 due_date=2026-08-01  # edit a field on candidate #3 before confirming
 ```
 
@@ -310,6 +311,8 @@ project_inference:
   scan_interval_min: 15
   confidence_threshold: 0.7
   source_types: [email_thread, meeting_transcript, slack_thread]
+  candidate_ttl_days: 30        # auto-delete pending candidates older than this
+  max_pending_candidates: 200   # cap total pending candidates; oldest deleted first
 
 code_scanner:
   require_confirmation: false  # set true to require confirmation for new repos
