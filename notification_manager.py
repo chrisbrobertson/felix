@@ -239,26 +239,30 @@ class NotificationManager:
 
         state["sent_commitment_alerts"] = pruned_commitments
 
-        # Prune pre-meeting alerts: remove if start_time has passed.
-        # event_id is the full filename stem (e.g. "calendar-event-macstudio-…-abc123")
-        # so we can look up the file directly without a wildcard glob.
-        pruned_meetings = []
-        for event_id in state.get("sent_pre_meeting", []):
-            event_file = MEMORIES_DIR / (event_id + ".md")
-            if not event_file.exists():
-                continue  # File deleted — discard
-
-            fm = _parse_frontmatter(await read_text_with_retry_async(event_file))
-            start_time_str = fm.get("start_time")
-            if not start_time_str:
-                continue  # No start time — discard
-
+        # Prune pre-meeting alerts: remove entries whose event is now in the past.
+        # Keys may be source_url ("calendar:…", new format) or filename stem
+        # ("calendar-event-…", legacy). Build a start_time lookup covering both
+        # key styles from the cache so we avoid one iCloud read per entry.
+        cal_entries = await self._cache.query_by_prefix("calendar-event-")
+        event_times: dict[str, datetime] = {}
+        for e in cal_entries:
             try:
-                start_time = datetime.fromisoformat(start_time_str)
-                if start_time > now:
-                    pruned_meetings.append(event_id)
+                fm_e = json.loads(e["frontmatter"])
+                start_str = fm_e.get("start_time")
+                if not start_str:
+                    continue
+                t = datetime.fromisoformat(start_str)
+                if fm_e.get("source_url"):
+                    event_times.setdefault(fm_e["source_url"], t)
+                event_times.setdefault(Path(e["filename"]).stem, t)
             except Exception:
-                pass  # Invalid timestamp — discard
+                continue
+
+        pruned_meetings = []
+        for event_key in state.get("sent_pre_meeting", []):
+            t = event_times.get(event_key)
+            if t is not None and t > now:
+                pruned_meetings.append(event_key)
 
         state["sent_pre_meeting"] = pruned_meetings
 
@@ -780,18 +784,23 @@ class NotificationManager:
             if not (window_start <= start_time <= window_end):
                 continue  # Outside window
 
-            # Use the full filename stem as the dedup key so _prune_sent_alerts
-            # can look up the file directly (no wildcard glob needed).
-            event_id = Path(entry["filename"]).stem  # e.g. "calendar-event-macstudio-2026-04-16-dentist-def456"
-
-            if event_id in sent_meetings:
+            # Deduplicate by source_url (machine-independent, derived from
+            # title+start_time) so the same event written by two machines only
+            # fires one alert. Fall back to filename stem for files without
+            # source_url (pre-scanner versions) and check both keys so in-flight
+            # entries from old state survive migration without a spurious re-send.
+            source_url_key = fm.get("source_url")
+            stem_key = Path(entry["filename"]).stem
+            if (source_url_key and source_url_key in sent_meetings) or stem_key in sent_meetings:
                 continue  # Already sent
+
+            event_key = source_url_key or stem_key
 
             # Assemble pre-meeting context
             context_text = await self._assemble_pre_meeting_context(fm, start_time)
             await self.send_message(context_text)
-            sent_meetings.add(event_id)
-            log.info("Sent pre-meeting context for event %s", event_id)
+            sent_meetings.add(event_key)
+            log.info("Sent pre-meeting context for event %s", event_key)
 
         state["sent_pre_meeting"] = list(sent_meetings)
         _save_state(state)

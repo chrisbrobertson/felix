@@ -33,6 +33,7 @@ def make_calendar_event(
     all_day: bool = False,
     participants: list = None,
     location: str = None,
+    source_url: str = None,
 ) -> Path:
     """Create a calendar event memory file."""
     p = memories_dir / f"calendar-event-{event_id}.md"
@@ -46,6 +47,8 @@ def make_calendar_event(
         "location": location,
         "last_scanned": "2026-04-11T10:00:00",
     }
+    if source_url is not None:
+        fm["source_url"] = source_url
     frontmatter = yaml.dump(fm, sort_keys=False)
     p.write_text(f"---\n{frontmatter}---\n\n## Details\nTest event.\n")
     return p
@@ -1020,6 +1023,52 @@ async def test_pre_meeting_sent_alerts_pruned(tmp_path):
 
     assert "calendar-event-evt-past" not in reloaded["sent_pre_meeting"]
     assert "calendar-event-evt-future" in reloaded["sent_pre_meeting"]
+
+
+@pytest.mark.asyncio
+async def test_pre_meeting_no_double_alert_across_machines(tmp_path):
+    """Same event written by two machines fires exactly one pre-meeting alert.
+
+    MacBook (watcher role) and Mac Studio (full role) each write a hostname-scoped
+    calendar-event file for the same meeting. Both share the same source_url
+    (derived from title+start_time in calendar_scanner.py). The notification
+    manager must deduplicate on source_url so only one Telegram message is sent.
+    """
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\nnotifications:\n  enabled: true\n")
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_pre_meeting": []}))
+
+    now = datetime(2026, 4, 11, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    event_time = now + timedelta(minutes=10)
+    shared_source_url = "calendar:test-cross-machine-hash-abc"
+
+    # Same logical event, two hostname-scoped files
+    make_calendar_event(memories_dir, "macbook-evt456", "Team Standup", event_time.isoformat(),
+                        source_url=shared_source_url)
+    make_calendar_event(memories_dir, "macstudio-evt456", "Team Standup", event_time.isoformat(),
+                        source_url=shared_source_url)
+
+    bot_mock = AsyncMock()
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    state = nm._load_state()
+                    # Cycle 1: exactly one alert, not two
+                    await mgr._check_pre_meeting_alerts(state)
+                    assert bot_mock.send_message.call_count == 1
+                    assert shared_source_url in state["sent_pre_meeting"]
+
+                    # Cycle 2: no re-fire
+                    await mgr._check_pre_meeting_alerts(state)
+                    assert bot_mock.send_message.call_count == 1
 
 
 # ── Message Chunking ──────────────────────────────────────────────────────────
