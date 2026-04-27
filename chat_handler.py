@@ -2743,6 +2743,41 @@ class TelegramChatHandler:
         finally:
             context.user_data["awaiting_addproject_reply"] = False
 
+    def _list_projects_text(self, category: str = None, limit: int = 50) -> str:
+        """Return formatted projects list text (called by cmd_projects and tool dispatch)."""
+        from datetime import datetime
+        limit = max(1, min(limit, 100))
+        projects = self._goal_manager.list_projects(category=category, status="active")
+        self._last_project_set = projects
+        self._active_list = self._last_project_set
+
+        if not projects:
+            return "No active projects found."
+
+        lines = [f"Active projects ({len(projects)} total):"]
+
+        for i, path in enumerate(projects[:limit], 1):
+            fm = self._parse_frontmatter(path)
+            cat = fm.get("category", "")
+            title = fm.get("source_title", "")
+            proj_status = fm.get("status", "")
+            due = fm.get("due_date")
+            due_str = f"due {due}" if due else "no due date"
+
+            milestones = fm.get("milestones", [])
+            if milestones:
+                done_count = sum(1 for m in milestones if m.get("done"))
+                milestone_str = f" (milestones: {done_count}/{len(milestones)} done)"
+            else:
+                milestone_str = ""
+
+            lines.append(f"{i}. [{cat}] {title} — {proj_status} — {due_str}{milestone_str}")
+
+        if len(projects) > limit:
+            lines.append(f"... and {len(projects) - limit} more.")
+
+        return "\n".join(lines)
+
     async def cmd_projects(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
@@ -2761,39 +2796,33 @@ class TelegramChatHandler:
                 status = None
 
         try:
-            projects = self._goal_manager.list_projects(category=category, status=status)
-            self._last_project_set = projects
-            self._active_list = self._last_project_set
-
-            if not projects:
-                await update.message.reply_text("No projects found.")
-                return
-
-            # Format the list
-            from datetime import datetime, timedelta
-            lines = []
-            header = f"{status.capitalize() if status else 'All'} projects ({len(projects)} total):"
-            lines.append(header)
-
-            for i, path in enumerate(projects, 1):
-                fm = self._parse_frontmatter(path)
-                cat = fm.get("category", "")
-                title = fm.get("source_title", "")
-                proj_status = fm.get("status", "")
-                due = fm.get("due_date")
-                due_str = f"due {due}" if due else "no due date"
-
-                # Milestone summary
-                milestones = fm.get("milestones", [])
-                if milestones:
-                    done_count = sum(1 for m in milestones if m.get("done"))
-                    milestone_str = f" (milestones: {done_count}/{len(milestones)} done)"
-                else:
-                    milestone_str = ""
-
-                lines.append(f"{i}. [{cat}] {title} — {proj_status} — {due_str}{milestone_str}")
-
-            await update.message.reply_text("\n".join(lines))
+            if status != "active":
+                # Non-active status requests: list directly without _list_projects_text
+                projects = self._goal_manager.list_projects(category=category, status=status)
+                self._last_project_set = projects
+                self._active_list = self._last_project_set
+                if not projects:
+                    await update.message.reply_text("No projects found.")
+                    return
+                lines = [f"{status.capitalize() if status else 'All'} projects ({len(projects)} total):"]
+                for i, path in enumerate(projects, 1):
+                    fm = self._parse_frontmatter(path)
+                    cat = fm.get("category", "")
+                    title = fm.get("source_title", "")
+                    proj_status = fm.get("status", "")
+                    due = fm.get("due_date")
+                    due_str = f"due {due}" if due else "no due date"
+                    milestones = fm.get("milestones", [])
+                    if milestones:
+                        done_count = sum(1 for m in milestones if m.get("done"))
+                        milestone_str = f" (milestones: {done_count}/{len(milestones)} done)"
+                    else:
+                        milestone_str = ""
+                    lines.append(f"{i}. [{cat}] {title} — {proj_status} — {due_str}{milestone_str}")
+                await update.message.reply_text("\n".join(lines))
+            else:
+                text = self._list_projects_text(category=category)
+                await update.message.reply_text(text)
         except Exception as e:
             log.exception("Error in cmd_projects")
             await update.message.reply_text(f"Error listing projects: {_safe_error(e)}")

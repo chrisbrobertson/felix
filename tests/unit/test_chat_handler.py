@@ -4821,3 +4821,92 @@ async def test_command_registry_includes_aichat(handler):
         for cmd, _ in commands
     }
     assert "aichat" in all_in_registry
+
+
+# --- _list_projects_text (tool dispatch) ---
+
+def _write_project_file(memories_dir: Path, slug: str, title: str,
+                        category: str = "work", status: str = "active",
+                        due_date: str = None, milestones: list = None) -> Path:
+    due_line = f"due_date: '{due_date}'" if due_date else "due_date: null"
+    ms_yaml = ""
+    if milestones:
+        ms_yaml = "milestones:\n" + "".join(
+            f"  - text: {m['text']}\n    done: {str(m['done']).lower()}\n"
+            for m in milestones
+        )
+    else:
+        ms_yaml = "milestones: []\n"
+    path = memories_dir / f"project-{slug}.md"
+    path.write_text(
+        f"---\n"
+        f"type: project\n"
+        f"category: {category}\n"
+        f"source_title: {title}\n"
+        f"summary: ''\n"
+        f"tags: []\n"
+        f"created: '2026-04-15T09:00:00'\n"
+        f"{due_line}\n"
+        f"status: {status}\n"
+        f"priority: medium\n"
+        f"linked_goal: null\n"
+        f"{ms_yaml}"
+        f"inferred_from: []\n"
+        f"notes: ''\n"
+        f"---\n\n## Notes\n"
+    )
+    return path
+
+
+def test_list_projects_text_returns_active_projects(handler, brain_dir):
+    """_list_projects_text returns numbered list of active projects."""
+    m = brain_dir / "memories"
+    _write_project_file(m, "work-rollout-abc123", "Q2 Rollout", category="work",
+                        due_date="2026-07-01")
+    _write_project_file(m, "personal-shed-def456", "Garden Shed", category="personal")
+    _write_project_file(m, "work-done-ghi789", "Old Project", status="completed")
+
+    text = handler._list_projects_text()
+    assert "Q2 Rollout" in text
+    assert "Garden Shed" in text
+    assert "Old Project" not in text  # completed, not active
+    assert "Active projects" in text
+
+
+def test_list_projects_text_shows_milestone_progress(handler, brain_dir):
+    """_list_projects_text includes milestone done/total counts."""
+    m = brain_dir / "memories"
+    _write_project_file(
+        m, "work-feature-abc123", "Feature Launch",
+        milestones=[{"text": "Design", "done": True}, {"text": "Build", "done": False}]
+    )
+
+    text = handler._list_projects_text()
+    assert "milestones: 1/2 done" in text
+
+
+def test_list_projects_text_empty_when_no_active(handler, brain_dir):
+    """_list_projects_text returns 'No active projects' when none exist."""
+    text = handler._list_projects_text()
+    assert "No active projects" in text
+
+
+def test_list_projects_text_respects_limit(handler, brain_dir):
+    """_list_projects_text truncates output to limit rows."""
+    m = brain_dir / "memories"
+    for i in range(5):
+        _write_project_file(m, f"work-p{i}-{i:06d}", f"Project {i}")
+
+    text = handler._list_projects_text(limit=3)
+    assert "and 2 more" in text
+
+
+def test_list_projects_text_filters_by_category(handler, brain_dir):
+    """_list_projects_text honours category filter when passed."""
+    m = brain_dir / "memories"
+    _write_project_file(m, "work-thing-abc123", "Work Thing", category="work")
+    _write_project_file(m, "personal-thing-def456", "Personal Thing", category="personal")
+
+    text = handler._list_projects_text(category="work")
+    assert "Work Thing" in text
+    assert "Personal Thing" not in text
