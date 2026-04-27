@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -404,6 +404,66 @@ class ProjectInferenceScanner:
         min_confidence = self._inference_config().get("confidence_threshold", 0.7)
         return [item for item in raw_items if float(item.get("confidence", 0)) >= min_confidence]
 
+    # ── Candidate cleanup ─────────────────────────────────────────────────────
+
+    async def _cleanup_stale_candidates(self) -> int:
+        """Delete pending_confirmation candidates exceeding TTL or max cap.
+
+        Uses cache queries (not glob) to avoid disk fan-out.
+        Returns number of files deleted.
+        """
+        ic = self._inference_config()
+        ttl_days = ic.get("candidate_ttl_days", 30)
+        max_pending = ic.get("max_pending_candidates", 200)
+
+        now = datetime.now()
+        cutoff = now - timedelta(days=ttl_days)
+
+        rows = await self._cache.query_by_prefix("project-candidate-")
+
+        pending = []  # (created_dt, path)
+        for row in rows:
+            try:
+                fm = json.loads(row["frontmatter"])
+            except Exception:
+                continue
+            if fm.get("status") != "pending_confirmation":
+                continue
+            created_str = str(fm.get("created", ""))
+            try:
+                created_dt = datetime.fromisoformat(created_str)
+            except Exception:
+                created_dt = datetime.fromtimestamp(row["mtime"])
+            pending.append((created_dt, MEMORIES_DIR / row["filename"]))
+
+        pending.sort(key=lambda x: x[0])  # oldest first
+
+        to_delete: set = set()
+        for created_dt, path in pending:
+            if created_dt < cutoff:
+                to_delete.add(path)
+
+        remaining = [(dt, p) for dt, p in pending if p not in to_delete]
+        excess = len(remaining) - max_pending
+        if excess > 0:
+            for _, path in remaining[:excess]:
+                to_delete.add(path)
+
+        deleted = 0
+        for path in to_delete:
+            try:
+                path.unlink()
+                deleted += 1
+            except OSError:
+                log.debug("Could not delete candidate %s", path.name)
+
+        if deleted:
+            log.info(
+                "Candidate cleanup: removed %d stale/excess pending (ttl=%dd, cap=%d)",
+                deleted, ttl_days, max_pending,
+            )
+        return deleted
+
     # ── Candidate file write ──────────────────────────────────────────────────
 
     async def _write_candidate(self, item: dict, source_path: Path) -> None:
@@ -525,6 +585,8 @@ class ProjectInferenceScanner:
 
             except Exception:
                 log.exception("Error processing %s for project inference", filename)
+
+        await self._cleanup_stale_candidates()
 
         if processed_count:
             log.info("Project inference scan complete — %d source file(s) processed", processed_count)

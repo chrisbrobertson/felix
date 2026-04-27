@@ -6,6 +6,13 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.10.0] — 2026-04-27
+
+### Added
+- `/review_purge [N]` command to bulk-delete pending project candidates older than N days (default 30) (#56)
+- Automatic candidate cleanup in `ProjectInferenceScanner`: files older than `candidate_ttl_days` days (default 30) or exceeding `max_pending_candidates` total (default 200) are deleted each scan cycle (#56)
+- Config options `project_inference.candidate_ttl_days` and `project_inference.max_pending_candidates` to tune cleanup behaviour
+
 ## [1.9.2] — 2026-04-26
 
 ### Added

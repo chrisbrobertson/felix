@@ -188,6 +188,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("review", self.cmd_review))
         self.app.add_handler(CommandHandler("confirm", self.cmd_confirm))
         self.app.add_handler(CommandHandler("reject", self.cmd_reject))
+        self.app.add_handler(CommandHandler("review_purge", self.cmd_review_purge))
         self.app.add_handler(CommandHandler("edit", self.cmd_edit))
         # Agent actions
         self.app.add_handler(CommandHandler("actions", self.cmd_actions))
@@ -3605,6 +3606,48 @@ class TelegramChatHandler:
             await update.message.reply_text(f"Rejected: \"{source_title}\"")
         except Exception as e:
             await update.message.reply_text(f"Error deleting candidate: {_safe_error(e)}")
+
+    async def cmd_review_purge(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Bulk-delete pending candidates older than N days (/review purge [N])."""
+        if not self._check_auth(update):
+            return
+
+        args = context.args or []
+        try:
+            days = int(args[0]) if args else 30
+        except (ValueError, IndexError):
+            days = 30
+
+        if days < 1:
+            await update.message.reply_text("Days must be >= 1.")
+            return
+
+        cutoff = datetime.now() - timedelta(days=days)
+
+        rows = await self._cache.query_by_prefix("project-candidate-")
+        deleted = 0
+        for row in rows:
+            try:
+                fm = json.loads(row["frontmatter"]) if isinstance(row["frontmatter"], str) else row["frontmatter"]
+            except Exception:
+                continue
+            if fm.get("status") != "pending_confirmation":
+                continue
+            created_str = str(fm.get("created", ""))
+            try:
+                created_dt = datetime.fromisoformat(created_str)
+            except Exception:
+                created_dt = datetime.fromtimestamp(row["mtime"])
+            if created_dt < cutoff:
+                try:
+                    (BRAIN_DIR / "memories" / row["filename"]).unlink()
+                    deleted += 1
+                except OSError:
+                    pass
+
+        await update.message.reply_text(
+            f"Purged {deleted} pending candidate(s) older than {days} day(s)."
+        )
 
     async def cmd_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Edit a candidate field: /edit N field=value"""
