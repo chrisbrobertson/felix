@@ -2745,8 +2745,10 @@ class TelegramChatHandler:
 
     def _list_projects_text(self, category: str = None, limit: int = 50) -> str:
         """Return formatted projects list text (called by cmd_projects and tool dispatch)."""
-        from datetime import datetime
         limit = max(1, min(limit, 100))
+        # "code" maps to code-repo memory files with hostname grouping, not GoalManager
+        if category == "code":
+            return self._list_code_text(limit=limit)
         projects = self._goal_manager.list_projects(category=category, status="active")
         self._last_project_set = projects
         self._active_list = self._last_project_set
@@ -2821,7 +2823,7 @@ class TelegramChatHandler:
                     lines.append(f"{i}. [{cat}] {title} — {proj_status} — {due_str}{milestone_str}")
                 await update.message.reply_text("\n".join(lines))
             else:
-                text = self._list_projects_text(category=category)
+                text = self._list_projects_text(category=category, limit=100)
                 await update.message.reply_text(text)
         except Exception as e:
             log.exception("Error in cmd_projects")

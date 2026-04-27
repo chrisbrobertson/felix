@@ -4910,3 +4910,16 @@ def test_list_projects_text_filters_by_category(handler, brain_dir):
     text = handler._list_projects_text(category="work")
     assert "Work Thing" in text
     assert "Personal Thing" not in text
+
+
+def test_list_projects_text_code_routes_to_code_repos(handler, brain_dir):
+    """_list_projects_text(category='code') returns code-repo content, not GoalManager projects."""
+    m = brain_dir / "memories"
+    # GoalManager project that should NOT appear
+    _write_project_file(m, "work-thing-abc123", "GoalManager Project", category="work")
+    # Code repo that SHOULD appear
+    write_project_memory(m, "myrepo", category="code", summary="Code repo.")
+
+    text = handler._list_projects_text(category="code")
+    assert "myrepo" in text
+    assert "GoalManager Project" not in text
