@@ -447,6 +447,13 @@ scripts/promote_local_features.py --dry-run   # preview what would be promoted, 
 
 Requires `gh` authenticated against the target repo and `claude` CLI on PATH.
 
+`scripts/babysit-with-review.sh` is a review-gated variant: after every PR, it runs a codex<->claude review cycle and, once codex reports zero blocking findings, automatically merges the PR (`gh pr merge --merge --delete-branch`) and redeploys the daemon (`NONINTERACTIVE=1 ./install.sh`) before the next iteration. Use this when you want every landed change reviewed before it ships.
+
+```bash
+scripts/babysit-with-review.sh                   # defaults: MAX_ITER=20, MAX_REVIEW_CYCLES=3
+MAX_REVIEW_CYCLES=5 scripts/babysit-with-review.sh
+```
+
 ### Managing proactive notifications
 
 ```

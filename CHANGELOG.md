@@ -6,6 +6,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `scripts/babysit-with-review.sh` — review-gated backlog drainer: promotes local feature/bug files, loops `claude -p` against open `kind:bug`/`kind:feature` issues, runs a codex<->claude review cycle on each PR, and automatically merges + deploys (`NONINTERACTIVE=1 ./install.sh`) when codex reports zero blocking findings.
+
 ## [1.9.1] — 2026-04-25
 
 ### Fixed
