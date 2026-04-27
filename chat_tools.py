@@ -19,15 +19,19 @@ TOOLS: list[dict] = [
         "function": {
             "name": "list_projects",
             "description": (
-                "List known code/work/person projects from memory, grouped by "
-                "project name across all laptops/hostnames. Call this when the "
-                "user asks about 'projects', 'repos', 'what am I working on', "
-                "or wants a list grouped by hostname/laptop."
+                "List active projects from memory. Use category='code' to list "
+                "code repositories grouped by hostname/laptop. Omit category or "
+                "use a GoalManager category (work, personal, family, learning, other) "
+                "to list work/life projects. Call this when the user asks about "
+                "'projects', 'repos', 'what am I working on'."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "category": {"type": "string", "description": "Optional filter: code, work, person"},
+                    "category": {
+                        "type": "string",
+                        "description": "Optional filter: code (repos), work, personal, family, learning, other",
+                    },
                     "limit": {"type": "integer", "description": "Max projects to return (default 50)"},
                 },
             },
