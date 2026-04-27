@@ -394,6 +394,8 @@ If you'd rather review drafts before they run, send `/skill-approval on`. New dr
 
 ### Feature and bug tracking
 
+> Agent/Claude Code reference: `docs/finding-work.md` — label vocabulary, `gh` CLI recipes, local-file schema, and the autonomous drainer.
+
 Felix includes a lightweight feature/bug tracker accessible via Telegram. You can optionally back it with GitHub Issues for full history and web UI access.
 
 **Basic usage (local files):**
