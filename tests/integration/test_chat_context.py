@@ -8,40 +8,23 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 import chat_handler as ch
-
-CONFIG_YAML = """\
-telegram:
-  bot_token: fake-token
-user:
-  telegram_user_id: "12345"
-  name: Chris
-  timezone: America/Los_Angeles
-"""
+from memory_cache import MemoryCache
 
 
 @pytest.fixture
-def brain_dir(tmp_path):
-    d = tmp_path / "brain"
-    d.mkdir()
-    (d / "memories").mkdir()
-    (d / "config.yaml").write_text(CONFIG_YAML)
-    return d
+def handler(brain_dir, deploy_dir):
+    """Override the shared handler fixture to use pass-through cache for context tests."""
+    # Create a cache in pass-through mode for these tests
+    cache = MemoryCache(None, brain_dir / "memories", enabled=False)
 
-
-@pytest.fixture
-def handler(brain_dir):
-    from memory_cache import MemoryCache
     mock_app = MagicMock()
     mock_builder = MagicMock()
     mock_builder.token.return_value = mock_builder
     mock_builder.build.return_value = mock_app
 
-    # Create a cache in pass-through mode for tests
-    cache = MemoryCache(None, brain_dir / "memories", enabled=False)
-
     with patch.object(ch, "BRAIN_DIR", brain_dir), \
+         patch.object(ch, "DEPLOY_DIR", deploy_dir), \
          patch("chat_handler.ApplicationBuilder", return_value=mock_builder), \
          patch("chat_handler.SkillExecutor"):
         h = ch.TelegramChatHandler(cache=cache)
