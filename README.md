@@ -300,7 +300,7 @@ Discovered items appear as candidates until you confirm or reject them:
 /confirm 3               # confirm candidate #3 as a real project or code repo
 /confirm 3 work          # confirm and override the category guess
 /reject 3                # reject candidate #3 (won't be re-proposed)
-/review purge [N]        # bulk-delete pending candidates older than N days (default 30)
+/review_purge [N]        # bulk-delete pending candidates older than N days (default 30)
 /edit 3 due_date=2026-08-01  # edit a field on candidate #3 before confirming
 ```
 
