@@ -9,6 +9,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 - `scripts/babysit-with-review.sh` — review-gated backlog drainer: promotes local feature/bug files, loops `claude -p` against open `kind:bug`/`kind:feature` issues, runs a codex<->claude review cycle on each PR, and automatically merges + deploys (`NONINTERACTIVE=1 ./install.sh`) when codex reports zero blocking findings.
 
+### Fixed
+- `scripts/promote_local_features.py` failed with "could not add label: 'kind:bug' not found" on any repo without pre-existing labels. Added `gh_ensure_labels()` that bootstraps the standard label vocabulary (`kind:`, `status:`, `priority:` labels via `gh label create --force`) before the first issue is created.
+
 ## [1.9.1] — 2026-04-25
 
 ### Fixed

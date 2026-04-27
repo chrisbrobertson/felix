@@ -29,6 +29,39 @@ import yaml
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
 
+# Mirrors _STANDARD_LABELS in github_client.py — must stay in sync.
+STANDARD_LABELS = [
+    {"name": "kind:feature",       "color": "0075ca", "description": "New feature or enhancement"},
+    {"name": "kind:bug",           "color": "d73a4a", "description": "Something isn't working"},
+    {"name": "status:planned",     "color": "cfd3d7", "description": "Planned but not started"},
+    {"name": "status:in-progress", "color": "fbca04", "description": "Currently being worked on"},
+    {"name": "priority:low",       "color": "e4e669", "description": "Low priority"},
+    {"name": "priority:medium",    "color": "ffa500", "description": "Normal priority"},
+    {"name": "priority:high",      "color": "e11d48", "description": "High priority"},
+    {"name": "priority:critical",  "color": "b60205", "description": "Critical — blocking"},
+]
+
+
+def gh_ensure_labels(repo: str | None) -> None:
+    """Bootstrap the standard label vocabulary on the GitHub repo (idempotent).
+
+    Uses --force so the call is safe to re-run; warns on unexpected errors
+    but never aborts — a missing label is logged, not fatal here.
+    """
+    for lb in STANDARD_LABELS:
+        cmd = [
+            "gh", "label", "create", lb["name"],
+            "--color", lb["color"],
+            "--description", lb["description"],
+            "--force",
+        ]
+        if repo:
+            cmd += ["--repo", repo]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"WARN: could not ensure label {lb['name']!r}: {result.stderr.strip()}",
+                  file=sys.stderr)
+
 
 def parse_frontmatter(text: str) -> dict:
     m = re.match(r"^---\n(.*?)\n---", text, re.DOTALL)
@@ -133,6 +166,9 @@ def main() -> int:
     if not pending:
         print("Nothing to promote.")
         return 0
+
+    if not args.dry_run:
+        gh_ensure_labels(args.repo)
 
     print(f"{len(pending)} file(s) to promote:")
     for f, fm in pending:

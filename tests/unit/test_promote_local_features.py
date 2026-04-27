@@ -103,6 +103,7 @@ def test_successful_promote_stamps_frontmatter_and_archives(tmp_path, monkeypatc
 
     monkeypatch.setattr(promote, "BRAIN_DIR", tmp_path)
     monkeypatch.setattr(sys, "argv", ["promote_local_features.py"])
+    monkeypatch.setattr(promote, "gh_ensure_labels", lambda repo: None)
 
     fake_create = subprocess.CompletedProcess(
         args=[], returncode=0,
@@ -123,11 +124,11 @@ def test_successful_promote_stamps_frontmatter_and_archives(tmp_path, monkeypatc
     assert fm["github_issue_number"] == 123
     # gh was invoked once with expected labels
     assert mock_run.call_count == 1
-    args = mock_run.call_args[0][0]
-    assert args[:3] == ["gh", "issue", "create"]
-    assert "kind:feature" in args
-    assert "priority:medium" in args
-    assert "chat" in args
+    call_args = mock_run.call_args[0][0]
+    assert call_args[:3] == ["gh", "issue", "create"]
+    assert "kind:feature" in call_args
+    assert "priority:medium" in call_args
+    assert "chat" in call_args
 
 
 def test_done_status_closes_issue(tmp_path, monkeypatch):
@@ -141,6 +142,7 @@ def test_done_status_closes_issue(tmp_path, monkeypatch):
     })
     monkeypatch.setattr(promote, "BRAIN_DIR", tmp_path)
     monkeypatch.setattr(sys, "argv", ["promote_local_features.py"])
+    monkeypatch.setattr(promote, "gh_ensure_labels", lambda repo: None)
 
     create_result = subprocess.CompletedProcess(
         args=[], returncode=0,
@@ -170,12 +172,33 @@ def test_gh_failure_returns_nonzero(tmp_path, monkeypatch, capsys):
     })
     monkeypatch.setattr(promote, "BRAIN_DIR", tmp_path)
     monkeypatch.setattr(sys, "argv", ["promote_local_features.py"])
+    monkeypatch.setattr(promote, "gh_ensure_labels", lambda repo: None)
 
     err = subprocess.CalledProcessError(1, ["gh"], stderr="API rate limit")
     with patch.object(promote.subprocess, "run", side_effect=err):
         rc = promote.main()
 
     assert rc == 1
+
+
+def test_gh_ensure_labels_calls_gh_for_each_standard_label(tmp_path, monkeypatch):
+    ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    with patch.object(promote.subprocess, "run", return_value=ok) as mock_run:
+        promote.gh_ensure_labels(repo=None)
+
+    assert mock_run.call_count == len(promote.STANDARD_LABELS)
+    first_args = mock_run.call_args_list[0][0][0]
+    assert first_args[:3] == ["gh", "label", "create"]
+    assert "--force" in first_args
+
+
+def test_gh_ensure_labels_warns_on_failure_but_continues(tmp_path, capsys):
+    fail = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="not found")
+    with patch.object(promote.subprocess, "run", return_value=fail):
+        promote.gh_ensure_labels(repo=None)  # must not raise
+
+    err = capsys.readouterr().err
+    assert "WARN" in err
 
 
 def test_nothing_to_promote_returns_zero(tmp_path, monkeypatch, capsys):
