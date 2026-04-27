@@ -11,6 +11,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 - `scripts/promote_local_features.py` failed with "could not add label: 'kind:bug' not found" on any repo without pre-existing labels. Added `gh_ensure_labels()` that bootstraps the standard label vocabulary (`kind:`, `status:`, `priority:` labels via `gh label create --force`) before the first issue is created.
+- Bumped `litellm` 1.83.4 → 1.83.14 to resolve 3 CVEs (critical SQL injection in proxy key verification, high SSTI in prompts endpoint, high command execution via MCP stdio endpoint; all fixed in 1.83.7).
+- Bumped `lxml` 6.0.3 → 6.1.0 to resolve CVE: XXE via default `iterparse()` configuration (high).
 
 ## [1.9.1] — 2026-04-25
 
