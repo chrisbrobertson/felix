@@ -6,6 +6,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- `scripts/promote_local_features.py`: throttle `gh issue create` calls with a configurable inter-issue delay (default 2 s, `--delay-seconds` flag to override or disable) to avoid tripping GitHub's secondary rate limits when promoting large batches of local feature/bug files.
+
 ## [1.9.2] — 2026-04-26
 
 ### Added

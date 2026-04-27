@@ -104,6 +104,7 @@ def test_successful_promote_stamps_frontmatter_and_archives(tmp_path, monkeypatc
     monkeypatch.setattr(promote, "BRAIN_DIR", tmp_path)
     monkeypatch.setattr(sys, "argv", ["promote_local_features.py"])
     monkeypatch.setattr(promote, "gh_ensure_labels", lambda repo: None)
+    monkeypatch.setattr(promote.time, "sleep", lambda *_: None)
 
     fake_create = subprocess.CompletedProcess(
         args=[], returncode=0,
@@ -143,6 +144,7 @@ def test_done_status_closes_issue(tmp_path, monkeypatch):
     monkeypatch.setattr(promote, "BRAIN_DIR", tmp_path)
     monkeypatch.setattr(sys, "argv", ["promote_local_features.py"])
     monkeypatch.setattr(promote, "gh_ensure_labels", lambda repo: None)
+    monkeypatch.setattr(promote.time, "sleep", lambda *_: None)
 
     create_result = subprocess.CompletedProcess(
         args=[], returncode=0,
@@ -173,6 +175,7 @@ def test_gh_failure_returns_nonzero(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(promote, "BRAIN_DIR", tmp_path)
     monkeypatch.setattr(sys, "argv", ["promote_local_features.py"])
     monkeypatch.setattr(promote, "gh_ensure_labels", lambda repo: None)
+    monkeypatch.setattr(promote.time, "sleep", lambda *_: None)
 
     err = subprocess.CalledProcessError(1, ["gh"], stderr="API rate limit")
     with patch.object(promote.subprocess, "run", side_effect=err):
@@ -208,3 +211,60 @@ def test_nothing_to_promote_returns_zero(tmp_path, monkeypatch, capsys):
     rc = promote.main()
     assert rc == 0
     assert "Nothing to promote" in capsys.readouterr().out
+
+
+def test_inter_issue_delay_invoked_between_creates(tmp_path, monkeypatch):
+    memories = tmp_path / "memories"
+    _make_feature_file(memories, "feature-request-a-iii111.md", {
+        "title": "First",
+        "type": "feature_request",
+        "kind": "feature",
+        "status": "new",
+        "priority": "medium",
+    })
+    _make_feature_file(memories, "feature-request-b-jjj222.md", {
+        "title": "Second",
+        "type": "feature_request",
+        "kind": "bug",
+        "status": "new",
+        "priority": "high",
+    })
+    monkeypatch.setattr(promote, "BRAIN_DIR", tmp_path)
+    monkeypatch.setattr(promote, "gh_ensure_labels", lambda repo: None)
+
+    fake_create = lambda n: subprocess.CompletedProcess(
+        args=[], returncode=0,
+        stdout=f"https://github.com/o/r/issues/{n}\n",
+        stderr="",
+    )
+
+    sleep_calls = []
+    monkeypatch.setattr(promote.time, "sleep", lambda s: sleep_calls.append(s))
+
+    monkeypatch.setattr(sys, "argv", ["promote_local_features.py"])
+    with patch.object(promote.subprocess, "run", side_effect=[fake_create(10), fake_create(11)]):
+        rc = promote.main()
+
+    assert rc == 0
+    assert sleep_calls == [2.0]
+
+    # --delay-seconds 0 suppresses the sleep
+    brain2 = tmp_path / "brain2"
+    memories2 = brain2 / "memories"
+    _make_feature_file(memories2, "feature-request-c-kkk333.md", {
+        "title": "C", "type": "feature_request", "kind": "feature",
+        "status": "new", "priority": "low",
+    })
+    _make_feature_file(memories2, "feature-request-d-lll444.md", {
+        "title": "D", "type": "feature_request", "kind": "bug",
+        "status": "new", "priority": "low",
+    })
+    monkeypatch.setattr(promote, "BRAIN_DIR", brain2)
+    monkeypatch.setattr(sys, "argv", ["promote_local_features.py", "--delay-seconds", "0"])
+    sleep_calls2 = []
+    monkeypatch.setattr(promote.time, "sleep", lambda s: sleep_calls2.append(s))
+    with patch.object(promote.subprocess, "run", side_effect=[fake_create(20), fake_create(21)]):
+        rc2 = promote.main()
+
+    assert rc2 == 0
+    assert sleep_calls2 == []

@@ -23,6 +23,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import yaml
@@ -155,6 +156,10 @@ def main() -> int:
                     help="List what would be promoted; don't touch anything.")
     ap.add_argument("--repo", default=None,
                     help="OWNER/NAME for gh -R; defaults to git remote inference.")
+    ap.add_argument("--delay-seconds", type=float, default=2.0,
+                    help="Sleep this long between gh issue create calls to avoid "
+                         "GitHub anti-abuse throttling on large batches (default: 2.0). "
+                         "Set to 0 to disable.")
     args = ap.parse_args()
 
     memories_dir = BRAIN_DIR / "memories"
@@ -181,7 +186,7 @@ def main() -> int:
     archive_dir.mkdir(exist_ok=True)
 
     failures = 0
-    for f, fm in pending:
+    for idx, (f, fm) in enumerate(pending):
         title = (fm.get("title") or f.stem)[:100]
         body = split_body(f.read_text()).strip() or fm.get("title", title)
         labels = build_labels(fm)
@@ -205,6 +210,8 @@ def main() -> int:
             except subprocess.CalledProcessError as e:
                 print(f"WARN: created #{number} but close failed: {e.stderr.strip()}", file=sys.stderr)
         print(f"  → #{number}  {f.name}")
+        if args.delay_seconds > 0 and idx < len(pending) - 1:
+            time.sleep(args.delay_seconds)
 
     if failures:
         print(f"{failures} failure(s).", file=sys.stderr)
