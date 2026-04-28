@@ -6,6 +6,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `/changes [hours]` Telegram command: scans all active goals and projects, finds related memory files updated in the last N hours (default 24, max 168), and sends a concise LLM-generated activity digest per item — one paragraph per project/goal with recent activity. Implemented in `GoalProjectAgent.generate_change_digest()` (#74).
+
 ### Fixed
 - `skill_executor`: `AuthenticationError` from LiteLLM now returns `None` immediately and logs an ERROR — the fallback model is never tried when the API key itself is bad (#59).
 - `skill_executor`: `PermissionDeniedError` (model-tier/entitlement 403) now falls back to the next configured model instead of hard-stopping, so skills with cross-provider fallbacks degrade gracefully when the preferred model is unavailable to the current key (#59).

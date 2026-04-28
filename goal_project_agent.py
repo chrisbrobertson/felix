@@ -772,3 +772,86 @@ class GoalProjectAgent:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)
             except asyncio.TimeoutError:
                 pass
+
+    # ── On-demand change digest ───────────────────────────────────────────────
+
+    async def _generate_digest_summary(
+        self,
+        title: str,
+        item_fm: dict,
+        related_memories: list,
+        hours: int,
+    ) -> str:
+        """Return a 2–3 sentence plain-text summary of recent activity for one item."""
+        related_snippets = []
+        for mem_path, mem_fm in related_memories:
+            date_str = (
+                mem_fm.get("created")
+                or mem_fm.get("meeting_date")
+                or mem_fm.get("last_message")
+                or ""
+            )
+            date_str = str(date_str)[:10]
+            mem_title = mem_fm.get("source_title", mem_path.name)
+            mem_summary = mem_fm.get("summary", "")[:200]
+            related_snippets.append(f"- [{date_str}] {mem_title} — {mem_summary}")
+
+        item_type = item_fm.get("type", "goal")
+        status = item_fm.get("status", "")
+        prompt = (
+            f"{item_type.capitalize()}: {title} (status: {status})\n\n"
+            f"Related activity in the last {hours}h ({len(related_memories)} items):\n"
+            + "\n".join(related_snippets)
+            + "\n\nWrite 2–3 sentences of plain text summarising what changed or happened "
+            "for this project/goal. Focus on concrete activity, decisions, or progress. "
+            "No headers or bullets. Be specific and concise."
+        )
+
+        try:
+            from litellm import acompletion
+            resp = await acompletion(
+                model=resolve("summarize"),
+                messages=[{"role": "user", "content": prompt}],
+                timeout=20,
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as e:
+            log.warning("Digest summary LLM call failed for %s: %s", title, e)
+            titles = [
+                mem_fm.get("source_title", p.name)
+                for p, mem_fm in related_memories[:3]
+            ]
+            return f"{len(related_memories)} related activit{'ies' if len(related_memories) != 1 else 'y'}: {', '.join(titles)}"
+
+    async def generate_change_digest(self, hours: int = 24) -> list:
+        """Return activity digest for active goals/projects with changes in the last N hours.
+
+        Each entry is a dict with keys: title, type, summary, memory_count.
+        Entries are sorted by memory_count descending (most active first).
+        Returns an empty list when no items have recent activity.
+        """
+        cutoff_iso = (datetime.now() - timedelta(hours=hours)).isoformat()
+
+        items = await self._select_items()
+        results = []
+
+        for item_path, item_fm in items:
+            related = await self._find_related_memories(
+                item_path, item_fm, last_checked=cutoff_iso
+            )
+            if not related:
+                continue
+
+            title = item_fm.get("source_title", item_path.stem)
+            summary = await self._generate_digest_summary(title, item_fm, related, hours)
+            results.append(
+                {
+                    "title": title,
+                    "type": item_fm.get("type", "goal"),
+                    "summary": summary,
+                    "memory_count": len(related),
+                }
+            )
+
+        results.sort(key=lambda x: x["memory_count"], reverse=True)
+        return results

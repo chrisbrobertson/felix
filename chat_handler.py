@@ -169,6 +169,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("milestone", self.cmd_milestone))
         self.app.add_handler(CommandHandler("linkgoal", self.cmd_linkgoal))
         self.app.add_handler(CommandHandler("unlinkgoal", self.cmd_unlinkgoal))
+        self.app.add_handler(CommandHandler("changes", self.cmd_changes))
         # Skill management
         self.app.add_handler(CommandHandler("skill_drafts", self.cmd_skill_drafts))
         self.app.add_handler(CommandHandler("skill_draft", self.cmd_skill_draft))
@@ -3072,6 +3073,56 @@ class TelegramChatHandler:
         except Exception as e:
             log.exception("Error in cmd_unlinkgoal")
             await update.message.reply_text(f"Error unlinking goal: {_safe_error(e)}")
+
+    # ── /changes command ──────────────────────────────────────────────────────
+
+    async def cmd_changes(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show project/goal activity digest for the last N hours (default 24)."""
+        if not self._check_auth(update):
+            return
+
+        hours = 24
+        if context.args:
+            try:
+                hours = int(context.args[0])
+                if hours < 1 or hours > 168:
+                    await update.message.reply_text("Hours must be between 1 and 168.")
+                    return
+            except ValueError:
+                await update.message.reply_text("Usage: /changes [hours]  e.g. /changes 48")
+                return
+
+        await update.message.reply_text(f"Scanning activity for the last {hours}h…")
+
+        from goal_project_agent import GoalProjectAgent
+        agent = GoalProjectAgent(role="full", cache=self._cache)
+
+        try:
+            results = await agent.generate_change_digest(hours=hours)
+        except Exception as e:
+            log.exception("Error in cmd_changes")
+            await update.message.reply_text(f"Error generating digest: {_safe_error(e)}")
+            return
+
+        if not results:
+            await update.message.reply_text(
+                f"No project/goal activity in the last {hours}h."
+            )
+            return
+
+        header = f"Project/goal activity — last {hours}h ({len(results)} item{'s' if len(results) != 1 else ''})\n"
+        parts = [header]
+        for i, item in enumerate(results, 1):
+            icon = "\U0001f3af" if item["type"] == "goal" else "\U0001f4cb"
+            count = item["memory_count"]
+            count_str = f"{count} update{'s' if count != 1 else ''}"
+            parts.append(
+                f"{i}. {icon} {item['title']}  ({count_str})\n{item['summary']}"
+            )
+
+        msg = "\n\n".join(parts)
+        for chunk in [msg[i : i + TG_MAX_CHARS] for i in range(0, len(msg), TG_MAX_CHARS)]:
+            await update.message.reply_text(chunk)
 
     # ── /contacts command ─────────────────────────────────────────────────────
 
