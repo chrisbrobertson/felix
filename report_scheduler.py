@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import yaml
 
 from llm_routes import resolve
+from usage_tracker import record_usage
 
 if TYPE_CHECKING:
     from telegram import Bot
@@ -345,6 +346,8 @@ class AnalysisGenerator:
                 messages=messages,
                 max_tokens=500
             )
+            if hasattr(response, "usage") and response.usage:
+                record_usage(resolve(model_route), response.usage.prompt_tokens or 0, response.usage.completion_tokens or 0)
             return response.choices[0].message.content.strip()
         except Exception as e:
             log.error(f"Analysis generation failed: {e}")

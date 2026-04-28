@@ -12,6 +12,7 @@ import yaml
 from litellm import acompletion
 
 from llm_routes import resolve
+from usage_tracker import record_usage
 from memory_writer import MemoryWriter
 
 log = logging.getLogger("synthesis-scanner")
@@ -211,6 +212,8 @@ async def _synthesize(cluster_paths: list[Path], config: dict) -> Optional[str]:
             messages=[{"role": "user", "content": prompt}],
             timeout=30,
         )
+        if hasattr(resp, "usage") and resp.usage:
+            record_usage(resolve("chat"), resp.usage.prompt_tokens or 0, resp.usage.completion_tokens or 0)
         return resp.choices[0].message.content.strip()
     except Exception:
         log.exception("LLM call failed for synthesis generation")

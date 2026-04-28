@@ -495,6 +495,8 @@ Muted state persists across daemon restarts. `/briefing` works even when muted �
 |---------|--------|
 | **Meta** | |
 | `/help`, `/commands` | Show all available commands grouped by category |
+| `/usage [days]` | Show LLM token usage per model for the last N days (default 7). Tracks prompt + completion tokens from all LiteLLM calls. |
+| `/usage daily` | Per-day rolling totals for the last 7 days. |
 | **Skill management** | |
 | `/skill-health` | Utility scores and trend arrows for every skill. Sorted worst-first; `▲` improving, `▼` declining, `◆` stable, `—` insufficient data. `⚠` = below underperformance threshold or declining. |
 | `/skill-drafts` | List auto-drafted skill files awaiting approval (only populated when `/skill-approval on`). |
@@ -622,6 +624,7 @@ Runtime state (local per machine):
 ├── commitment-corrections.jsonl    # /wrong and /missed feedback log
 ├── commitment-accuracy.json        # extraction precision stats per source type
 ├── rejected-candidates.json        # rejected candidate sources to prevent re-proposal
+├── usage-tracker-state.json        # daily token usage per model (30-day rolling window)
 └── notification-state.json         # chat_id, mute state, sent alerts
 
 iCloud (shared across all machines):

@@ -9,6 +9,7 @@ from typing import Optional
 
 from litellm import acompletion
 from llm_routes import resolve
+from usage_tracker import record_usage
 from utils import load_config
 from memory_cache import MemoryCache
 
@@ -77,6 +78,8 @@ class IndexBuilder:
                 ],
                 max_tokens=700
             )
+            if hasattr(response, "usage") and response.usage:
+                record_usage(resolve("summarize"), response.usage.prompt_tokens or 0, response.usage.completion_tokens or 0)
             synthesis = response.choices[0].message.content
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
             content = f"*Last updated: {timestamp} — {n} memories indexed*\n\n{synthesis}\n"

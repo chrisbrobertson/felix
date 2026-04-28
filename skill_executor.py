@@ -19,6 +19,7 @@ from litellm.exceptions import (
     PermissionDeniedError as LiteLLMPermissionError,
 )
 from llm_routes import resolve
+from usage_tracker import record_usage
 from utils import read_text_with_retry, read_bytes_with_retry
 
 # Transient failures — retry on the fallback model.
@@ -161,6 +162,10 @@ class SkillExecutor:
                 max_tokens = self._skill["meta"].get("max_tokens", 1000)
                 response = await acompletion(model=resolve(model), messages=messages, max_tokens=max_tokens, timeout=timeout_s)
                 result = response.choices[0].message.content
+                if hasattr(response, "usage") and response.usage:
+                    record_usage(resolve(model),
+                                 response.usage.prompt_tokens or 0,
+                                 response.usage.completion_tokens or 0)
                 await self._log_execution(inputs, resolve(model), score=score)
                 if model != preferred:
                     log.warning(f"{self.skill_name} succeeded on fallback {resolve(model)} "
@@ -311,6 +316,10 @@ class SkillExecutor:
                         max_tokens=2000,
                         timeout=timeout_s,
                     )
+                    if hasattr(response, "usage") and response.usage:
+                        record_usage(resolve(model),
+                                     response.usage.prompt_tokens or 0,
+                                     response.usage.completion_tokens or 0)
                     msg = response.choices[0].message
                     tool_calls = getattr(msg, "tool_calls", None) or []
 

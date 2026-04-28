@@ -13,6 +13,7 @@ from typing import Optional
 from litellm import acompletion
 
 from llm_routes import resolve
+from usage_tracker import record_usage
 from utils import load_config
 
 log = logging.getLogger("skill-optimizer")
@@ -544,6 +545,8 @@ Respond with JSON only:
             ),
             timeout=30
         )
+        if hasattr(response, "usage") and response.usage:
+            record_usage(resolve(self.judge_model), response.usage.prompt_tokens or 0, response.usage.completion_tokens or 0)
 
         result_text = response.choices[0].message.content.strip()
 
@@ -935,6 +938,8 @@ Be specific. Cite evidence from the execution examples. Avoid generic observatio
                 ),
                 timeout=60
             )
+            if hasattr(response, "usage") and response.usage:
+                record_usage(resolve("optimizer"), response.usage.prompt_tokens or 0, response.usage.completion_tokens or 0)
 
             result_text = response.choices[0].message.content.strip()
 
@@ -1042,6 +1047,8 @@ Please rewrite the skill file following the meta-skill instructions."""
                 ),
                 timeout=60
             )
+            if hasattr(response, "usage") and response.usage:
+                record_usage(resolve("optimizer"), response.usage.prompt_tokens or 0, response.usage.completion_tokens or 0)
 
             new_skill_text = response.choices[0].message.content.strip()
 
@@ -1322,6 +1329,8 @@ Respond with JSON only: {{"score": 1, "reasoning": "one sentence"}}"""
                 ),
                 timeout=30
             )
+            if hasattr(response, "usage") and response.usage:
+                record_usage(resolve(self.judge_model), response.usage.prompt_tokens or 0, response.usage.completion_tokens or 0)
             text = response.choices[0].message.content.strip()
             data = json.loads(text)
             score = int(data.get("score", 3))

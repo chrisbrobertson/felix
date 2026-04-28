@@ -130,6 +130,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("help", self.cmd_help))
         self.app.add_handler(CommandHandler("commands", self.cmd_help))
         self.app.add_handler(CommandHandler("version", self.cmd_version))
+        self.app.add_handler(CommandHandler("usage", self.cmd_usage))
         self.app.add_handler(CommandHandler("settings", self.cmd_settings))
         self.app.add_handler(CommandHandler("reset", self.cmd_reset))
         self.app.add_handler(CommandHandler("deliver", self.cmd_deliver))
@@ -4131,6 +4132,27 @@ class TelegramChatHandler:
         version_file = Path(__file__).parent / "VERSION"
         version = version_file.read_text().strip() if version_file.exists() else "unknown"
         await update.message.reply_text(f"second-brain v{version}")
+
+    async def cmd_usage(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show LLM token usage summary. /usage [days] or /usage daily."""
+        if not self._check_auth(update):
+            return
+        from usage_tracker import render_usage, render_daily_breakdown
+        args = context.args or []
+        if args and args[0] == "daily":
+            text = render_daily_breakdown()
+        else:
+            days = 7
+            if args:
+                try:
+                    days = max(1, min(int(args[0]), 90))
+                except ValueError:
+                    await update.message.reply_text(
+                        "Usage: /usage [days] or /usage daily"
+                    )
+                    return
+            text = render_usage(days)
+        await self._send_reply(update, text)
 
     async def cmd_rebuild_cache(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Rebuild the memory cache from scratch."""
