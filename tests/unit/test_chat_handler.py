@@ -4399,14 +4399,30 @@ def test_extract_todo_recipient_does_not_capture_pronouns():
 
 @pytest.mark.asyncio
 async def test_cmd_todo_persists_recipient(handler, brain_dir):
-    """cmd_todo extracts and passes recipient to create_manual_commitment."""
+    """For a waiting_on todo, owner is the external party and recipient is 'self'."""
     with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
         mock_create.return_value = brain_dir / "memories" / "commitment-test.md"
         update, context = _make_update(12345, args=["Follow", "up", "with", "John"])
         await handler.cmd_todo(update, context)
 
     _, kwargs = mock_create.call_args
-    assert kwargs.get("recipient") == "John"
+    assert kwargs.get("commitment_type") == "waiting_on"
+    assert kwargs.get("owner") == "John"
+    assert kwargs.get("recipient") == "self"
+
+
+@pytest.mark.asyncio
+async def test_cmd_todo_outbound_owner_is_self(handler, brain_dir):
+    """For an outbound todo, owner is 'self' and the extracted name is the recipient."""
+    with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
+        mock_create.return_value = brain_dir / "memories" / "commitment-test.md"
+        update, context = _make_update(12345, args=["Send", "report", "to", "Jane"])
+        await handler.cmd_todo(update, context)
+
+    _, kwargs = mock_create.call_args
+    assert kwargs.get("commitment_type") == "outbound"
+    assert kwargs.get("owner") == "self"
+    assert kwargs.get("recipient") == "Jane"
 
 
 @pytest.mark.asyncio
@@ -4560,13 +4576,41 @@ async def test_cmd_todo_invalid_due_date_rejected(handler, brain_dir):
 
 @pytest.mark.asyncio
 async def test_cmd_todo_invalid_type_rejected(handler, brain_dir):
-    """type:waiting_on is rejected with a helpful error; no commitment is created."""
+    """type:inbound is rejected with a helpful error; no commitment is created."""
     with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
-        update, context = _make_update(12345, args=["Clean", "desk", "type:waiting_on"])
+        update, context = _make_update(12345, args=["Clean", "desk", "type:inbound"])
         await handler.cmd_todo(update, context)
     mock_create.assert_not_called()
     reply = update.message.reply_text.call_args[0][0]
     assert "invalid type" in reply.lower() or "personal" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_cmd_todo_waiting_on_type_sets_owner_to_recipient(handler, brain_dir):
+    """type:waiting_on is accepted and owner is set to the extracted person, not 'self'."""
+    with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
+        mock_create.return_value = brain_dir / "memories" / "commitment-test.md"
+        update, context = _make_update(12345, args=["Follow", "up", "with", "Alice", "type:waiting_on"])
+        await handler.cmd_todo(update, context)
+    mock_create.assert_called_once()
+    _, kwargs = mock_create.call_args
+    assert kwargs.get("commitment_type") == "waiting_on"
+    assert kwargs.get("owner") == "Alice"
+    assert kwargs.get("recipient") == "self"
+
+
+@pytest.mark.asyncio
+async def test_cmd_todo_waiting_on_no_name_uses_unknown(handler, brain_dir):
+    """type:waiting_on with no extractable name falls back to owner='unknown'."""
+    with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
+        mock_create.return_value = brain_dir / "memories" / "commitment-test.md"
+        update, context = _make_update(12345, args=["Waiting", "for", "approval", "type:waiting_on"])
+        await handler.cmd_todo(update, context)
+    mock_create.assert_called_once()
+    _, kwargs = mock_create.call_args
+    assert kwargs.get("commitment_type") == "waiting_on"
+    assert kwargs.get("owner") == "unknown"
+    assert kwargs.get("recipient") == "self"
 
 
 @pytest.mark.asyncio

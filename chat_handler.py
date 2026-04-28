@@ -2165,13 +2165,13 @@ class TelegramChatHandler:
         return None
 
     async def cmd_todo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Create a personal todo item. /todo <desc> [due:YYYY-MM-DD] [type:personal|inbound|outbound]"""
+        """Create a personal todo item. /todo <desc> [due:YYYY-MM-DD] [type:personal|waiting_on|outbound]"""
         if not self._check_auth(update):
             return
 
         if not context.args:
             await update.message.reply_text(
-                "Usage: /todo <description> [due:YYYY-MM-DD] [type:personal|inbound|outbound]\n"
+                "Usage: /todo <description> [due:YYYY-MM-DD] [type:personal|waiting_on|outbound]\n"
                 "Examples:\n"
                 "  /todo Clean my desk\n"
                 "  /todo Get the report to Jane Doe due:2026-05-01\n"
@@ -2200,11 +2200,11 @@ class TelegramChatHandler:
                     return
             elif token.lower().startswith("type:"):
                 value = token[5:].strip().lower()
-                if value in ("personal", "inbound", "outbound"):
+                if value in ("personal", "waiting_on", "outbound"):
                     forced_type = value
                 else:
                     await update.message.reply_text(
-                        f"Invalid type {value!r}. Must be: personal, inbound, or outbound."
+                        f"Invalid type {value!r}. Must be: personal, waiting_on, or outbound."
                     )
                     return
             else:
@@ -2218,16 +2218,25 @@ class TelegramChatHandler:
         commitment_type = forced_type or self._classify_todo(description)
         recipient = self._extract_todo_recipient(description)
 
+        # For waiting_on, the owner is the external party being waited on; the
+        # user is the recipient. For personal/outbound, the user is the owner.
+        if commitment_type == "waiting_on":
+            owner = recipient or "unknown"
+            todo_recipient = "self"
+        else:
+            owner = "self"
+            todo_recipient = recipient
+
         try:
             tracker = CommitmentTracker()
             tracker.create_manual_commitment(
                 commitment_type=commitment_type,
                 description=description,
-                owner="self",
+                owner=owner,
                 due_date=due_date,
                 source_note="Created via /todo command",
                 force_unique=True,
-                recipient=recipient,
+                recipient=todo_recipient,
             )
             due_str = f" — due {due_date}" if due_date else ""
             await update.message.reply_text(
