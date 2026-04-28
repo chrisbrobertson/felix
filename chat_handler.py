@@ -48,6 +48,21 @@ BACKFILL_CONFIG = {
 }
 
 
+def _mutation_succeeded(name: str, result: str) -> bool:
+    """Return True only when a mutating tool call actually wrote state.
+
+    Errors are returned as strings (e.g. "Error: invalid category") rather than
+    raised, so we must inspect the result before recording the mutation as applied.
+    close_issue has additional non-error, non-mutating returns ("No issue found …",
+    "Multiple matches …") that would otherwise slip through an "Error:" prefix check.
+    """
+    if result.startswith("Error"):
+        return False
+    if name == "close_issue":
+        return result.startswith("Closed [")
+    return True
+
+
 def _safe_read_text(path: Path) -> Optional[str]:
     """Read iCloud file with retry, returning None on persistent EDEADLK/EAGAIN."""
     return read_text_with_retry(path, default=None)
@@ -6291,7 +6306,7 @@ class TelegramChatHandler:
 
             async def tool_dispatch(name: str, args: dict) -> str:
                 result = await _tool_dispatch(name, args, self)
-                if name in MUTATING_TOOLS:
+                if name in MUTATING_TOOLS and _mutation_succeeded(name, result):
                     _completed_mutations.append(name)
                 return result
 
