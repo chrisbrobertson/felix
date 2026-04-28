@@ -223,6 +223,8 @@ class TelegramChatHandler:
         self._active_list: list = []
         # Last /commitments result set — used by /complete <N> and /dismiss <N>.
         self._last_commitment_set: list = []
+        # Last /todos result set — used by /todos done|dismiss <N>.
+        self._last_todos_set: list = []
         # Last /contacts result set — used by /contact <N>.
         self._last_contact_set: list = []
         # Last /code result set — used by /code <N> detail view.
@@ -1716,23 +1718,24 @@ class TelegramChatHandler:
             text = self._list_commitments_text(limit=20)
             await update.message.reply_text(text)
 
-    def _list_todos_text(self, limit: int = 20) -> str:
+    def _list_todos_text(self) -> str:
         """Format all active commitments as a checklist (todo-list style)."""
-        limit = max(1, min(limit, 100))
         items = self._load_active_commitments(type_filter=None)
 
         if not items:
+            self._last_todos_set = []
             self._last_commitment_set = []
             self._active_list = []
             return "No active todos."
 
-        visible = items[:limit]
-        self._last_commitment_set = [f for f, _ in visible]
-        self._active_list = self._last_commitment_set
+        all_paths = [f for f, _ in items]
+        self._last_todos_set = all_paths
+        self._last_commitment_set = all_paths
+        self._active_list = all_paths
         total = len(items)
         lines = [f"Todos ({total}):"]
 
-        for i, (_, fm) in enumerate(visible, 1):
+        for i, (_, fm) in enumerate(items, 1):
             desc = (fm.get("source_title") or fm.get("summary") or "")[:55]
             due = fm.get("due_date")
             due_str = f" — due {due}" if due else ""
@@ -1741,9 +1744,6 @@ class TelegramChatHandler:
             needs_review = "needs-review" in (fm.get("tags") or [])
             flag = " ⚠️" if needs_review else ""
             lines.append(f"{i}. [ ] {desc}{due_str}{type_hint}{flag}")
-
-        if total > limit:
-            lines.append(f"... and {total - limit} more.")
 
         lines.append("\n/todos done N  — complete  |  /todos dismiss N  — dismiss")
         return "\n".join(lines)
@@ -1756,7 +1756,7 @@ class TelegramChatHandler:
         args = list(context.args) if context.args else []
 
         if not args:
-            await update.message.reply_text(self._list_todos_text(limit=20))
+            await self._send_reply(update, self._list_todos_text())
             return
 
         verb = args[0].lower()
@@ -1776,8 +1776,14 @@ class TelegramChatHandler:
             if arg in seen:
                 continue
             seen.add(arg)
-            path = self._resolve_commitment_index(arg)
-            if path is None:
+            try:
+                idx = int(arg) - 1
+            except (ValueError, TypeError):
+                lines.append(f"✗ #{arg}: not found (run /todos to refresh)")
+                continue
+            if 0 <= idx < len(self._last_todos_set):
+                path = self._last_todos_set[idx]
+            else:
                 lines.append(f"✗ #{arg}: not found (run /todos to refresh)")
                 continue
             fm = self._parse_frontmatter(path)
