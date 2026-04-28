@@ -13,6 +13,13 @@ log = logging.getLogger("chat-tools")
 # iCloud memories directory — distinct from SECOND_BRAIN_DIR (deploy dir)
 MEMORIES_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain/memories"
 
+# Tools that write or mutate persistent state.  The chat handler uses this to
+# detect the case where a timeout fires after a mutation has already landed, so
+# it can warn the user rather than silently suggest they retry.
+MUTATING_TOOLS: frozenset[str] = frozenset(
+    {"add_goal", "add_project", "add_bug", "add_feature", "close_issue"}
+)
+
 TOOLS: list[dict] = [
     {
         "type": "function",

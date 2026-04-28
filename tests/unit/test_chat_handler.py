@@ -379,6 +379,40 @@ async def test_handle_message_timeout_sends_error_and_reacts(handler, brain_dir)
     assert history == []
 
 
+@pytest.mark.asyncio
+async def test_handle_message_timeout_after_mutation_warns_user(handler, brain_dir):
+    """Timeout that fires after a mutating tool already completed must warn the user
+    not to retry, rather than suggesting a generic retry that would duplicate state."""
+    handler.executor = MagicMock()
+
+    # Simulate: run_with_tools calls tool_dispatch("add_goal", ...) successfully,
+    # then times out waiting for the next LLM turn.
+    async def _run_with_tools_calls_mutation_then_times_out(**kwargs):
+        td = kwargs["tool_dispatch"]
+        await td("add_goal", {"title": "Test goal", "category": "work"})
+        raise asyncio.TimeoutError()
+
+    handler.executor.run_with_tools = _run_with_tools_calls_mutation_then_times_out
+
+    mock_update = MagicMock()
+    mock_update.effective_user.id = 12345
+    mock_update.effective_chat.id = 12345
+    mock_update.message = AsyncMock()
+    mock_update.message.text = "Add a goal: ship the thing by end of quarter"
+
+    with patch("chat_tools.dispatch", new=AsyncMock(return_value="Goal created: Test goal [work]")):
+        await handler.handle_message(mock_update, MagicMock())
+
+    reply_calls = mock_update.message.reply_text.call_args_list
+    assert reply_calls, "expected a reply"
+    reply_text = " ".join(str(c) for c in reply_calls)
+    assert "add_goal" in reply_text, "reply should name the completed mutation"
+    assert "verify" in reply_text.lower() or "duplicate" in reply_text.lower(), \
+        "reply should warn about duplicates"
+    assert "try asking" not in reply_text.lower(), \
+        "generic retry suggestion should be absent when a mutation already landed"
+
+
 # ── conversation history ──────────────────────────────────────────────────────
 
 def _make_handle_message_mocks(handler):
