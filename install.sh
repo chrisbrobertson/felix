@@ -592,6 +592,7 @@ DAEMON_FILES=(
     quota_scanner.py
     quota_scrapers.py
     usage_tracker.py
+    heartbeat.py
     VERSION
 )
 
