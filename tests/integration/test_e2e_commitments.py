@@ -64,3 +64,11 @@ async def test_quota_smoke(handler, mk_update):
     update, ctx = mk_update("/quota")
     await handler.cmd_quota(update, ctx)
     update.message.reply_text.assert_called()
+
+
+async def test_todos_smoke(handler, mk_update, brain_dir):
+    from tests.integration import seed
+    seed.commitment(brain_dir, status="active")
+    update, ctx = mk_update("/todos")
+    await handler.cmd_todos(update, ctx)
+    update.message.reply_text.assert_called()

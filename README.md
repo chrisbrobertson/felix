@@ -245,6 +245,19 @@ Contacts are deduplicated by email address. The system picks the longest display
 
 Items with low confidence (0.5–0.69) show a ⚠️ indicator. The default threshold is 0.7 for auto-active, configurable via `commitment_tracker.min_confidence` in `config.yaml`.
 
+### Todo checklist view
+
+`/todos` shows all active commitments as a checkbox-style todo list — a read-at-a-glance alternative to `/commitments`:
+
+```
+/todos                   # show all active commitments as [ ] checklist
+/todos done 3            # mark todo #3 complete
+/todos done 3 5          # mark multiple todos complete in one command
+/todos dismiss 3         # dismiss todo #3
+```
+
+Personal commitments (captured via `/todo`, when available) are shown without a type tag; extracted items from meetings and emails show their type in brackets (e.g. `[outbound]`).
+
 ### Tracking goals
 
 ```
@@ -553,6 +566,7 @@ Muted state persists across daemon restarts. `/briefing` works even when muted �
 | `/aichat search <query>` | Keyword search across imported conversation headers |
 | **Commitments** | |
 | `/commitments [type]` | Active commitments. Optional type filter: `outbound`, `inbound`, `waiting`. Items with confidence 0.5–0.69 show ⚠️. |
+| `/todos` | All active commitments as a `[ ]` checklist. `/todos done N` to complete, `/todos dismiss N` to dismiss. |
 | `/complete <N>` | Mark commitment N completed |
 | `/dismiss <N>` | Dismiss commitment N (false positive or no longer relevant) |
 | `/wrong <N>` | Mark extracted commitment as false positive (feeds accuracy stats) |

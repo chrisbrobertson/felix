@@ -3843,6 +3843,145 @@ async def test_dismiss_multiple_indices(handler, brain_dir):
         assert "Review design doc" in reply
         assert mock_update.call_count == 2
 
+# ── /todos command ───────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_cmd_todos_empty_list(handler, brain_dir):
+    """/todos with no active commitments returns empty message."""
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_todos(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "No active todos" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_todos_lists_with_checkbox_format(handler, brain_dir):
+    """/todos shows commitments as [ ] checkboxes."""
+    m = brain_dir / "memories"
+    write_commitment(m, "Send quarterly report", status="active", due_date="2026-05-01")
+    write_commitment(m, "Review design doc", status="active")
+
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_todos(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Todos (2)" in reply
+    assert "[ ] Send quarterly report" in reply
+    assert "[ ] Review design doc" in reply
+    assert "due 2026-05-01" in reply
+    assert "/todos done N" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_todos_personal_type_has_no_type_hint(handler, brain_dir):
+    """/todos omits [type] hint for personal commitment_type."""
+    m = brain_dir / "memories"
+    write_commitment(m, "Buy groceries", status="active", commitment_type="personal")
+
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_todos(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "[personal]" not in reply
+    assert "[ ] Buy groceries" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_todos_non_personal_shows_type_hint(handler, brain_dir):
+    """/todos shows [outbound] hint for non-personal types."""
+    m = brain_dir / "memories"
+    write_commitment(m, "Send report to Alice", status="active", commitment_type="outbound")
+
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_todos(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "[outbound]" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_todos_done_completes_item(handler, brain_dir):
+    """/todos done N marks the Nth item completed."""
+    m = brain_dir / "memories"
+    write_commitment(m, "Send quarterly report", status="active")
+
+    update_list, context_list = _make_update(12345, args=[])
+    await handler.cmd_todos(update_list, context_list)
+
+    with patch("commitment_tracker.CommitmentTracker.update_commitment_status") as mock_update:
+        update, context = _make_update(12345, args=["done", "1"])
+        await handler.cmd_todos(update, context)
+        reply = update.message.reply_text.call_args[0][0]
+        assert "✓" in reply
+        assert "Send quarterly report" in reply
+        mock_update.assert_called_once_with(
+            mock_update.call_args[0][0], "completed"
+        )
+
+
+@pytest.mark.asyncio
+async def test_cmd_todos_dismiss_item(handler, brain_dir):
+    """/todos dismiss N marks the Nth item dismissed."""
+    m = brain_dir / "memories"
+    write_commitment(m, "Review design doc", status="active")
+
+    update_list, context_list = _make_update(12345, args=[])
+    await handler.cmd_todos(update_list, context_list)
+
+    with patch("commitment_tracker.CommitmentTracker.update_commitment_status") as mock_update:
+        update, context = _make_update(12345, args=["dismiss", "1"])
+        await handler.cmd_todos(update, context)
+        reply = update.message.reply_text.call_args[0][0]
+        assert "✕" in reply
+        assert "Review design doc" in reply
+        mock_update.assert_called_once_with(
+            mock_update.call_args[0][0], "dismissed"
+        )
+
+
+@pytest.mark.asyncio
+async def test_cmd_todos_done_invalid_index(handler, brain_dir):
+    """/todos done with out-of-range index shows not-found message."""
+    m = brain_dir / "memories"
+    write_commitment(m, "Send quarterly report", status="active")
+
+    update_list, context_list = _make_update(12345, args=[])
+    await handler.cmd_todos(update_list, context_list)
+
+    update, context = _make_update(12345, args=["done", "99"])
+    await handler.cmd_todos(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "not found" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_todos_unknown_verb_shows_usage(handler, brain_dir):
+    """/todos with unrecognised verb shows usage hint."""
+    update, context = _make_update(12345, args=["delete"])
+    await handler.cmd_todos(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Usage:" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_todos_verb_without_index_shows_usage(handler, brain_dir):
+    """/todos done without an index shows usage hint."""
+    update, context = _make_update(12345, args=["done"])
+    await handler.cmd_todos(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Usage:" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_todos_populates_last_commitment_set(handler, brain_dir):
+    """/todos populates _last_commitment_set so /complete N works afterwards."""
+    m = brain_dir / "memories"
+    write_commitment(m, "Send quarterly report", status="active")
+
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_todos(update, context)
+
+    # _last_commitment_set should now have 1 entry
+    assert len(handler._last_commitment_set) == 1
+
+
 # ── Agent Actions Commands ───────────────────────────────────────────────────
 
 def write_action(memories_dir: Path, action_id: str, action_type: str, target: str, status: str = "pending", rationale: str = "Test rationale", defer_until: str = None):

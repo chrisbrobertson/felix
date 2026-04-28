@@ -105,6 +105,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("reading", self.cmd_reading))
         self.app.add_handler(CommandHandler("forget", self.cmd_forget))
         self.app.add_handler(CommandHandler("commitments", self.cmd_commitments))
+        self.app.add_handler(CommandHandler("todos", self.cmd_todos))
         self.app.add_handler(CommandHandler("complete", self.cmd_complete))
         self.app.add_handler(CommandHandler("dismiss", self.cmd_dismiss))
         self.app.add_handler(CommandHandler("wrong", self.cmd_wrong))
@@ -1714,6 +1715,78 @@ class TelegramChatHandler:
         else:
             text = self._list_commitments_text(limit=20)
             await update.message.reply_text(text)
+
+    def _list_todos_text(self, limit: int = 20) -> str:
+        """Format all active commitments as a checklist (todo-list style)."""
+        limit = max(1, min(limit, 100))
+        items = self._load_active_commitments(type_filter=None)
+
+        if not items:
+            return "No active todos."
+
+        self._last_commitment_set = [f for f, _ in items]
+        self._active_list = self._last_commitment_set
+        total = len(items)
+        lines = [f"Todos ({total}):"]
+
+        for i, (_, fm) in enumerate(items[:limit], 1):
+            desc = (fm.get("source_title") or fm.get("summary") or "")[:55]
+            due = fm.get("due_date")
+            due_str = f" — due {due}" if due else ""
+            ct = fm.get("commitment_type", "outbound")
+            type_hint = f" [{ct}]" if ct != "personal" else ""
+            needs_review = "needs-review" in (fm.get("tags") or [])
+            flag = " ⚠️" if needs_review else ""
+            lines.append(f"{i}. [ ] {desc}{due_str}{type_hint}{flag}")
+
+        if total > limit:
+            lines.append(f"... and {total - limit} more.")
+
+        lines.append("\n/todos done N  — complete  |  /todos dismiss N  — dismiss")
+        return "\n".join(lines)
+
+    async def cmd_todos(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List todos as a checklist, or complete/dismiss by index."""
+        if not self._check_auth(update):
+            return
+
+        args = list(context.args) if context.args else []
+
+        if not args:
+            await update.message.reply_text(self._list_todos_text(limit=20))
+            return
+
+        verb = args[0].lower()
+        indices = args[1:]
+
+        if verb not in ("done", "dismiss") or not indices:
+            await update.message.reply_text(
+                "Usage: /todos | /todos done N [M…] | /todos dismiss N [M…]"
+            )
+            return
+
+        new_status = "completed" if verb == "done" else "dismissed"
+        from commitment_tracker import CommitmentTracker
+        lines = []
+        seen = set()
+        for arg in indices:
+            if arg in seen:
+                continue
+            seen.add(arg)
+            path = self._resolve_commitment_index(arg)
+            if path is None:
+                lines.append(f"✗ #{arg}: not found (run /todos to refresh)")
+                continue
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title") or "todo"
+            try:
+                CommitmentTracker().update_commitment_status(path, new_status)
+                mark = "✓" if new_status == "completed" else "✕"
+                lines.append(f"{mark} {title}")
+            except Exception as e:
+                lines.append(f"✗ {title}: {e}")
+
+        await update.message.reply_text("\n".join(lines))
 
     def _resolve_commitment_index(self, n: str):
         """Convert 1-based index string to a Path from _last_commitment_set, or None."""

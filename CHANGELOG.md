@@ -7,6 +7,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `/todos` Telegram command: shows all active commitments as a `[ ]` checklist. Supports `/todos done N [M…]` to mark complete and `/todos dismiss N` to dismiss. Personal todos are shown without a type tag; extracted commitments show their type in brackets (e.g. `[outbound]`). Populates the shared commitment index so `/complete N` also works after a `/todos` listing (#51).
 - `usage_tracker`: records prompt/completion token counts per model per day from every LiteLLM call in `skill_executor`. State stored in `~/secondbrain/usage-tracker-state.json` with 30-day retention (#13).
 - `/usage [days]` Telegram command: shows token usage totals per model for the last N days (default 7). `/usage daily` shows a per-day rolling total. Works across all models routed through LiteLLM (#13).
 - `/goal_note <N> <text>` — append a timestamped note to a goal conversationally (#18).
