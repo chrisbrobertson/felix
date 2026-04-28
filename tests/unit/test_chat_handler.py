@@ -4515,6 +4515,39 @@ async def test_cmd_todo_only_special_tokens_shows_error(handler, brain_dir):
     assert "description" in reply.lower() or "provide" in reply.lower()
 
 
+@pytest.mark.asyncio
+async def test_cmd_todo_invalid_due_date_rejected(handler, brain_dir):
+    """due:tomorrow is rejected with a helpful error; no commitment is created."""
+    with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
+        update, context = _make_update(12345, args=["Take", "vitamins", "due:tomorrow"])
+        await handler.cmd_todo(update, context)
+    mock_create.assert_not_called()
+    reply = update.message.reply_text.call_args[0][0]
+    assert "invalid due date" in reply.lower() or "yyyy-mm-dd" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_cmd_todo_invalid_type_rejected(handler, brain_dir):
+    """type:waiting_on is rejected with a helpful error; no commitment is created."""
+    with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
+        update, context = _make_update(12345, args=["Clean", "desk", "type:waiting_on"])
+        await handler.cmd_todo(update, context)
+    mock_create.assert_not_called()
+    reply = update.message.reply_text.call_args[0][0]
+    assert "invalid type" in reply.lower() or "personal" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_cmd_todo_force_unique_passed(handler, brain_dir):
+    """create_manual_commitment is always called with force_unique=True from /todo."""
+    with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
+        mock_create.return_value = brain_dir / "memories" / "commitment-test.md"
+        update, context = _make_update(12345, args=["Take", "vitamins"])
+        await handler.cmd_todo(update, context)
+    _, kwargs = mock_create.call_args
+    assert kwargs.get("force_unique") is True
+
+
 # ── Agent Actions Commands ───────────────────────────────────────────────────
 
 def write_action(memories_dir: Path, action_id: str, action_type: str, target: str, status: str = "pending", rationale: str = "Test rationale", defer_until: str = None):

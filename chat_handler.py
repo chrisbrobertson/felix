@@ -1709,7 +1709,8 @@ class TelegramChatHandler:
                 due_str = " — due unknown"
             needs_review = "needs-review" in (fm.get("tags") or [])
             flag = " ⚠️" if needs_review and not due_str.endswith("⚠️") else ""
-            lines.append(f"{i}. [{ct}] {desc} — {owner}{due_str}{flag}")
+            owner_str = f" — {owner}" if owner and ct != "personal" else ""
+            lines.append(f"{i}. [{ct}] {desc}{owner_str}{due_str}{flag}")
 
         if total > limit:
             lines.append(f"... and {total - limit} more.")
@@ -1791,7 +1792,8 @@ class TelegramChatHandler:
                     due_str = " — due unknown"
                 needs_review = "needs-review" in (fm.get("tags") or [])
                 flag = " ⚠️" if needs_review and not due_str.endswith("⚠️") else ""
-                lines.append(f"{i}. [{ct}] {desc} — {owner}{due_str}{flag}")
+                owner_str = f" — {owner}" if owner and ct != "personal" else ""
+                lines.append(f"{i}. [{ct}] {desc}{owner_str}{due_str}{flag}")
             if total > 20:
                 lines.append(f"... and {total - 20} more.")
             lines.append("\nUse /complete N or /dismiss N to update status.")
@@ -2170,11 +2172,24 @@ class TelegramChatHandler:
         remaining = []
         for token in raw_args:
             if token.lower().startswith("due:"):
-                due_date = token[4:].strip() or None
+                raw_due = token[4:].strip()
+                try:
+                    datetime.strptime(raw_due, "%Y-%m-%d")
+                    due_date = raw_due
+                except ValueError:
+                    await update.message.reply_text(
+                        f"Invalid due date {raw_due!r}. Use format: due:YYYY-MM-DD"
+                    )
+                    return
             elif token.lower().startswith("type:"):
                 value = token[5:].strip().lower()
                 if value in ("personal", "inbound", "outbound"):
                     forced_type = value
+                else:
+                    await update.message.reply_text(
+                        f"Invalid type {value!r}. Must be: personal, inbound, or outbound."
+                    )
+                    return
             else:
                 remaining.append(token)
 
