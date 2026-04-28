@@ -6,6 +6,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- `skill_executor`: auth errors (`AuthenticationError`, `PermissionDeniedError`) from LiteLLM now return `None` immediately and log an ERROR with "check API key/permissions" — they no longer propagate as uncaught exceptions to the caller, and the fallback model is never tried (#59).
+
 ## [1.11.0] — 2026-04-28
 
 ### Added

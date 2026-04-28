@@ -5,7 +5,12 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from litellm.exceptions import RateLimitError as _RateLimitError, AuthenticationError as _AuthError
+from litellm.exceptions import (
+    RateLimitError as _RateLimitError,
+    AuthenticationError as _AuthError,
+    PermissionDeniedError as _PermError,
+)
+
 
 import skill_executor as se
 
@@ -18,6 +23,8 @@ def _rate_err(msg="rate limited"):
 def _auth_err(msg="invalid key"):
     """Construct a non-retryable litellm AuthenticationError."""
     return _AuthError(message=msg, llm_provider="test", model="test-model")
+
+
 
 SKILL_CONTENT = """\
 ---
@@ -393,11 +400,21 @@ async def test_run_defaults_max_tokens_to_1000(skills_dir):
 
 # --- Transient vs permanent error filtering (fix 5f86d4) ---
 
-async def test_run_auth_error_propagates_not_retried(executor_full):
-    """Non-retryable errors (e.g. auth) must propagate immediately — not swallowed."""
-    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=_auth_err())):
-        with pytest.raises(_AuthError):
-            await executor_full.run({"url": "u", "title": "t", "content": "c"})
+async def test_run_auth_error_returns_none_not_retried(executor_full, caplog):
+    """Auth errors must return None immediately without trying the fallback model."""
+    mock_ac = AsyncMock(side_effect=_auth_err())
+    with patch("skill_executor.acompletion", new=mock_ac), \
+         caplog.at_level(logging.ERROR, logger="skill-executor"):
+        result = await executor_full.run({"url": "u", "title": "t", "content": "c"})
+    assert result is None
+    assert any("auth error" in r.message.lower() for r in caplog.records)
+    assert mock_ac.call_count == 1, "Auth error must not trigger a fallback attempt"
+
+
+
+def test_auth_errors_tuple_includes_permission_denied():
+    """_AUTH_ERRORS must include both AuthenticationError and PermissionDeniedError."""
+    assert se._AUTH_ERRORS == (se.LiteLLMAuthError, se.LiteLLMPermissionError)
 
 
 async def test_run_transient_error_falls_back_to_next_model(skills_dir):
@@ -423,18 +440,23 @@ async def test_run_transient_error_falls_back_to_next_model(skills_dir):
     assert call_count == 2
 
 
-async def test_run_with_tools_auth_error_propagates(skills_dir):
-    """Non-retryable errors in run_with_tools() also propagate — not swallowed."""
+async def test_run_with_tools_auth_error_returns_none_not_retried(skills_dir, caplog):
+    """Auth errors in run_with_tools() return None immediately without trying the fallback."""
     with patch.object(se, "SKILLS_DIR", skills_dir):
         executor = se.SkillExecutor("summarize-webpage", role="full")
 
-    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=_auth_err())):
-        with pytest.raises(_AuthError):
-            await executor.run_with_tools(
-                inputs={"query": "test"},
-                tools=[],
-                tool_dispatch=AsyncMock(),
-            )
+    mock_ac = AsyncMock(side_effect=_auth_err())
+    with patch("skill_executor.acompletion", new=mock_ac), \
+         patch.object(se, "BRAIN_DIR", skills_dir.parent), \
+         caplog.at_level(logging.ERROR, logger="skill-executor"):
+        result = await executor.run_with_tools(
+            inputs={"query": "test"},
+            tools=[],
+            tool_dispatch=AsyncMock(),
+        )
+    assert result is None
+    assert any("auth error" in r.message.lower() for r in caplog.records)
+    assert mock_ac.call_count == 1, "Auth error must not trigger a fallback attempt"
 
 
 async def test_run_with_tools_transient_error_falls_back(skills_dir):
