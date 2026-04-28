@@ -4,8 +4,9 @@ Merge skill file updates from repo into the deployed skills directory.
 
 For each .md skill file in the repo skills dir:
   - If the deployed file doesn't exist: copy it.
-  - If repo version > deployed version: splice — take the repo prompt/instructions,
-    preserve the deployed ## Execution History so run records are not lost.
+  - If repo version >= deployed version: splice — take the repo prompt/instructions,
+    preserve deployed optimizer sections (## Top Examples, ## Execution History)
+    and optimizer-tracked frontmatter stats so run records are not lost.
   - Otherwise: skip (idempotent; also prevents clobbering optimizer-edited copies
     whose version may have been bumped higher than the repo).
 
@@ -21,11 +22,20 @@ from pathlib import Path
 import yaml
 
 _EXEC_HISTORY_MARKER = "\n## Execution History"
+_TOP_EXAMPLES_MARKER = "\n## Top Examples"
 
 # Fields written exclusively by the skill optimizer — preserve them across upgrades
 # so regression tracking and optimizer gating don't restart from scratch.
 _OPTIMIZER_STATS_FIELDS = frozenset(
-    {"success_rate", "total_runs", "last_optimized", "prev_version_avg_score"}
+    {
+        "success_rate",
+        "total_runs",
+        "last_optimized",
+        "prev_version_avg_score",
+        "utility_score",
+        "utility_score_updated",
+        "score_trend",
+    }
 )
 
 
@@ -41,12 +51,21 @@ def _parse_version(content: str) -> int:
         return 0
 
 
-def _split_at_exec_history(content: str) -> tuple[str, str]:
-    """Split content into (everything_before_exec_history, exec_history_section_and_after)."""
-    idx = content.find(_EXEC_HISTORY_MARKER)
-    if idx < 0:
+def _split_at_optimizer_sections(content: str) -> tuple[str, str]:
+    """Split at the first optimizer-managed section (Top Examples or Execution History).
+
+    Returns (prompt_body, optimizer_tail) where optimizer_tail contains everything
+    from the first of ## Top Examples / ## Execution History onward, preserving
+    both learned exemplars and execution history records across installs.
+    """
+    split_idx = len(content)
+    for marker in (_TOP_EXAMPLES_MARKER, _EXEC_HISTORY_MARKER):
+        idx = content.find(marker)
+        if 0 <= idx < split_idx:
+            split_idx = idx
+    if split_idx == len(content):
         return content, ""
-    return content[:idx], content[idx:]
+    return content[:split_idx], content[split_idx:]
 
 
 def _merge_frontmatter_stats(repo_prompt: str, deployed_content: str) -> str:
@@ -67,6 +86,7 @@ def _merge_frontmatter_stats(repo_prompt: str, deployed_content: str) -> str:
     fm_block = repo_fm_match.group(0)
     body_after = repo_prompt[repo_fm_match.end():]
 
+    to_insert: list[str] = []
     for field in _OPTIMIZER_STATS_FIELDS:
         if field not in dep_fm:
             continue
@@ -77,11 +97,22 @@ def _merge_frontmatter_stats(repo_prompt: str, deployed_content: str) -> str:
             yaml_val = "true" if val else "false"
         else:
             yaml_val = str(val)
-        fm_block = re.sub(
-            rf"(?m)^({re.escape(field)}:)\s*.*$",
-            rf"\1 {yaml_val}",
-            fm_block,
-        )
+        if re.search(rf"(?m)^{re.escape(field)}:", fm_block):
+            # Field already in repo frontmatter: patch value in-place.
+            fm_block = re.sub(
+                rf"(?m)^({re.escape(field)}:)\s*.*$",
+                rf"\1 {yaml_val}",
+                fm_block,
+            )
+        else:
+            # Field exists in deployed but not repo: queue for insertion so that
+            # optimizer scores (utility_score, score_trend, etc.) survive installs
+            # even on skill files that didn't ship those keys originally.
+            to_insert.append(f"{field}: {yaml_val}")
+
+    if to_insert:
+        # fm_block ends with "---\n"; insert before the closing marker.
+        fm_block = fm_block[:-4] + "\n".join(to_insert) + "\n---\n"
 
     return fm_block + body_after
 
@@ -124,12 +155,13 @@ def merge_skill(repo_path: Path, dest_path: Path) -> str:
     if repo_ver < deployed_ver:
         return "skipped"
 
-    # Splice: take repo prompt section, preserve deployed execution history and
-    # optimizer-tracked stats so regression tracking doesn't restart from zero.
-    repo_prompt, _ = _split_at_exec_history(repo_content)
-    _, deployed_history = _split_at_exec_history(deployed_content)
+    # Splice: take repo prompt section, preserve deployed optimizer sections
+    # (## Top Examples and ## Execution History) and optimizer-tracked stats
+    # so regression tracking and learned exemplars don't restart from zero.
+    repo_prompt, _ = _split_at_optimizer_sections(repo_content)
+    _, deployed_optimizer_tail = _split_at_optimizer_sections(deployed_content)
     repo_prompt = _merge_frontmatter_stats(repo_prompt, deployed_content)
-    merged = repo_prompt + deployed_history
+    merged = repo_prompt + deployed_optimizer_tail
     _atomic_write(dest_path, merged)
     return "updated"
 

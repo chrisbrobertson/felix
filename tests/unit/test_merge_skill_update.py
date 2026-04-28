@@ -7,7 +7,7 @@ import pytest
 from scripts.merge_skill_update import (
     merge_skill,
     _parse_version,
-    _split_at_exec_history,
+    _split_at_optimizer_sections,
     _merge_frontmatter_stats,
 )
 
@@ -57,20 +57,34 @@ def test_parse_version_no_version_field():
     assert _parse_version(content) == 0
 
 
-# ── _split_at_exec_history ───────────────────────────────────────────────────
+# ── _split_at_optimizer_sections ─────────────────────────────────────────────
 
-def test_split_with_history():
+def test_split_with_exec_history():
     content = "prompt text\n## Execution History\n\nrow1"
-    prompt, history = _split_at_exec_history(content)
+    prompt, tail = _split_at_optimizer_sections(content)
     assert prompt == "prompt text"
-    assert history == "\n## Execution History\n\nrow1"
+    assert tail == "\n## Execution History\n\nrow1"
 
 
-def test_split_without_history():
+def test_split_without_optimizer_sections():
     content = "prompt text only"
-    prompt, history = _split_at_exec_history(content)
+    prompt, tail = _split_at_optimizer_sections(content)
     assert prompt == "prompt text only"
-    assert history == ""
+    assert tail == ""
+
+
+def test_split_with_top_examples_before_history():
+    content = "prompt\n## Top Examples\n\nexample1\n## Execution History\n\nrow1"
+    prompt, tail = _split_at_optimizer_sections(content)
+    assert prompt == "prompt"
+    assert tail == "\n## Top Examples\n\nexample1\n## Execution History\n\nrow1"
+
+
+def test_split_with_top_examples_only():
+    content = "prompt\n## Top Examples\n\nexample1"
+    prompt, tail = _split_at_optimizer_sections(content)
+    assert prompt == "prompt"
+    assert tail == "\n## Top Examples\n\nexample1"
 
 
 # ── merge_skill ───────────────────────────────────────────────────────────────
@@ -236,6 +250,122 @@ def test_update_preserves_optimizer_stats_on_equal_version(tmp_path):
     assert "total_runs: 30" in merged
     # YAML normalises 0.90 → 0.9 on round-trip
     assert "success_rate: 0.9" in merged
+
+
+def test_update_preserves_utility_score_when_absent_from_repo(tmp_path):
+    """utility_score/score_trend fields are inserted even if the repo file lacks them."""
+    repo_dir = tmp_path / "repo"
+    deployed_dir = tmp_path / "deployed"
+    repo_dir.mkdir(); deployed_dir.mkdir()
+
+    # Repo file has no utility_score / score_trend keys
+    repo_content = _make_skill(2, "v2 instructions")
+    # Deployed file has optimizer-computed scores
+    deployed_fm = textwrap.dedent("""\
+        ---
+        name: test-skill
+        version: 1
+        preferred_model: claude-haiku-4-5-20251001
+        success_rate: 0.82
+        total_runs: 20
+        last_optimized: null
+        prev_version_avg_score: null
+        utility_score: 0.78
+        utility_score_updated: 2026-04-20T08:00:00
+        score_trend: stable
+        ---
+        """)
+    deployed_content = deployed_fm + "\n## Instructions\n\nv1 instructions\n"
+
+    repo_skill = repo_dir / "test.md"
+    dest = deployed_dir / "test.md"
+    repo_skill.write_text(repo_content, encoding="utf-8")
+    dest.write_text(deployed_content, encoding="utf-8")
+
+    result = merge_skill(repo_skill, dest)
+    assert result == "updated"
+    merged = dest.read_text(encoding="utf-8")
+    assert "utility_score: 0.78" in merged
+    assert "score_trend: stable" in merged
+    # YAML parses the ISO datetime and str() serialises it with a space separator
+    assert "utility_score_updated: 2026-04-20" in merged
+    assert "v2 instructions" in merged
+
+
+def test_update_preserves_utility_score_when_present_in_repo(tmp_path):
+    """utility_score is patched in-place when the repo file already declares the key."""
+    repo_dir = tmp_path / "repo"
+    deployed_dir = tmp_path / "deployed"
+    repo_dir.mkdir(); deployed_dir.mkdir()
+
+    repo_fm = textwrap.dedent("""\
+        ---
+        name: test-skill
+        version: 2
+        preferred_model: claude-haiku-4-5-20251001
+        success_rate: null
+        total_runs: 0
+        utility_score: null
+        score_trend: null
+        ---
+        """)
+    repo_content = repo_fm + "\n## Instructions\n\nv2 instructions\n"
+
+    deployed_fm = textwrap.dedent("""\
+        ---
+        name: test-skill
+        version: 1
+        preferred_model: claude-haiku-4-5-20251001
+        success_rate: 0.75
+        total_runs: 15
+        utility_score: 0.71
+        score_trend: declining
+        ---
+        """)
+    deployed_content = deployed_fm + "\n## Instructions\n\nv1 instructions\n"
+
+    repo_skill = repo_dir / "test.md"
+    dest = deployed_dir / "test.md"
+    repo_skill.write_text(repo_content, encoding="utf-8")
+    dest.write_text(deployed_content, encoding="utf-8")
+
+    result = merge_skill(repo_skill, dest)
+    assert result == "updated"
+    merged = dest.read_text(encoding="utf-8")
+    assert "utility_score: 0.71" in merged
+    assert "score_trend: declining" in merged
+    assert "v2 instructions" in merged
+
+
+def test_update_preserves_top_examples_section(tmp_path):
+    """## Top Examples (optimizer-written) survives a prompt upgrade."""
+    repo_dir = tmp_path / "repo"
+    deployed_dir = tmp_path / "deployed"
+    repo_dir.mkdir(); deployed_dir.mkdir()
+
+    examples_block = "\n## Top Examples\n\nexample output 1\nexample output 2\n"
+    history_rows = "| 2026-04-01 | page-abc | haiku | 0.9 | ok |\n"
+    deployed_content = (
+        _make_skill(1, "v1 instructions").rstrip("\n")
+        + examples_block
+        + "\n## Execution History\n\n" + history_rows
+    )
+    repo_content = _make_skill(2, "v2 richer instructions")
+
+    repo_skill = repo_dir / "test.md"
+    dest = deployed_dir / "test.md"
+    repo_skill.write_text(repo_content, encoding="utf-8")
+    dest.write_text(deployed_content, encoding="utf-8")
+
+    result = merge_skill(repo_skill, dest)
+    assert result == "updated"
+    merged = dest.read_text(encoding="utf-8")
+    assert "v2 richer instructions" in merged
+    assert "example output 1" in merged
+    assert "example output 2" in merged
+    assert history_rows in merged
+    # Top Examples must appear before Execution History
+    assert merged.index("## Top Examples") < merged.index("## Execution History")
 
 
 def test_merge_frontmatter_stats_no_op_when_no_frontmatter():
