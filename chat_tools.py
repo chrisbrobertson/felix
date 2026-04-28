@@ -17,7 +17,7 @@ MEMORIES_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/secon
 # detect the case where a timeout fires after a mutation has already landed, so
 # it can warn the user rather than silently suggest they retry.
 MUTATING_TOOLS: frozenset[str] = frozenset(
-    {"add_goal", "add_project", "add_bug", "add_feature", "close_issue"}
+    {"add_goal", "add_project", "add_bug", "add_feature", "close_issue", "deliver_pending_replies"}
 )
 
 TOOLS: list[dict] = [

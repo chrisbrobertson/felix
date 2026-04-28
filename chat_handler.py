@@ -55,11 +55,15 @@ def _mutation_succeeded(name: str, result: str) -> bool:
     raised, so we must inspect the result before recording the mutation as applied.
     close_issue has additional non-error, non-mutating returns ("No issue found …",
     "Multiple matches …") that would otherwise slip through an "Error:" prefix check.
+    deliver_pending_replies returns "No pending replies …" when the queue is empty —
+    that is a no-op, not a mutation.
     """
     if result.startswith("Error"):
         return False
     if name == "close_issue":
         return result.startswith("Closed [")
+    if name == "deliver_pending_replies":
+        return result.startswith("Delivered")
     return True
 
 
@@ -6299,15 +6303,23 @@ class TelegramChatHandler:
 
             from chat_tools import TOOLS, MUTATING_TOOLS, dispatch as _tool_dispatch
 
-            # Track which mutating tools completed before any timeout so we can
-            # warn the user rather than suggest a blind retry that would duplicate
-            # state (e.g. a second goal or bug created when the first already landed).
-            _completed_mutations: list[str] = []
+            # Track mutating tool calls so a timeout can warn rather than suggest a
+            # blind retry that would duplicate state.
+            # _completed_mutations: tools that returned successfully before the timeout.
+            # _inflight_mutations: tools whose dispatch was in-flight when the timeout
+            #   fired (await cancelled before result arrived — partial state is possible).
+            _completed_mutations: list[tuple[str, str]] = []  # (name, result)
+            _inflight_mutations: list[str] = []
 
             async def tool_dispatch(name: str, args: dict) -> str:
+                is_mutating = name in MUTATING_TOOLS
+                if is_mutating:
+                    _inflight_mutations.append(name)
                 result = await _tool_dispatch(name, args, self)
-                if name in MUTATING_TOOLS and _mutation_succeeded(name, result):
-                    _completed_mutations.append(name)
+                if is_mutating:
+                    _inflight_mutations.remove(name)
+                    if _mutation_succeeded(name, result):
+                        _completed_mutations.append((name, result))
                 return result
 
             # Only expose pending-reply tools when: (a) this chat has a non-empty queue, AND
@@ -6338,15 +6350,27 @@ class TelegramChatHandler:
                 )
             except asyncio.TimeoutError:
                 log.error("run_with_tools timed out after 240s for chat_id=%s", chat_id)
-                if _completed_mutations:
+                if _completed_mutations or _inflight_mutations:
+                    parts = []
+                    if _completed_mutations:
+                        parts.append(
+                            "The following action(s) completed before the timeout: "
+                            + "; ".join(r for _, r in _completed_mutations)
+                        )
+                    if _inflight_mutations:
+                        parts.append(
+                            "The following action(s) were in progress when the timeout fired "
+                            "and may or may not have been applied: "
+                            + ", ".join(_inflight_mutations)
+                        )
                     timeout_msg = (
-                        "The request timed out, but the following action(s) may have already been applied: "
-                        + ", ".join(_completed_mutations)
+                        "The request timed out. "
+                        + " ".join(parts)
                         + ". Please verify before retrying to avoid duplicates."
                     )
                     log.warning(
-                        "Timeout after completed mutations %s for chat_id=%s",
-                        _completed_mutations, chat_id,
+                        "Timeout: completed=%s inflight=%s for chat_id=%s",
+                        _completed_mutations, _inflight_mutations, chat_id,
                     )
                 else:
                     timeout_msg = "Sorry — the request timed out. Try asking a more specific question."

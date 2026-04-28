@@ -406,11 +406,62 @@ async def test_handle_message_timeout_after_mutation_warns_user(handler, brain_d
     reply_calls = mock_update.message.reply_text.call_args_list
     assert reply_calls, "expected a reply"
     reply_text = " ".join(str(c) for c in reply_calls)
-    assert "add_goal" in reply_text, "reply should name the completed mutation"
+    # Result text ("Goal created: ...") should appear, not just the bare tool name
+    assert "Goal created" in reply_text, "reply should include the mutation result text"
     assert "verify" in reply_text.lower() or "duplicate" in reply_text.lower(), \
         "reply should warn about duplicates"
     assert "try asking" not in reply_text.lower(), \
         "generic retry suggestion should be absent when a mutation already landed"
+
+
+@pytest.mark.asyncio
+async def test_handle_message_timeout_during_inflight_mutation_warns_user(handler, brain_dir):
+    """Timeout that fires while a mutating tool is still in-progress must warn the user.
+
+    deliver_pending_replies may have already sent some messages before the outer
+    asyncio.wait_for cancelled the coroutine — the user must not be told to retry
+    blindly since that would resend already-delivered messages.
+    """
+    handler.executor = MagicMock()
+    tool_entered = asyncio.Event()
+
+    async def blocking_dispatch(name, args, handler_ref):
+        # Signal we've entered, then block until cancelled (simulates slow I/O)
+        tool_entered.set()
+        await asyncio.sleep(9999)
+
+    async def _run_with_tools_in_flight(**kwargs):
+        td = kwargs["tool_dispatch"]
+        # Start tool_dispatch as a task so we can cancel it mid-await
+        task = asyncio.create_task(td("deliver_pending_replies", {}))
+        await tool_entered.wait()  # wait until _inflight_mutations.append() has run
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        raise asyncio.TimeoutError()
+
+    handler.executor.run_with_tools = _run_with_tools_in_flight
+
+    mock_update = MagicMock()
+    mock_update.effective_user.id = 12345
+    mock_update.effective_chat.id = 12345
+    mock_update.message = AsyncMock()
+    mock_update.message.text = "send my pending replies"
+
+    with patch("chat_tools.dispatch", new=blocking_dispatch):
+        await handler.handle_message(mock_update, MagicMock())
+
+    reply_calls = mock_update.message.reply_text.call_args_list
+    assert reply_calls, "expected a reply"
+    reply_text = " ".join(str(c) for c in reply_calls)
+    assert "deliver_pending_replies" in reply_text, \
+        "reply should name the in-flight mutation"
+    assert "verify" in reply_text.lower() or "duplicate" in reply_text.lower(), \
+        "reply should warn about duplicates"
+    assert "try asking" not in reply_text.lower(), \
+        "generic retry suggestion should be absent when a mutation was in-flight"
 
 
 @pytest.mark.asyncio
