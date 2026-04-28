@@ -605,6 +605,10 @@ class TelegramChatHandler:
         keeps at least the last user turn and everything after it. After budget trimming,
         strips any remaining leading assistant turns so the API never receives history
         that starts with an assistant message.
+
+        If there are no user turns at all (e.g. history contains only a reconnect
+        notification), returns an empty list — the API must not receive assistant-only
+        history.
         """
         trimmed = list(history)
         if not trimmed:
@@ -618,7 +622,9 @@ class TelegramChatHandler:
             None,
         )
         if last_user_idx is None:
-            return trimmed
+            # No user turn exists — entire history is assistant-only (e.g. a standalone
+            # reconnect notification). Return empty so the API never sees it.
+            return []
         min_keep = len(trimmed) - last_user_idx
 
         while total > self.HISTORY_TOKEN_BUDGET and len(trimmed) > min_keep:

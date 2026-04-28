@@ -627,6 +627,23 @@ async def test_trim_history_tokens_handles_leading_assistant_notification(handle
 
 
 @pytest.mark.asyncio
+async def test_trim_history_tokens_assistant_only_returns_empty(handler):
+    """_trim_history_tokens returns [] when history has no user turns.
+
+    _reconnect_loop appends a standalone assistant notification before the user has
+    ever replied. If _handle_text is called next, history contains only that assistant
+    turn. _trim_history_tokens must return [] so the API never receives an
+    assistant-only history.
+    """
+    notification = "📬 Network is back. I have 1 response I couldn't deliver earlier."
+    history = [{"role": "assistant", "content": notification}]
+    trimmed = handler._trim_history_tokens(history)
+    assert trimmed == [], (
+        "_trim_history_tokens must return [] for assistant-only history (no user turn)"
+    )
+
+
+@pytest.mark.asyncio
 async def test_trim_history_tokens_budget_then_strip_leading_assistant(handler):
     """_trim_history_tokens trims for budget AND then strips leading assistant turns."""
     # Build a history that exceeds budget and starts with a notification.
