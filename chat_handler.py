@@ -2128,13 +2128,13 @@ class TelegramChatHandler:
 
     @staticmethod
     def _classify_todo(text: str) -> str:
-        """Classify a todo description as inbound/outbound/personal using keyword heuristics."""
+        """Classify a todo description as waiting_on/outbound/personal using keyword heuristics."""
         lower = text.lower()
         outbound_markers = [
             "send to", "send ", "deliver ", "share with", "provide to",
-            "give to", "get to", "submit to", "report to", "email to", "forward to",
+            "give to", "submit to", "report to", "email to", "forward to",
         ]
-        inbound_markers = [
+        waiting_on_markers = [
             "follow up with", "follow-up with", "check in with", "check on ",
             "following up", "ask ", "remind ", "hear from ", "waiting for ",
             "schedule with", "reach out to", "connect with",
@@ -2142,9 +2142,9 @@ class TelegramChatHandler:
         for marker in outbound_markers:
             if marker in lower:
                 return "outbound"
-        for marker in inbound_markers:
+        for marker in waiting_on_markers:
             if marker in lower:
-                return "inbound"
+                return "waiting_on"
         return "personal"
 
     async def cmd_todo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -4372,9 +4372,9 @@ def test_classify_todo_outbound():
     assert ch.TelegramChatHandler._classify_todo("Deliver the slides to the team") == "outbound"
 
 
-def test_classify_todo_inbound():
-    assert ch.TelegramChatHandler._classify_todo("Follow up with John on the design doc") == "inbound"
-    assert ch.TelegramChatHandler._classify_todo("Check in with Alice about the release") == "inbound"
+def test_classify_todo_waiting_on():
+    assert ch.TelegramChatHandler._classify_todo("Follow up with John on the design doc") == "waiting_on"
+    assert ch.TelegramChatHandler._classify_todo("Check in with Alice about the release") == "waiting_on"
 
 
 @pytest.mark.asyncio
@@ -4464,8 +4464,8 @@ async def test_cmd_todo_creates_personal_commitment(handler, brain_dir):
 
 
 @pytest.mark.asyncio
-async def test_cmd_todo_inbound_classification(handler, brain_dir):
-    """Todo with follow-up language is classified as inbound."""
+async def test_cmd_todo_waiting_on_classification(handler, brain_dir):
+    """Todo with follow-up language is classified as waiting_on, not inbound."""
     with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
         mock_create.return_value = brain_dir / "memories" / "commitment-test.md"
         update, context = _make_update(12345, args=["Follow", "up", "with", "John"])
@@ -4473,7 +4473,7 @@ async def test_cmd_todo_inbound_classification(handler, brain_dir):
 
     args, kwargs = mock_create.call_args
     ct = kwargs.get("commitment_type") or args[0]
-    assert ct == "inbound"
+    assert ct == "waiting_on"
 
 
 @pytest.mark.asyncio
