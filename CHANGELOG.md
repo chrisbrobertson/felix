@@ -9,6 +9,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 - `memory_cache.invalidate()` wrongly deleted a valid cache entry (or skipped adding a new one) when iCloud returned EDEADLK while reading the file. The fix checks `path.exists()` before deleting: if the file is present but unreadable the old entry is preserved and the update is retried on the next 60-second sweep cycle. This prevented overdue commitments (and other recently-written files) from appearing in morning briefings when iCloud was actively syncing (#75).
 - Briefing: unparseable `due_date` values (e.g. `"Unknown"`) now emit a `log.warning` instead of silently dropping the commitment, making future date-format bugs diagnosable in the logs.
+- Morning briefings silently stopped sending when any memory-cache entry had null or malformed frontmatter: `json.loads` was called outside the per-entry `try/except` in `_assemble_briefing`, causing the entire method to raise and propagate through `_check_daily_briefing` and `_check_and_send` to `run_loop`, which then retried every 60 s without ever sending. Fixed by wrapping each `json.loads` call in its own `try/except (json.JSONDecodeError, TypeError): continue`. Also added per-check isolation in `_check_and_send` so a failing check logs and continues rather than blocking all subsequent notification checks (#52).
 
 ## [1.10.1] — 2026-04-28
 
