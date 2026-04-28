@@ -3151,6 +3151,55 @@ async def test_cmd_review_lists_candidates(brain_dir, handler):
 
 
 @pytest.mark.asyncio
+async def test_cmd_review_cache_enabled_prefix(brain_dir, tmp_path):
+    """cmd_review returns pending candidates when MemoryCache is enabled (cache path)."""
+    from memory_cache import MemoryCache
+    mem_dir = brain_dir / "memories"
+
+    candidate_text = (
+        "---\ntype: project_candidate\ncandidate_type: project\n"
+        "category_guess: work\nsource_title: Cache Test (candidate)\n"
+        "summary: Testing the cache path\nconfidence: 0.85\n"
+        "evidence: [meeting-cache-test.md]\n"
+        "extracted_fields:\n  title: Cache Test\n  due_date: 2026-08-01\n"
+        "status: pending_confirmation\ncreated: '2026-04-20T09:00:00'\n---\n\n"
+        "## Evidence\n- meeting-cache-test.md\n"
+    )
+    candidate = mem_dir / "project-candidate-cache-test-aabbcc.md"
+    candidate.write_text(candidate_text)
+
+    db_path = tmp_path / "test-cache.sqlite"
+    cache = MemoryCache(db_path, mem_dir, enabled=True)
+    await cache.sweep()
+
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir(exist_ok=True)
+
+    mock_app = MagicMock()
+    mock_builder = MagicMock()
+    mock_builder.token.return_value = mock_builder
+    mock_builder.build.return_value = mock_app
+
+    with patch.object(ch, "BRAIN_DIR", brain_dir), \
+         patch.object(ch, "DEPLOY_DIR", deploy_dir), \
+         patch.object(ch.TelegramChatHandler, "PENDING_FILE", deploy_dir / "pending-replies.json"), \
+         patch.object(ch.TelegramChatHandler, "HISTORY_FILE", deploy_dir / "chat-history.json"), \
+         patch("chat_handler.ApplicationBuilder", return_value=mock_builder), \
+         patch("chat_handler.SkillExecutor"), \
+         patch.dict(os.environ, {"GITHUB_PAT": "", "GITHUB_REPO": ""}, clear=False):
+        h = ch.TelegramChatHandler(cache=cache)
+        h.allowed_user_id = 12345
+
+    update, context = _make_update(12345)
+    await h.cmd_review(update, context)
+
+    update.message.reply_text.assert_called_once()
+    text = update.message.reply_text.call_args[0][0]
+    assert "Cache Test" in text
+    assert "1 total" in text or "Pending candidates" in text
+
+
+@pytest.mark.asyncio
 async def test_cmd_confirm_project_creates_project(brain_dir, handler):
     """Confirming a project candidate should call GoalManager.create_project."""
     mem_dir = brain_dir / "memories"
