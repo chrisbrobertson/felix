@@ -28,7 +28,7 @@ from typing import Dict, Optional
 
 log = logging.getLogger(__name__)
 
-_hostname: str = socket.gethostname()
+_hostname: str = socket.gethostname().split(".")[0]
 _brain_dir: Optional[Path] = None
 _role: str = "unknown"
 _version: str = "unknown"
