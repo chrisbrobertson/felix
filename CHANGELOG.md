@@ -7,6 +7,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- `memory_cache.query_by_prefix()` in cache mode now includes a disk fallback for files written since the last sweep, preventing `/review` and `/review purge` from returning empty or incomplete results on a cold cache (e.g. right after daemon startup or cache rebuild).
+- `ProjectInferenceScanner._cleanup_stale_candidates()` now evicts deleted candidate rows from the SQLite cache immediately via `invalidate()`, so `/review` no longer lists already-deleted candidates until the next 60-second sweep.
+- `/confirm` for project-type candidates now indexes the newly created `project-*` file in the cache immediately, so chat context and project listings reflect the confirmation without waiting for the next sweep. The `code_repo` confirm path also indexes the new `code-*` file.
 - `memory_cache.invalidate()` wrongly deleted a valid cache entry (or skipped adding a new one) when iCloud returned EDEADLK while reading the file. The fix checks `path.exists()` before deleting: if the file is present but unreadable the old entry is preserved and the update is retried on the next 60-second sweep cycle. This prevented overdue commitments (and other recently-written files) from appearing in morning briefings when iCloud was actively syncing (#75).
 - Briefing: unparseable `due_date` values (e.g. `"Unknown"`) now emit a `log.warning` instead of silently dropping the commitment, making future date-format bugs diagnosable in the logs.
 - `ProjectInferenceScanner._scan()` early-returned without running `_cleanup_stale_candidates()` when no source files had changed. This caused project candidates to accumulate past the configured cap (default 200) because cleanup only ran after new files were processed. Fix: always run cleanup on every scan cycle (#39).

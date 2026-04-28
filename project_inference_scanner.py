@@ -453,6 +453,7 @@ class ProjectInferenceScanner:
         for path in to_delete:
             try:
                 path.unlink()
+                await self._cache.invalidate(path.name)
                 deleted += 1
             except OSError:
                 log.debug("Could not delete candidate %s", path.name)

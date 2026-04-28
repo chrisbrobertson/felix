@@ -3438,6 +3438,8 @@ class TelegramChatHandler:
                 manager = GoalManager(BRAIN_DIR / "memories", config)
                 created_path = manager.confirm_candidate(path, category_override=category)
                 await self._cache.invalidate(path.name)
+                if created_path is not None:
+                    await self._cache.invalidate(created_path.name)
                 title = extracted.get("title", source_title.replace(" (candidate)", ""))
                 await update.message.reply_text(f"Project confirmed: \"{title}\" [{category}]")
             except ValueError as e:
@@ -3486,9 +3488,10 @@ class TelegramChatHandler:
                 tmp_path.write_text(content_out, encoding="utf-8")
                 os.rename(str(tmp_path), str(memory_path))
 
-                # Delete candidate
+                # Delete candidate and index the new code file
                 path.unlink()
                 await self._cache.invalidate(path.name)
+                await self._cache.invalidate(memory_path.name)
 
                 await update.message.reply_text(f"Repo confirmed: \"{name}\" added to code index")
 

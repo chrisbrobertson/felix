@@ -289,8 +289,43 @@ class MemoryCache:
         rows = self._conn.execute(
             "SELECT * FROM memories WHERE prefix = ?", (clean_prefix,)
         ).fetchall()
+        results = [dict(row) for row in rows]
 
-        return [dict(row) for row in rows]
+        # Disk fallback: pick up files written since the last sweep that
+        # haven't been indexed yet (e.g. cold start or very first scan).
+        # Filter by _extract_prefix to stay semantically identical to the
+        # SQL query — avoids broadening results when the prefix is a true
+        # prefix of another prefix (e.g. "project" vs "project-candidate").
+        cached_names = {r["filename"] for r in results}
+        for path in glob_memories(self._memories_dir, f"{clean_prefix}*.md"):
+            if path.name in cached_names:
+                continue
+            if _extract_prefix(path.name) != clean_prefix:
+                continue
+            text = await read_text_with_retry_async(path, default=None)
+            if text is None:
+                continue
+            fm = _parse_frontmatter(text)
+            try:
+                stat = path.stat()
+                mtime = stat.st_mtime
+                size = stat.st_size
+            except OSError:
+                mtime = 0.0
+                size = 0
+            results.append({
+                "filename": path.name,
+                "mtime": mtime,
+                "size": size,
+                "type": fm.get("type"),
+                "status": fm.get("status"),
+                "prefix": clean_prefix,
+                "frontmatter": _fm_dumps(fm),
+                "header500": text[:500],
+                "body": text,
+                "indexed_at": 0.0,
+            })
+        return results
 
     async def query_all(
         self, *, exclude_types: Optional[list] = None

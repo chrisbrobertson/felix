@@ -223,6 +223,43 @@ async def test_query_by_prefix(cache_db, memories_dir):
 
 
 @pytest.mark.asyncio
+async def test_query_by_prefix_cold_cache_disk_fallback(cache_db, memories_dir):
+    """query_by_prefix returns files written after rebuild (cold-cache fallback).
+
+    Regression for BLOCKING finding: in cache mode, files on disk that haven't
+    been swept into SQLite yet were invisible to query_by_prefix, causing /review
+    to return empty results right after startup.
+    """
+    from memory_cache import MemoryCache
+
+    # Seed two candidates into the cache via rebuild
+    _write_memory(memories_dir, "project-candidate-old-abc123.md",
+                  {"type": "project_candidate", "status": "pending_confirmation"}, "Old")
+
+    cache = MemoryCache(cache_db, memories_dir)
+    await cache.rebuild()
+
+    # Write a second candidate *after* rebuild — not yet in SQLite
+    _write_memory(memories_dir, "project-candidate-new-def456.md",
+                  {"type": "project_candidate", "status": "pending_confirmation"}, "New")
+
+    # query_by_prefix must return BOTH: one from SQLite and one from disk
+    results = await cache.query_by_prefix("project-candidate")
+    filenames = [r["filename"] for r in results]
+    assert "project-candidate-old-abc123.md" in filenames, "cached file must be returned"
+    assert "project-candidate-new-def456.md" in filenames, "uncached disk file must also be returned"
+
+    # The fallback must NOT cross-contaminate: a "project-" prefix query should
+    # not include "project-candidate-*" files (different prefix bucket).
+    results_proj = await cache.query_by_prefix("project")
+    proj_filenames = [r["filename"] for r in results_proj]
+    assert "project-candidate-old-abc123.md" not in proj_filenames
+    assert "project-candidate-new-def456.md" not in proj_filenames
+
+    cache.close()
+
+
+@pytest.mark.asyncio
 async def test_query_all_returns_all(cache_db, memories_dir):
     """query_all returns every cached row."""
     from memory_cache import MemoryCache
