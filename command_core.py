@@ -156,6 +156,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("deliver",  "Send queued replies that couldn't be delivered due to network issues"),
         ("discard",  "Drop queued replies that couldn't be delivered due to network issues"),
         ("version",  "Show the running daemon version"),
+        ("usage",    "Show LLM token usage. /usage [days] (default 7). /usage daily for per-day breakdown"),
     ],
     "System": [
         ("backfill",       "Reprocess historical data: /backfill <type> [days] [host]. Types: readings, email, zoom, calendar, slack, projects"),

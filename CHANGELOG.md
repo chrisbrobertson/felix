@@ -7,6 +7,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `usage_tracker`: records prompt/completion token counts per model per day from every LiteLLM call in `skill_executor`. State stored in `~/secondbrain/usage-tracker-state.json` with 30-day retention (#13).
+- `/usage [days]` Telegram command: shows token usage totals per model for the last N days (default 7). `/usage daily` shows a per-day rolling total. Works across all models routed through LiteLLM (#13).
 - `/goal_note <N> <text>` — append a timestamped note to a goal conversationally (#18).
 - `/goal_due <N> <YYYY-MM-DD|none>` — update or clear a goal's due date (#18).
 - `/project_note <N> <text>` — append a timestamped note to a project conversationally (#18).

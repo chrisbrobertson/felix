@@ -46,6 +46,14 @@ async def test_version_smoke(handler, mk_update):
     update.message.reply_text.assert_called()
 
 
+async def test_usage_smoke(handler, mk_update, tmp_path, monkeypatch):
+    import usage_tracker as ut
+    monkeypatch.setattr(ut, "USAGE_STATE_FILE", tmp_path / "usage.json")
+    update, ctx = mk_update("/usage")
+    await handler.cmd_usage(update, ctx)
+    update.message.reply_text.assert_called()
+
+
 async def test_backfill_smoke(handler, mk_update):
     update, ctx = mk_update("/backfill", args=["readings", "7"])
     await handler.cmd_backfill(update, ctx)
