@@ -352,7 +352,7 @@ async def test_handle_message_reaction_failure_does_not_crash(handler, brain_dir
 
 @pytest.mark.asyncio
 async def test_handle_message_timeout_sends_error_and_reacts(handler, brain_dir):
-    """Verify that a 120s timeout sends an error reply and sets ❌ reaction."""
+    """Verify that a chat timeout sends an error reply and sets ❌ reaction."""
     handler.executor = MagicMock()
     handler.executor.run_with_tools = AsyncMock(side_effect=asyncio.TimeoutError())
 

@@ -6319,10 +6319,10 @@ class TelegramChatHandler:
                         tool_dispatch=tool_dispatch,
                         history=history,
                     ),
-                    timeout=120.0,
+                    timeout=240.0,
                 )
             except asyncio.TimeoutError:
-                log.error("run_with_tools timed out after 120s for chat_id=%s", chat_id)
+                log.error("run_with_tools timed out after 240s for chat_id=%s", chat_id)
                 if _completed_mutations:
                     timeout_msg = (
                         "The request timed out, but the following action(s) may have already been applied: "
