@@ -54,6 +54,30 @@ success_rate: null
 Docs instructions.
 """
 
+OPENAI_MINI_SKILL = """\
+---
+name: summarize-webpage
+version: 1
+preferred_model: openai/gpt-4o-mini
+---
+
+## Instructions
+
+Do stuff.
+"""
+
+OPENAI_QUALITY_SKILL = """\
+---
+name: chat
+version: 1
+preferred_model: openai/gpt-4o
+---
+
+## Instructions
+
+Chat instructions.
+"""
+
 
 @pytest.fixture
 def skills_dir(tmp_path):
@@ -152,3 +176,61 @@ def test_gemini_skill_on_gemini_provider_is_noop(skills_dir):
     fm = get_frontmatter(read_skill(skills_dir, "summarize-docs"))
     assert fm["preferred_model"] == "gemini/gemini-2.0-flash"
     assert "fallback_model" not in fm
+
+
+# ── OpenAI provider tests ──────────────────────────────────────────────────────
+
+def test_openai_provider_haiku_skill_maps_to_mini(skills_dir):
+    write_skill(skills_dir, "summarize-webpage", HAIKU_SKILL)
+    asp.apply_provider(skills_dir, "openai")
+    fm = get_frontmatter(read_skill(skills_dir, "summarize-webpage"))
+    assert fm["preferred_model"] == "openai/gpt-4o-mini"
+    assert "fallback_model" not in fm
+
+
+def test_openai_provider_sonnet_skill_maps_to_gpt4o(skills_dir):
+    write_skill(skills_dir, "chat", SONNET_SKILL)
+    asp.apply_provider(skills_dir, "openai")
+    fm = get_frontmatter(read_skill(skills_dir, "chat"))
+    assert fm["preferred_model"] == "openai/gpt-4o"
+    assert "fallback_model" not in fm
+
+
+def test_openai_provider_preserves_execution_history(skills_dir):
+    write_skill(skills_dir, "summarize-webpage", HAIKU_SKILL)
+    asp.apply_provider(skills_dir, "openai")
+    content = read_skill(skills_dir, "summarize-webpage")
+    assert "2026-04-12 | test-slug | claude-haiku | 0.90" in content
+
+
+def test_openai_mini_skill_idempotent_on_openai_provider(skills_dir):
+    """gpt-4o-mini skill re-applied with openai provider: no change."""
+    write_skill(skills_dir, "summarize-webpage", OPENAI_MINI_SKILL)
+    asp.apply_provider(skills_dir, "openai")
+    fm = get_frontmatter(read_skill(skills_dir, "summarize-webpage"))
+    assert fm["preferred_model"] == "openai/gpt-4o-mini"
+
+
+def test_openai_quality_skill_idempotent_on_openai_provider(skills_dir):
+    """gpt-4o skill re-applied with openai provider: stays gpt-4o (not demoted to mini)."""
+    write_skill(skills_dir, "chat", OPENAI_QUALITY_SKILL)
+    asp.apply_provider(skills_dir, "openai")
+    fm = get_frontmatter(read_skill(skills_dir, "chat"))
+    assert fm["preferred_model"] == "openai/gpt-4o"
+
+
+def test_cross_provider_round_trip_openai_to_claude(skills_dir):
+    """Switch from openai to claude: gpt-4o-mini (cheap) → haiku, gpt-4o (quality) → sonnet."""
+    write_skill(skills_dir, "summarize-webpage", OPENAI_MINI_SKILL)
+    write_skill(skills_dir, "chat", OPENAI_QUALITY_SKILL)
+    asp.apply_provider(skills_dir, "claude")
+    cheap_fm = get_frontmatter(read_skill(skills_dir, "summarize-webpage"))
+    quality_fm = get_frontmatter(read_skill(skills_dir, "chat"))
+    assert cheap_fm["preferred_model"] == "claude-haiku-4-5-20251001"
+    assert "sonnet" in quality_fm["preferred_model"]
+
+
+def test_invalid_provider_exits(skills_dir):
+    import pytest
+    with pytest.raises(SystemExit):
+        asp.apply_provider(skills_dir, "unknown-provider")
