@@ -350,6 +350,35 @@ async def test_handle_message_reaction_failure_does_not_crash(handler, brain_dir
     handler.executor.run_with_tools.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_handle_message_timeout_sends_error_and_reacts(handler, brain_dir):
+    """Verify that a 120s timeout sends an error reply and sets ❌ reaction."""
+    handler.executor = MagicMock()
+    handler.executor.run_with_tools = AsyncMock(side_effect=asyncio.TimeoutError())
+
+    mock_update = MagicMock()
+    mock_update.effective_user.id = 12345
+    mock_update.effective_chat.id = 12345
+    mock_update.message = AsyncMock()
+    mock_update.message.text = "Tell me everything about all my projects in detail"
+
+    mock_context = MagicMock()
+
+    await handler.handle_message(mock_update, mock_context)
+
+    # Should reply with a timeout message
+    reply_args = mock_update.message.reply_text.call_args_list
+    assert any("timed out" in str(call).lower() for call in reply_args)
+
+    # Should set ❌ reaction
+    reaction_calls = [str(c) for c in mock_update.message.set_reaction.call_args_list]
+    assert any("❌" in c for c in reaction_calls)
+
+    # History must NOT be saved — the response was not delivered
+    history = handler._chat_history.get(12345, [])
+    assert history == []
+
+
 # ── conversation history ──────────────────────────────────────────────────────
 
 def _make_handle_message_mocks(handler):

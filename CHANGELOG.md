@@ -16,6 +16,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 - `skill_executor`: `AuthenticationError` from LiteLLM now returns `None` immediately and logs an ERROR — the fallback model is never tried when the API key itself is bad (#59).
 - `skill_executor`: `PermissionDeniedError` (model-tier/entitlement 403) now falls back to the next configured model instead of hard-stopping, so skills with cross-provider fallbacks degrade gracefully when the preferred model is unavailable to the current key (#59).
+- Chat tool-call loop: the `chat` skill prompt’s “Always attempt tool calls when appropriate” instruction caused the model to make unnecessary tool calls on questions already answered by `memory_context`, exhausting `max_iterations=5` and returning a “ran out of iterations” fallback visible to the user as “Too many tool calls” (#77). Rewrote the instruction to prefer context-first answers and call tools only when fresh data is genuinely required.
+- Chat lock starvation: added a 240 s `asyncio.wait_for` timeout around `executor.run_with_tools` in `handle_message`. A slow tool-call loop could hold the per-chat asyncio lock indefinitely, serialising all subsequent messages for that chat (#65, #77).
+- Mutation tracking: timeout warnings now show the result text of completed mutations (e.g. “Goal created: …”) rather than just the tool name, so users know what to verify before retrying. `deliver_pending_replies` added to `MUTATING_TOOLS` so it is tracked like other state-writing tools. In-flight mutations (in-progress when the timeout fired) are also reported separately, preventing blind retries that could resend already-delivered pending replies.
 
 ## [1.11.0] — 2026-04-28
 

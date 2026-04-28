@@ -6303,12 +6303,29 @@ class TelegramChatHandler:
                 or t["function"]["name"] not in ("deliver_pending_replies", "discard_pending_replies")
             ]
 
-            response = await self.executor.run_with_tools(
-                inputs={"memory_context": memory_context, "user_query": query},
-                tools=active_tools,
-                tool_dispatch=tool_dispatch,
-                history=history,
-            )
+            try:
+                response = await asyncio.wait_for(
+                    self.executor.run_with_tools(
+                        inputs={"memory_context": memory_context, "user_query": query},
+                        tools=active_tools,
+                        tool_dispatch=tool_dispatch,
+                        history=history,
+                    ),
+                    timeout=120.0,
+                )
+            except asyncio.TimeoutError:
+                log.error("run_with_tools timed out after 120s for chat_id=%s", chat_id)
+                try:
+                    await update.message.reply_text(
+                        "Sorry — the request timed out. Try asking a more specific question."
+                    )
+                except Exception:
+                    pass
+                try:
+                    await update.message.set_reaction("❌")
+                except Exception:
+                    pass
+                return
 
             log.info(f"Response: {len(response) if response else 0} chars")
             if response is None:
