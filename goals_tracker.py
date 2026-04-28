@@ -216,6 +216,41 @@ class GoalManager:
         fm["status"] = new_status
         self._atomic_write(path, fm, body)
 
+    def append_goal_note(self, path: Path, note: str) -> None:
+        """Append a timestamped note to a goal's notes field."""
+        content = read_text_with_retry(path, default="")
+        if not content:
+            raise ValueError(f"Could not read file: {path}")
+        match = re.match(r"^---\n(.*?)\n---\n\n(.*)$", content, re.DOTALL)
+        if not match:
+            raise ValueError(f"Invalid file format: {path}")
+
+        fm = yaml.safe_load(match.group(1))
+        body = match.group(2)
+
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        existing = fm.get("notes", "") or ""
+        fm["notes"] = f"{existing}\n[{ts}] {note}".strip()
+        self._atomic_write(path, fm, body)
+
+    def update_goal_due(self, path: Path, due_date: str) -> None:
+        """Update a goal's due_date. Pass None or 'none' to clear."""
+        if due_date and due_date.lower() == "none":
+            due_date = None
+        self._validate_due_date(due_date)
+
+        content = read_text_with_retry(path, default="")
+        if not content:
+            raise ValueError(f"Could not read file: {path}")
+        match = re.match(r"^---\n(.*?)\n---\n\n(.*)$", content, re.DOTALL)
+        if not match:
+            raise ValueError(f"Invalid file format: {path}")
+
+        fm = yaml.safe_load(match.group(1))
+        body = match.group(2)
+        fm["due_date"] = due_date
+        self._atomic_write(path, fm, body)
+
     # ── Project CRUD ───────────────────────────────────────────────────────────
     def create_project(
         self,
@@ -365,6 +400,41 @@ class GoalManager:
 
         # Update and write back
         fm["status"] = new_status
+        self._atomic_write(path, fm, body)
+
+    def append_project_note(self, path: Path, note: str) -> None:
+        """Append a timestamped note to a project's notes field."""
+        content = read_text_with_retry(path, default="")
+        if not content:
+            raise ValueError(f"Could not read file: {path}")
+        match = re.match(r"^---\n(.*?)\n---\n\n(.*)$", content, re.DOTALL)
+        if not match:
+            raise ValueError(f"Invalid file format: {path}")
+
+        fm = yaml.safe_load(match.group(1))
+        body = match.group(2)
+
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        existing = fm.get("notes", "") or ""
+        fm["notes"] = f"{existing}\n[{ts}] {note}".strip()
+        self._atomic_write(path, fm, body)
+
+    def update_project_due(self, path: Path, due_date: str) -> None:
+        """Update a project's due_date. Pass None or 'none' to clear."""
+        if due_date and due_date.lower() == "none":
+            due_date = None
+        self._validate_due_date(due_date)
+
+        content = read_text_with_retry(path, default="")
+        if not content:
+            raise ValueError(f"Could not read file: {path}")
+        match = re.match(r"^---\n(.*?)\n---\n\n(.*)$", content, re.DOTALL)
+        if not match:
+            raise ValueError(f"Invalid file format: {path}")
+
+        fm = yaml.safe_load(match.group(1))
+        body = match.group(2)
+        fm["due_date"] = due_date
         self._atomic_write(path, fm, body)
 
     # ── Milestone operations ───────────────────────────────────────────────────

@@ -7,6 +7,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `/goal_note <N> <text>` — append a timestamped note to a goal conversationally (#18).
+- `/goal_due <N> <YYYY-MM-DD|none>` — update or clear a goal's due date (#18).
+- `/project_note <N> <text>` — append a timestamped note to a project conversationally (#18).
+- `/project_due <N> <YYYY-MM-DD|none>` — update or clear a project's due date (#18).
 - `/changes [hours]` Telegram command: scans all active goals and projects, finds related memory files updated in the last N hours (default 24, max 168), and sends a concise LLM-generated activity digest per item — one paragraph per project/goal with recent activity. Implemented in `GoalProjectAgent.generate_change_digest()` (#74).
 
 ### Fixed

@@ -117,6 +117,26 @@ async def test_unlinkgoal_smoke(handler, mk_update, brain_dir):
     update2.message.reply_text.assert_called()
 
 
+async def test_project_note_smoke(handler, mk_update, brain_dir):
+    from tests.integration import seed
+    seed.project(brain_dir)
+    update, ctx = mk_update("/projects")
+    await handler.cmd_projects(update, ctx)
+    update2, ctx2 = mk_update("/project_note", args=["1", "Progress", "update"])
+    await handler.cmd_project_note(update2, ctx2)
+    update2.message.reply_text.assert_called()
+
+
+async def test_project_due_smoke(handler, mk_update, brain_dir):
+    from tests.integration import seed
+    seed.project(brain_dir)
+    update, ctx = mk_update("/projects")
+    await handler.cmd_projects(update, ctx)
+    update2, ctx2 = mk_update("/project_due", args=["1", "2027-01-01"])
+    await handler.cmd_project_due(update2, ctx2)
+    update2.message.reply_text.assert_called()
+
+
 async def test_changes_smoke(handler, mk_update):
     """Smoke: /changes runs without error even when there are no active projects."""
     from unittest.mock import AsyncMock, MagicMock, patch
