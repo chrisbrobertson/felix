@@ -268,7 +268,7 @@ class TelegramChatHandler:
         # Conversation history per chat_id — {role, content} pairs, last N turns
         self._chat_history: dict = self._load_history()  # chat_id → list of {role, content}
         self._chat_history_locks: dict = {} # chat_id → asyncio.Lock
-        self.HISTORY_WINDOW_TURNS = 6       # keep last 6 user+assistant pairs (12 messages)
+        self.HISTORY_WINDOW_TURNS = 15      # keep last 15 user+assistant pairs (30 messages)
         # Last /review result set — used by /review <N>, /confirm <N>, /reject <N>, /edit <N>.
         self._last_candidate_set: list = []
         # Last /dupes result set — used by /merge <N>, /keep <N>.

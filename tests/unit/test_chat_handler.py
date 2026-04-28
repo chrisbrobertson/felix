@@ -544,15 +544,18 @@ async def test_handle_message_passes_history_to_executor(handler, brain_dir):
 
 
 @pytest.mark.asyncio
-async def test_chat_history_window_truncates_to_six_turns(handler, brain_dir):
-    """Sending 10 turns keeps only the last 6 pairs (12 messages)."""
+async def test_chat_history_window_truncates_to_window_turns(handler, brain_dir):
+    """Sending more messages than HISTORY_WINDOW_TURNS keeps only the last N pairs."""
     update, context = _make_handle_message_mocks(handler)
-    for i in range(10):
+    overflow = handler.HISTORY_WINDOW_TURNS + 5
+    for i in range(overflow):
         update.message.text = f"Message {i}"
         handler.executor.run_with_tools = AsyncMock(return_value=f"Reply {i}")
         await handler.handle_message(update, context)
     history = handler._chat_history.get(99001, [])
     assert len(history) == handler.HISTORY_WINDOW_TURNS * 2
+    # The oldest messages are dropped; most recent query is preserved
+    assert history[-2]["content"] == f"Message {overflow - 1}"
 
 
 @pytest.mark.asyncio
