@@ -15,12 +15,13 @@ from litellm.exceptions import (
     ServiceUnavailableError as LiteLLMServiceUnavailableError,
     InternalServerError as LiteLLMInternalServerError,
     Timeout as LiteLLMTimeout,
+    AuthenticationError as LiteLLMAuthError,
+    PermissionDeniedError as LiteLLMPermissionError,
 )
 from llm_routes import resolve
 from utils import read_text_with_retry, read_bytes_with_retry
 
-# Exceptions that indicate a transient failure — safe to retry on the fallback model.
-# Auth errors, bad request, and quota exhaustion are permanent and propagate up.
+# Transient failures — retry on the fallback model.
 _RETRYABLE_ERRORS = (
     LiteLLMConnectionError,
     LiteLLMRateLimitError,
@@ -28,6 +29,21 @@ _RETRYABLE_ERRORS = (
     LiteLLMInternalServerError,
     LiteLLMTimeout,
 )
+
+# Auth failures — wrong/revoked key. Don't retry; fail fast.
+_AUTH_ERRORS = (LiteLLMAuthError,)
+
+# Model-tier/entitlement 403s — this model is not available to this key, but a
+# fallback model on a different provider or tier may still succeed.
+_PERMISSION_ERRORS = (LiteLLMPermissionError,)
+
+
+class SkillAuthError(RuntimeError):
+    """Raised when an LLM call fails due to invalid or revoked API credentials.
+
+    Callers should treat this as a hard outage, not a transient failure.
+    """
+
 
 log = logging.getLogger("skill-executor")
 
@@ -150,6 +166,17 @@ class SkillExecutor:
                     log.warning(f"{self.skill_name} succeeded on fallback {resolve(model)} "
                                 f"(preferred {resolve(preferred)} failed: {last_err})")
                 return result
+            except _AUTH_ERRORS as e:
+                log.error(f"{self.skill_name} auth error on {resolve(model)}: {e} — check API key/permissions")
+                await self._log_execution(inputs, resolve(model), score=0.0, notes=f"AUTH: {str(e)[:60]}")
+                raise SkillAuthError(
+                    f"API credentials rejected by {resolve(model)} — check your API keys"
+                ) from e
+            except _PERMISSION_ERRORS as e:
+                last_err = e
+                log.warning(f"{self.skill_name} permission denied on {resolve(model)} "
+                            f"(model entitlement/tier 403) — trying fallback: {e}")
+                continue
             except _RETRYABLE_ERRORS as e:
                 last_err = e
                 log.warning(f"{self.skill_name} failed on {resolve(model)}: {e}")
@@ -333,6 +360,17 @@ class SkillExecutor:
                     f"Try asking a more specific question, or ask for a single list at a time.)"
                 )
 
+            except _AUTH_ERRORS as e:
+                log.error(f"{self.skill_name} auth error on {resolve(model)}: {e} — check API key/permissions")
+                await self._log_execution(inputs, resolve(model), score=0.0, notes=f"AUTH: {str(e)[:60]}")
+                raise SkillAuthError(
+                    f"API credentials rejected by {resolve(model)} — check your API keys"
+                ) from e
+            except _PERMISSION_ERRORS as e:
+                last_err = e
+                log.warning(f"{self.skill_name} (tools) permission denied on {resolve(model)} "
+                            f"(model entitlement/tier 403) — trying fallback: {e}")
+                continue
             except _RETRYABLE_ERRORS as e:
                 last_err = e
                 log.warning(f"{self.skill_name} (tools) failed on {resolve(model)}: {e}")

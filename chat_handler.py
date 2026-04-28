@@ -17,7 +17,7 @@ from telegram.constants import ChatAction
 from telegram.error import TimedOut, NetworkError
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
-from skill_executor import SkillExecutor
+from skill_executor import SkillExecutor, SkillAuthError
 from content_fetcher import fetch_url_content
 from github_client import GitHubClient, _STANDARD_LABELS
 from goals_tracker import GoalManager
@@ -1487,6 +1487,9 @@ class TelegramChatHandler:
             await update.message.reply_text(
                 f"📚 Deepened: {title or fm.get('source_title', '')}"
             )
+        except SkillAuthError as e:
+            log.error("cmd_deepen: %s", e)
+            await update.message.reply_text(f"Deep analysis failed — invalid API credentials. Check your API keys.")
         except Exception as e:
             log.exception("cmd_deepen failed")
             await update.message.reply_text(f"Error: {_safe_error(e)}")
@@ -3811,6 +3814,9 @@ class TelegramChatHandler:
                 update,
                 f"✅ Saved: {title or url}\n→ {filename}\n\n{preview}…"
             )
+        except SkillAuthError as e:
+            log.error("cmd_remember: %s", e)
+            await update.message.reply_text("Remember failed — invalid API credentials. Check your API keys.")
         except Exception as e:
             log.exception("cmd_remember failed for %s", url)
             await update.message.reply_text(f"Remember failed: {_safe_error(e)}")
@@ -3860,6 +3866,9 @@ class TelegramChatHandler:
                 update,
                 f"✅ Saved detailed notes: {title or url}\n→ {filename}\n\n{preview}…"
             )
+        except SkillAuthError as e:
+            log.error("cmd_note: %s", e)
+            await update.message.reply_text("Note-taking failed — invalid API credentials. Check your API keys.")
         except Exception as e:
             log.exception("cmd_note failed for %s", url)
             await update.message.reply_text(f"Note failed: {_safe_error(e)}")
@@ -3920,6 +3929,10 @@ class TelegramChatHandler:
             response = await executor.run(
                 {"content": text, "url": source_url, "title": title or fname}
             )
+        except SkillAuthError as e:
+            log.error("Document upload: %s", e)
+            await update.message.reply_text("Summarization failed — invalid API credentials. Check your API keys.")
+            return
         except Exception as e:
             log.exception("Document upload summarization failed for %s", fname)
             await update.message.reply_text(f"Summarization failed: {_safe_error(e)}")
