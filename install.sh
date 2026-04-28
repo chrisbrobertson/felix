@@ -647,15 +647,8 @@ fi
 # ── 13. Skill files ───────────────────────────────────────────────────────────
 echo ""
 echo "Installing skill files..."
-for SKILL in "$REPO_DIR/skills/"*.md; do
-    DEST="$BRAIN_DIR/skills/$(basename "$SKILL")"
-    if [ -f "$DEST" ]; then
-        skip "$(basename "$SKILL")  (preserving existing — may contain execution history)"
-    else
-        cp "$SKILL" "$DEST"
-        ok "Copied $(basename "$SKILL")"
-    fi
-done
+"$VENV/bin/python3" "$REPO_DIR/scripts/merge_skill_update.py" \
+    "$REPO_DIR/skills" "$BRAIN_DIR/skills"
 
 # ── 13b. Apply LLM provider preference to deployed skills ─────────────────────
 echo ""
