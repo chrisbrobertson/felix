@@ -46,9 +46,10 @@ async def test_version_smoke(handler, mk_update):
     update.message.reply_text.assert_called()
 
 
-async def test_usage_smoke(handler, mk_update, tmp_path, monkeypatch):
+async def test_usage_smoke(handler, mk_update, monkeypatch):
     import usage_tracker as ut
-    monkeypatch.setattr(ut, "USAGE_STATE_FILE", tmp_path / "usage.json")
+    monkeypatch.setattr(ut, "render_usage", lambda days=7: f"No usage data ({days}d)")
+    monkeypatch.setattr(ut, "render_daily_breakdown", lambda: "No daily data")
     update, ctx = mk_update("/usage")
     await handler.cmd_usage(update, ctx)
     update.message.reply_text.assert_called()

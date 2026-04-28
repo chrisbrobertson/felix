@@ -14,6 +14,7 @@ import httpx
 import yaml
 
 from llm_routes import resolve
+from usage_tracker import record_usage
 from secrets import get_secret_or_env
 from utils import load_config
 
@@ -339,6 +340,8 @@ class ZoomScanner:
                 messages=[{"role": "user", "content": prompt}],
                 timeout=30,
             )
+            if hasattr(resp, "usage") and resp.usage:
+                record_usage(resolve("summarize"), resp.usage.prompt_tokens or 0, resp.usage.completion_tokens or 0)
             text = resp.choices[0].message.content.strip()
             text = re.sub(r'^```(?:json)?\n?', '', text)
             text = re.sub(r'\n?```$', '', text)
@@ -658,6 +661,8 @@ class ZoomScanner:
                 messages=[{"role": "user", "content": prompt}],
                 timeout=30,
             )
+            if hasattr(resp, "usage") and resp.usage:
+                record_usage(resolve("summarize"), resp.usage.prompt_tokens or 0, resp.usage.completion_tokens or 0)
             text = resp.choices[0].message.content.strip()
             text = re.sub(r'^```(?:json)?\n?', '', text)
             text = re.sub(r'\n?```$', '', text)

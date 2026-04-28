@@ -18,6 +18,7 @@ from typing import Optional
 import yaml
 
 from llm_routes import resolve
+from usage_tracker import record_usage
 from utils import load_config
 
 log = logging.getLogger("goal-agent")
@@ -315,6 +316,8 @@ class GoalProjectAgent:
                 messages=[{"role": "user", "content": prompt}],
                 timeout=30,
             )
+            if hasattr(resp, "usage") and resp.usage:
+                record_usage(resolve("chat"), resp.usage.prompt_tokens or 0, resp.usage.completion_tokens or 0)
             text = resp.choices[0].message.content.strip()
             # Strip markdown fences
             text = re.sub(r'^```(?:json)?\n?', '', text)
@@ -814,6 +817,8 @@ class GoalProjectAgent:
                 messages=[{"role": "user", "content": prompt}],
                 timeout=20,
             )
+            if hasattr(resp, "usage") and resp.usage:
+                record_usage(resolve("summarize"), resp.usage.prompt_tokens or 0, resp.usage.completion_tokens or 0)
             return resp.choices[0].message.content.strip()
         except Exception as e:
             log.warning("Digest summary LLM call failed for %s: %s", title, e)

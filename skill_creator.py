@@ -22,6 +22,7 @@ import yaml
 from litellm import acompletion
 
 from llm_routes import resolve
+from usage_tracker import record_usage
 
 if TYPE_CHECKING:
     from skill_optimizer import SkillOptimizer
@@ -213,6 +214,8 @@ Output ONLY the complete skill markdown file. No preamble, no explanation, no co
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=1500
                 )
+                if hasattr(response, "usage") and response.usage:
+                    record_usage(resolve(self.model_route), response.usage.prompt_tokens or 0, response.usage.completion_tokens or 0)
                 result = response.choices[0].message.content
 
                 # Strip code fences if present

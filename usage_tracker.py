@@ -46,7 +46,7 @@ def _save_state(state: dict, state_file: Path) -> None:
 
 
 def _prune_old_days(state: dict, retention_days: int) -> dict:
-    cutoff = (datetime.now() - timedelta(days=retention_days)).strftime("%Y-%m-%d")
+    cutoff = (datetime.now() - timedelta(days=retention_days - 1)).strftime("%Y-%m-%d")
     return {k: v for k, v in state.items() if k >= cutoff}
 
 
@@ -76,7 +76,7 @@ def record_usage(
 def render_usage(days: int = 7, state_file: Path = USAGE_STATE_FILE) -> str:
     """Return a human-readable usage summary for the last *days* days."""
     state = _load_state(state_file)
-    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    cutoff = (datetime.now() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
 
     totals: dict[str, dict] = {}
     for date, day_data in sorted(state.items()):
@@ -108,7 +108,7 @@ def render_usage(days: int = 7, state_file: Path = USAGE_STATE_FILE) -> str:
 def render_daily_breakdown(state_file: Path = USAGE_STATE_FILE) -> str:
     """Return per-day totals for the last 7 days (compact view)."""
     state = _load_state(state_file)
-    cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    cutoff = (datetime.now() - timedelta(days=6)).strftime("%Y-%m-%d")
 
     lines = ["Daily token totals (last 7 days):"]
     found_any = False

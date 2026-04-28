@@ -19,6 +19,7 @@ from typing import Optional
 import yaml
 
 from llm_routes import resolve
+from usage_tracker import record_usage
 from memory_cache import MemoryCache
 
 log = logging.getLogger("project-inference")
@@ -384,6 +385,8 @@ class ProjectInferenceScanner:
                 messages=[{"role": "user", "content": prompt}],
                 timeout=30,
             )
+            if hasattr(resp, "usage") and resp.usage:
+                record_usage(resolve("summarize"), resp.usage.prompt_tokens or 0, resp.usage.completion_tokens or 0)
             text = resp.choices[0].message.content.strip()
             # Strip markdown fences if present
             text = re.sub(r'^```(?:json)?\n?', '', text)
