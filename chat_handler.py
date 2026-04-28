@@ -4632,7 +4632,8 @@ class TelegramChatHandler:
                     flag = "OK " if status == "ok" else "ERR"
                     line = f"  {flag}  {loop_name:<32} {run_str}"
                     if status != "ok" and error:
-                        line += f"\n       {re.sub(r'/\S+/\S+', '[path]', error)[:80]}"
+                        scrubbed = re.sub(r'/\S+/\S+', '[path]', error)[:80]
+                        line += f"\n       {scrubbed}"
                     lines.append(line)
             else:
                 lines.append("  (no loop data yet)")
