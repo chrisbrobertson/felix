@@ -409,13 +409,13 @@ async def test_run_defaults_max_tokens_to_1000(skills_dir):
 
 # --- Transient vs permanent error filtering (fix 5f86d4) ---
 
-async def test_run_auth_error_returns_none_not_retried(executor_full, caplog):
-    """Auth errors must return None immediately without trying the fallback model."""
+async def test_run_auth_error_raises_skill_auth_error_not_retried(executor_full, caplog):
+    """Auth errors must raise SkillAuthError immediately without trying the fallback model."""
     mock_ac = AsyncMock(side_effect=_auth_err())
     with patch("skill_executor.acompletion", new=mock_ac), \
          caplog.at_level(logging.ERROR, logger="skill-executor"):
-        result = await executor_full.run({"url": "u", "title": "t", "content": "c"})
-    assert result is None
+        with pytest.raises(se.SkillAuthError):
+            await executor_full.run({"url": "u", "title": "t", "content": "c"})
     assert any("auth error" in r.message.lower() for r in caplog.records)
     assert mock_ac.call_count == 1, "Auth error must not trigger a fallback attempt"
 
@@ -515,8 +515,8 @@ async def test_run_transient_error_falls_back_to_next_model(skills_dir):
     assert call_count == 2
 
 
-async def test_run_with_tools_auth_error_returns_none_not_retried(skills_dir, caplog):
-    """Auth errors in run_with_tools() return None immediately without trying the fallback."""
+async def test_run_with_tools_auth_error_raises_skill_auth_error_not_retried(skills_dir, caplog):
+    """Auth errors in run_with_tools() raise SkillAuthError immediately without trying the fallback."""
     with patch.object(se, "SKILLS_DIR", skills_dir):
         executor = se.SkillExecutor("summarize-webpage", role="full")
 
@@ -524,12 +524,12 @@ async def test_run_with_tools_auth_error_returns_none_not_retried(skills_dir, ca
     with patch("skill_executor.acompletion", new=mock_ac), \
          patch.object(se, "BRAIN_DIR", skills_dir.parent), \
          caplog.at_level(logging.ERROR, logger="skill-executor"):
-        result = await executor.run_with_tools(
-            inputs={"query": "test"},
-            tools=[],
-            tool_dispatch=AsyncMock(),
-        )
-    assert result is None
+        with pytest.raises(se.SkillAuthError):
+            await executor.run_with_tools(
+                inputs={"query": "test"},
+                tools=[],
+                tool_dispatch=AsyncMock(),
+            )
     assert any("auth error" in r.message.lower() for r in caplog.records)
     assert mock_ac.call_count == 1, "Auth error must not trigger a fallback attempt"
 

@@ -37,6 +37,14 @@ _AUTH_ERRORS = (LiteLLMAuthError,)
 # fallback model on a different provider or tier may still succeed.
 _PERMISSION_ERRORS = (LiteLLMPermissionError,)
 
+
+class SkillAuthError(RuntimeError):
+    """Raised when an LLM call fails due to invalid or revoked API credentials.
+
+    Callers should treat this as a hard outage, not a transient failure.
+    """
+
+
 log = logging.getLogger("skill-executor")
 
 BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-brain"
@@ -161,7 +169,9 @@ class SkillExecutor:
             except _AUTH_ERRORS as e:
                 log.error(f"{self.skill_name} auth error on {resolve(model)}: {e} — check API key/permissions")
                 await self._log_execution(inputs, resolve(model), score=0.0, notes=f"AUTH: {str(e)[:60]}")
-                return None
+                raise SkillAuthError(
+                    f"API credentials rejected by {resolve(model)} — check your API keys"
+                ) from e
             except _PERMISSION_ERRORS as e:
                 last_err = e
                 log.warning(f"{self.skill_name} permission denied on {resolve(model)} "
@@ -353,7 +363,9 @@ class SkillExecutor:
             except _AUTH_ERRORS as e:
                 log.error(f"{self.skill_name} auth error on {resolve(model)}: {e} — check API key/permissions")
                 await self._log_execution(inputs, resolve(model), score=0.0, notes=f"AUTH: {str(e)[:60]}")
-                return None
+                raise SkillAuthError(
+                    f"API credentials rejected by {resolve(model)} — check your API keys"
+                ) from e
             except _PERMISSION_ERRORS as e:
                 last_err = e
                 log.warning(f"{self.skill_name} (tools) permission denied on {resolve(model)} "
