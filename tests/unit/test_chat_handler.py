@@ -4995,3 +4995,73 @@ async def test_cmd_briefing_awaits_assemble_briefing(handler):
     # Verify it was called with the resolved string, not a coroutine object
     arg = update.message.reply_text.call_args[0][0]
     assert isinstance(arg, str), f"reply_text received {type(arg)} instead of str — missing await?"
+
+
+# ── /changes tests ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_cmd_changes_no_activity(handler, brain_dir):
+    """/changes when no projects have recent activity shows the 'no activity' message."""
+    from unittest.mock import AsyncMock as _AsyncMock
+    mock_agent = MagicMock()
+    mock_agent.generate_change_digest = _AsyncMock(return_value=[])
+
+    update, context = _make_update(12345, args=[])
+    with patch("goal_project_agent.GoalProjectAgent", return_value=mock_agent):
+        await handler.cmd_changes(update, context)
+
+    calls = [c[0][0] for c in update.message.reply_text.call_args_list]
+    assert any("No project/goal activity" in t for t in calls)
+
+
+@pytest.mark.asyncio
+async def test_cmd_changes_shows_digest(handler, brain_dir):
+    """/changes with results formats each entry with title and summary."""
+    from unittest.mock import AsyncMock as _AsyncMock
+    digest = [
+        {"title": "Alpha Project", "type": "project", "summary": "Work was done.", "memory_count": 2},
+        {"title": "My Goal", "type": "goal", "summary": "Progress made.", "memory_count": 1},
+    ]
+    mock_agent = MagicMock()
+    mock_agent.generate_change_digest = _AsyncMock(return_value=digest)
+
+    update, context = _make_update(12345, args=[])
+    with patch("goal_project_agent.GoalProjectAgent", return_value=mock_agent):
+        await handler.cmd_changes(update, context)
+
+    all_text = " ".join(c[0][0] for c in update.message.reply_text.call_args_list)
+    assert "Alpha Project" in all_text
+    assert "Work was done." in all_text
+    assert "My Goal" in all_text
+    assert "Progress made." in all_text
+    mock_agent.generate_change_digest.assert_awaited_once_with(hours=24)
+
+
+@pytest.mark.asyncio
+async def test_cmd_changes_custom_hours(handler, brain_dir):
+    """/changes 48 passes hours=48 to generate_change_digest."""
+    from unittest.mock import AsyncMock as _AsyncMock
+    mock_agent = MagicMock()
+    mock_agent.generate_change_digest = _AsyncMock(return_value=[])
+
+    update, context = _make_update(12345, args=["48"])
+    with patch("goal_project_agent.GoalProjectAgent", return_value=mock_agent):
+        await handler.cmd_changes(update, context)
+
+    mock_agent.generate_change_digest.assert_awaited_once_with(hours=48)
+
+
+@pytest.mark.asyncio
+async def test_cmd_changes_rejects_out_of_range_hours(handler, brain_dir):
+    """/changes 999 is rejected before calling the agent."""
+    from unittest.mock import AsyncMock as _AsyncMock
+    mock_agent = MagicMock()
+    mock_agent.generate_change_digest = _AsyncMock(return_value=[])
+
+    update, context = _make_update(12345, args=["999"])
+    with patch("goal_project_agent.GoalProjectAgent", return_value=mock_agent):
+        await handler.cmd_changes(update, context)
+
+    text = update.message.reply_text.call_args[0][0]
+    assert "168" in text  # mentions the max
+    mock_agent.generate_change_digest.assert_not_awaited()

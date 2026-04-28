@@ -115,3 +115,14 @@ async def test_unlinkgoal_smoke(handler, mk_update, brain_dir):
     update2, ctx2 = mk_update("/unlinkgoal", args=["1"])
     await handler.cmd_unlinkgoal(update2, ctx2)
     update2.message.reply_text.assert_called()
+
+
+async def test_changes_smoke(handler, mk_update):
+    """Smoke: /changes runs without error even when there are no active projects."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    mock_agent = MagicMock()
+    mock_agent.generate_change_digest = AsyncMock(return_value=[])
+    update, ctx = mk_update("/changes")
+    with patch("goal_project_agent.GoalProjectAgent", return_value=mock_agent):
+        await handler.cmd_changes(update, ctx)
+    update.message.reply_text.assert_called()

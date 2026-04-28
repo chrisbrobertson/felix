@@ -590,3 +590,106 @@ def test_archive_superseded_action(tmp_path):
         fresh_fm = _parse_frontmatter(action_path.read_text())
         assert fresh_fm.get("status") == "superseded"
         assert "already exists" in fresh_fm.get("superseded_reason", "").lower()
+
+
+# ── generate_change_digest tests ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_generate_change_digest_empty_when_no_items(tmp_path):
+    """No active goals/projects → empty digest."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({"goal_agent": {"enabled": True}}))
+
+    with patch.object(gpa, "CONFIG_PATH", config_file), \
+         patch.object(gpa, "DEPLOY_DIR", tmp_path), \
+         patch.object(gpa, "MEMORIES_DIR", memories_dir):
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
+        results = await agent.generate_change_digest(hours=24)
+        assert results == []
+
+
+@pytest.mark.asyncio
+async def test_generate_change_digest_excludes_stale_memories(tmp_path):
+    """Memories older than the cutoff are not included."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({"goal_agent": {"enabled": True}}))
+
+    # Create an active project with a matching tag
+    make_project_file(memories_dir, "Alpha Project", status="active", category="work")
+    # Create a memory with the matching tag but set its mtime to > 24h ago
+    mem_path = make_memory_file(
+        memories_dir, "email-alpha.md", "email_thread", "Alpha email", tags=["test"]
+    )
+    old_time = __import__("time").time() - 48 * 3600
+    import os
+    os.utime(str(mem_path), (old_time, old_time))
+
+    with patch.object(gpa, "CONFIG_PATH", config_file), \
+         patch.object(gpa, "DEPLOY_DIR", tmp_path), \
+         patch.object(gpa, "MEMORIES_DIR", memories_dir):
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
+        results = await agent.generate_change_digest(hours=24)
+        # Memory is outside window → no results
+        assert results == []
+
+
+@pytest.mark.asyncio
+async def test_generate_change_digest_returns_entry_for_recent_activity(tmp_path):
+    """A project with a recently-modified related memory produces one digest entry."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({"goal_agent": {"enabled": True}}))
+
+    make_project_file(memories_dir, "Beta Project", status="active", category="work")
+    # Recent memory with matching tag
+    make_memory_file(
+        memories_dir, "email-beta.md", "email_thread", "Beta email", tags=["test"]
+    )
+
+    mock_resp = MagicMock()
+    mock_resp.choices = [MagicMock()]
+    mock_resp.choices[0].message.content = "Beta project had an email discussion."
+
+    with patch.object(gpa, "CONFIG_PATH", config_file), \
+         patch.object(gpa, "DEPLOY_DIR", tmp_path), \
+         patch.object(gpa, "MEMORIES_DIR", memories_dir), \
+         patch("litellm.acompletion", new=AsyncMock(return_value=mock_resp)):
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
+        results = await agent.generate_change_digest(hours=24)
+
+    assert len(results) == 1
+    assert results[0]["title"] == "Beta Project"
+    assert results[0]["type"] == "project"
+    assert results[0]["memory_count"] == 1
+    assert "Beta project" in results[0]["summary"]
+
+
+@pytest.mark.asyncio
+async def test_generate_change_digest_fallback_on_llm_error(tmp_path):
+    """LLM failure → fallback summary listing memory titles."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({"goal_agent": {"enabled": True}}))
+
+    make_project_file(memories_dir, "Gamma Project", status="active", category="work")
+    make_memory_file(
+        memories_dir, "email-gamma.md", "email_thread", "Gamma email", tags=["test"]
+    )
+
+    with patch.object(gpa, "CONFIG_PATH", config_file), \
+         patch.object(gpa, "DEPLOY_DIR", tmp_path), \
+         patch.object(gpa, "MEMORIES_DIR", memories_dir), \
+         patch("litellm.acompletion", new=AsyncMock(side_effect=Exception("LLM down"))):
+        agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
+        results = await agent.generate_change_digest(hours=24)
+
+    assert len(results) == 1
+    assert results[0]["memory_count"] == 1
+    # Fallback summary mentions the memory title or count
+    assert "1" in results[0]["summary"] or "Gamma" in results[0]["summary"]

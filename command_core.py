@@ -67,6 +67,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("milestone",       "Toggle milestone M on project N: /milestone N M"),
         ("linkgoal",        "Link project N to goal M: /linkgoal N M"),
         ("unlinkgoal",      "Unlink project N from its goal"),
+        ("changes",         "Project/goal activity digest for the last N hours. /changes [hours] (default 24)"),
     ],
     "Review": [
         ("review",   "List pending project/repo candidates (/review N for detail)"),
