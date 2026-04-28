@@ -5052,7 +5052,8 @@ def test_resolve_feature_by_numeric_index_still_works(handler, brain_dir):
 
 # ── _close_issue_text tests ────────────────────────────────────────────────
 
-def test_close_issue_by_short_id(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_issue_by_short_id(handler, brain_dir):
     """_close_issue_text updates status when short_id matches."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
@@ -5063,7 +5064,7 @@ def test_close_issue_by_short_id(handler, brain_dir):
         "short_id: abc123\n---\n\n## Bug\nPDF export doesn't work\n"
     )
 
-    result = handler._close_issue_text(short_id="abc123", status="done")
+    result = await handler._close_issue_text(short_id="abc123", status="done")
 
     assert "Closed" in result
     assert "abc123" in result
@@ -5075,7 +5076,8 @@ def test_close_issue_by_short_id(handler, brain_dir):
     assert "status: new" not in content
 
 
-def test_close_issue_by_title(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_issue_by_title(handler, brain_dir):
     """_close_issue_text updates status when title substring matches."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
@@ -5086,7 +5088,7 @@ def test_close_issue_by_title(handler, brain_dir):
         "short_id: def456\n---\n\n## Request\nDark mode needed\n"
     )
 
-    result = handler._close_issue_text(title="dark mode", status="done")
+    result = await handler._close_issue_text(title="dark mode", status="done")
 
     assert "Closed" in result
     assert "def456" in result
@@ -5097,7 +5099,8 @@ def test_close_issue_by_title(handler, brain_dir):
     assert "status: done" in content
 
 
-def test_close_issue_title_ambiguous(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_issue_title_ambiguous(handler, brain_dir):
     """_close_issue_text returns disambiguation list when multiple titles match."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
@@ -5114,7 +5117,7 @@ def test_close_issue_title_ambiguous(handler, brain_dir):
         "short_id: bbb222\n---\n\n## Bug\n"
     )
 
-    result = handler._close_issue_text(title="PDF")
+    result = await handler._close_issue_text(title="PDF")
 
     assert "Multiple matches" in result
     assert "aaa111" in result
@@ -5126,18 +5129,20 @@ def test_close_issue_title_ambiguous(handler, brain_dir):
     assert "status: new" in file2.read_text()
 
 
-def test_close_issue_not_found(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_issue_not_found(handler, brain_dir):
     """_close_issue_text returns error when short_id not found."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
 
-    result = handler._close_issue_text(short_id="xxxxxx")
+    result = await handler._close_issue_text(short_id="xxxxxx")
 
     assert "No issue found" in result
     assert "xxxxxx" in result
 
 
-def test_close_issue_custom_status(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_issue_custom_status(handler, brain_dir):
     """_close_issue_text writes custom status correctly."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
@@ -5148,7 +5153,7 @@ def test_close_issue_custom_status(handler, brain_dir):
         "short_id: ghi789\n---\n\n## Request\n"
     )
 
-    result = handler._close_issue_text(short_id="ghi789", status="wont_do")
+    result = await handler._close_issue_text(short_id="ghi789", status="wont_do")
 
     assert "wont_do" in result
 
@@ -5158,18 +5163,20 @@ def test_close_issue_custom_status(handler, brain_dir):
     assert "status: new" not in content
 
 
-def test_close_issue_no_params_returns_error(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_issue_no_params_returns_error(handler, brain_dir):
     """_close_issue_text returns error when neither short_id nor title provided."""
-    result = handler._close_issue_text()
+    result = await handler._close_issue_text()
     assert "Provide either short_id or title" in result
 
 
-def test_close_issue_title_not_found(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_issue_title_not_found(handler, brain_dir):
     """_close_issue_text returns error when title matches nothing."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
 
-    result = handler._close_issue_text(title="nonexistent feature")
+    result = await handler._close_issue_text(title="nonexistent feature")
 
     assert "No issue found" in result
     assert "nonexistent feature" in result

@@ -1729,7 +1729,7 @@ class TelegramChatHandler:
         lines.append("\nUse /complete N or /dismiss N to update status.")
         return "\n".join(lines)
 
-    def _close_issue_text(self, short_id=None, title=None, status="done") -> str:
+    async def _close_issue_text(self, short_id=None, title=None, status="done") -> str:
         """Close or update a bug/feature request. Used by close_issue tool."""
         memories = list((BRAIN_DIR / "memories").glob("feature-request-*.md"))
         match = None
@@ -1760,13 +1760,23 @@ class TelegramChatHandler:
         else:
             return "Provide either short_id or title."
 
+        fm = self._parse_frontmatter(match)
+
+        # Sync to GitHub first (before touching local) so the two stores stay consistent.
+        # If GitHub rejects the update, return an error without mutating the local file.
+        gh_number = fm.get("github_issue_number")
+        if gh_number and self.github.enabled:
+            try:
+                await self._gh_set_status(gh_number, status)
+            except Exception as gh_e:
+                return f"GitHub sync failed for #{gh_number}: {gh_e}"
+
         try:
             text = match.read_text()
             updated = re.sub(r'^status:\s*\S+', f'status: {status}', text, flags=re.MULTILINE)
             tmp = match.with_suffix(".tmp")
             tmp.write_text(updated)
             os.rename(str(tmp), str(match))
-            fm = self._parse_frontmatter(match)
             return f"Closed [{fm.get('short_id')}] {(fm.get('title') or '')[:60]} → {status}"
         except Exception as e:
             return f"Error updating issue: {e}"

@@ -1,6 +1,6 @@
 """Unit tests for chat_tools.py dispatcher."""
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 import chat_tools
 
 
@@ -405,7 +405,7 @@ def test_close_issue_tool_in_tools_list():
 @pytest.mark.asyncio
 async def test_close_issue_by_short_id(mock_handler, tmp_path):
     """close_issue by short_id calls _close_issue_text correctly."""
-    mock_handler._close_issue_text = MagicMock(return_value="Closed [abc123] Bug title → done")
+    mock_handler._close_issue_text = AsyncMock(return_value="Closed [abc123] Bug title → done")
 
     result = await chat_tools.dispatch(
         "close_issue",
@@ -424,7 +424,7 @@ async def test_close_issue_by_short_id(mock_handler, tmp_path):
 @pytest.mark.asyncio
 async def test_close_issue_by_title(mock_handler, tmp_path):
     """close_issue by title calls _close_issue_text correctly."""
-    mock_handler._close_issue_text = MagicMock(return_value="Closed [def456] Feature request → done")
+    mock_handler._close_issue_text = AsyncMock(return_value="Closed [def456] Feature request → done")
 
     result = await chat_tools.dispatch(
         "close_issue",
@@ -443,7 +443,7 @@ async def test_close_issue_by_title(mock_handler, tmp_path):
 @pytest.mark.asyncio
 async def test_close_issue_custom_status(mock_handler, tmp_path):
     """close_issue with custom status passes it through."""
-    mock_handler._close_issue_text = MagicMock(return_value="Closed [ghi789] Issue → wont_do")
+    mock_handler._close_issue_text = AsyncMock(return_value="Closed [ghi789] Issue → wont_do")
 
     result = await chat_tools.dispatch(
         "close_issue",

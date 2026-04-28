@@ -460,7 +460,7 @@ async def _call(name: str, arguments: dict, handler):
         except ValueError as e:
             return f"Error: {e}"
     if name == "close_issue":
-        return handler._close_issue_text(
+        return await handler._close_issue_text(
             short_id=arguments.get("short_id"),
             title=arguments.get("title"),
             status=arguments.get("status", "done"),

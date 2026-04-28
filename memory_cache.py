@@ -285,6 +285,8 @@ class MemoryCache:
         # Cache mode — use the prefix column
         # Strip trailing wildcard and separator so callers can pass either
         # "calendar-event" or "calendar-event-" and get the same result.
+        # Strip trailing wildcard or dash: callers use either "calendar-event-" or "calendar-event"
+        # but _extract_prefix stores values without a trailing dash.
         clean_prefix = prefix.rstrip("*-")
         rows = self._conn.execute(
             "SELECT * FROM memories WHERE prefix = ?", (clean_prefix,)
