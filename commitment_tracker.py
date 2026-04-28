@@ -463,7 +463,7 @@ class CommitmentTracker:
         }
         frontmatter = yaml.dump(fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
 
-        context = f"Manually added via /missed command.\nSource note: {source_note}"
+        context = source_note
         content = f"---\n{frontmatter}---\n\n## Context\n{context}\n"
 
         tmp_path = commitment_path.with_suffix(".tmp")
