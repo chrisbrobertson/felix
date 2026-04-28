@@ -397,6 +397,34 @@ Results are grouped by type with up to 5 per group. If a group has more than 5, 
 
 The skip list is stored in `config.yaml` under `browser_watcher.skip_domains`. Changes take effect within 5 minutes (next watcher poll).
 
+### Manually capturing a URL
+
+You can save any URL as a memory on demand — useful for links that didn't get auto-captured or for content you want to revisit with more detail.
+
+```
+/remember https://example.com/article          # standard capture (auto-detect skill)
+/remember https://example.com/paper deep       # rich notes — quotes, open questions
+/remember https://example.com/blog quick       # concise 3-point capture (fast)
+
+# Numeric aliases for quick typing
+/remember https://example.com/article 1        # quick
+/remember https://example.com/article 2        # standard (default)
+/remember https://example.com/article 3        # deep
+
+/note https://example.com/paper                # alias for /remember <url> deep
+/deepen 3                                      # re-process reading #3 at deep level
+```
+
+Depth levels:
+
+| Depth | Skill | Output |
+|-------|-------|--------|
+| `quick` / `1` | `summarize-webpage-quick` | 1-2 sentence summary + 3 key points |
+| `standard` / `2` (default) | Auto-detected per content type | Full summary + key points + entities |
+| `deep` / `3` | `summarize-webpage-detailed` | Multi-paragraph summary, 8-15 key points, quotes, open questions |
+
+The `standard` depth auto-routes: research papers → `summarize-deep`, API docs → `summarize-docs`, code repos → `summarize-repo`, video transcripts → `summarize-transcript`, everything else → `summarize-webpage`.
+
 ### Managing summarizer quality
 
 Felix runs a pool of specialized summarizer skills and improves them automatically. You can check their health, review auto-drafted skills before they go live, and control the approval workflow.

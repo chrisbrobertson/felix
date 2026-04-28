@@ -4278,21 +4278,51 @@ class TelegramChatHandler:
             log.exception("Backfill failed")
             await self._send_reply(update, f"Backfill failed: {e}")
 
+    # Map depth aliases → canonical depth names used by _skill_for_depth
+    _DEPTH_ALIASES: dict[str, str] = {
+        "1": "quick", "q": "quick", "quick": "quick",
+        "2": "standard", "s": "standard", "standard": "standard", "auto": "standard",
+        "3": "deep", "d": "deep", "deep": "deep", "detailed": "deep", "note": "deep",
+    }
+
+    def _skill_for_depth(self, url: str, content: str, depth: str) -> tuple[str, str]:
+        """Return (skill_name, content_type) for the requested depth level.
+
+        quick    → summarize-webpage-quick (concise 3-point capture)
+        standard → auto-detect via skill_router (default)
+        deep     → summarize-webpage-detailed (rich notes, same as /note)
+        """
+        if depth == "quick":
+            return "summarize-webpage-quick", "quick"
+        if depth == "deep":
+            return "summarize-webpage-detailed", "detailed"
+        # standard: auto-detect content type and route
+        from skill_router import detect_content_type, SKILL_REGISTRY
+        content_type = detect_content_type(url=url, content=content[:3000])
+        skill_name = SKILL_REGISTRY.get(content_type, "summarize-webpage")
+        return skill_name, content_type
+
     async def cmd_remember(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Fetch a URL and save a reading memory: /remember <url>"""
+        """Fetch a URL and save a reading memory: /remember <url> [quick|standard|deep]"""
         if not self._check_auth(update):
             return
         if not context.args or not context.args[0].startswith("http"):
             await update.message.reply_text(
-                "Usage: /remember <url>\nExample: /remember https://example.com/article"
+                "Usage: /remember <url> [depth]\n"
+                "  quick    — concise 3-point capture (fast)\n"
+                "  standard — auto-detect and summarise (default)\n"
+                "  deep     — detailed notes, same as /note\n\n"
+                "Example: /remember https://example.com/article deep"
             )
             return
 
         url = context.args[0]
+        raw_depth = context.args[1].lower() if len(context.args) > 1 else "standard"
+        depth = self._DEPTH_ALIASES.get(raw_depth, "standard")
+
         await update.message.reply_text(f"📥 Fetching {url[:60]}...")
 
         try:
-            from skill_router import detect_content_type, SKILL_REGISTRY
             from memory_writer import MemoryWriter
 
             title, content = await fetch_url_content(url)
@@ -4303,8 +4333,7 @@ class TelegramChatHandler:
                 )
                 return
 
-            content_type = detect_content_type(url=url, content=content[:3000])
-            skill_name = SKILL_REGISTRY.get(content_type, "summarize-webpage")
+            skill_name, content_type = self._skill_for_depth(url, content, depth)
             executor = SkillExecutor(skill_name)
             memory_body = await executor.run({"url": url, "title": title or url, "content": content})
 
