@@ -5155,11 +5155,12 @@ async def test_close_issue_custom_status(handler, brain_dir):
 
     result = await handler._close_issue_text(short_id="ghi789", status="wont_do")
 
-    assert "wont_do" in result
+    # Tool enum uses underscores; handler normalizes to hyphens before writing.
+    assert "wont-do" in result
 
-    # Verify file was updated with custom status
+    # Verify file was updated with the normalized (hyphen) form
     content = feature_file.read_text()
-    assert "status: wont_do" in content
+    assert "status: wont-do" in content
     assert "status: new" not in content
 
 
@@ -5180,6 +5181,83 @@ async def test_close_issue_title_not_found(handler, brain_dir):
 
     assert "No issue found" in result
     assert "nonexistent feature" in result
+
+
+@pytest.mark.asyncio
+async def test_close_issue_github_backed_wont_do(handler, brain_dir):
+    """close_issue with wont_do on a GH-backed file closes the GH issue as not_planned."""
+    memories_dir = brain_dir / "memories"
+    memories_dir.mkdir(exist_ok=True)
+    feature_file = memories_dir / "feature-request-feature-abc111.md"
+    feature_file.write_text(
+        "---\ntitle: Old feature\ntype: feature_request\nkind: feature\nstatus: new\n"
+        "short_id: abc111\ngithub_issue_number: 42\n---\n\n## Request\n"
+    )
+
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.get_issue = AsyncMock(return_value={"labels": [], "state": "open"})
+    mock_gh.update_issue = AsyncMock()
+    mock_gh.replace_labels = AsyncMock()
+    handler.github = mock_gh
+
+    result = await handler._close_issue_text(short_id="abc111", status="wont_do")
+
+    assert "wont-do" in result
+    # GH issue must be closed as not_planned
+    mock_gh.update_issue.assert_awaited_once_with(42, state="closed", state_reason="not_planned")
+    # Local file must carry the normalized form
+    assert "status: wont-do" in feature_file.read_text()
+
+
+@pytest.mark.asyncio
+async def test_close_issue_github_backed_in_progress(handler, brain_dir):
+    """close_issue with in_progress on a GH-backed file adds status:in-progress label."""
+    memories_dir = brain_dir / "memories"
+    memories_dir.mkdir(exist_ok=True)
+    feature_file = memories_dir / "feature-request-feature-abc222.md"
+    feature_file.write_text(
+        "---\ntitle: WIP feature\ntype: feature_request\nkind: feature\nstatus: new\n"
+        "short_id: abc222\ngithub_issue_number: 55\n---\n\n## Request\n"
+    )
+
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.get_issue = AsyncMock(return_value={"labels": [], "state": "open"})
+    mock_gh.update_issue = AsyncMock()
+    mock_gh.replace_labels = AsyncMock()
+    handler.github = mock_gh
+
+    result = await handler._close_issue_text(short_id="abc222", status="in_progress")
+
+    assert "in-progress" in result
+    # GH issue must get status:in-progress label (no close call)
+    mock_gh.replace_labels.assert_awaited_once_with(55, ["status:in-progress"])
+    mock_gh.update_issue.assert_not_awaited()
+    assert "status: in-progress" in feature_file.read_text()
+
+
+@pytest.mark.asyncio
+async def test_close_issue_github_failure_leaves_local_unchanged(handler, brain_dir):
+    """When GitHub sync fails, local file must not be modified."""
+    memories_dir = brain_dir / "memories"
+    memories_dir.mkdir(exist_ok=True)
+    original = (
+        "---\ntitle: Fragile feature\ntype: feature_request\nkind: feature\nstatus: new\n"
+        "short_id: abc333\ngithub_issue_number: 99\n---\n\n## Request\n"
+    )
+    feature_file = memories_dir / "feature-request-feature-abc333.md"
+    feature_file.write_text(original)
+
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.get_issue = AsyncMock(side_effect=RuntimeError("network error"))
+    handler.github = mock_gh
+
+    result = await handler._close_issue_text(short_id="abc333", status="done")
+
+    assert "GitHub sync failed" in result
+    assert feature_file.read_text() == original
 
 
 # ── Document upload tests ─────────────────────────────────────────────────────

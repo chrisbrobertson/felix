@@ -1731,6 +1731,8 @@ class TelegramChatHandler:
 
     async def _close_issue_text(self, short_id=None, title=None, status="done") -> str:
         """Close or update a bug/feature request. Used by close_issue tool."""
+        # Tool enum uses underscores; internals (GH labels, local frontmatter) use hyphens.
+        status = {"wont_do": "wont-do", "in_progress": "in-progress"}.get(status, status)
         memories = list((BRAIN_DIR / "memories").glob("feature-request-*.md"))
         match = None
 
