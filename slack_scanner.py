@@ -369,6 +369,7 @@ class SlackScanner:
         token = get_secret_or_env("slack_user_token", "SLACK_USER_TOKEN")
         if not token:
             log.warning("SLACK_USER_TOKEN not set — Slack scanner disabled")
+            record_beat("slack_scanner", "disabled", "SLACK_USER_TOKEN not set")
             return
 
         # Initialize SlackClient
