@@ -17,10 +17,13 @@ Usage recording is best-effort — failures are logged but never raised.
 import json
 import logging
 import os
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
 log = logging.getLogger("usage-tracker")
+
+_usage_lock = threading.Lock()
 
 DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
 USAGE_STATE_FILE = DEPLOY_DIR / "usage-tracker-state.json"
@@ -60,15 +63,16 @@ def record_usage(
     if not prompt_tokens and not completion_tokens:
         return
     try:
-        state = _load_state(state_file)
-        today = datetime.now().strftime("%Y-%m-%d")
-        day = state.setdefault(today, {})
-        entry = day.setdefault(model, {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0})
-        entry["prompt_tokens"] += prompt_tokens
-        entry["completion_tokens"] += completion_tokens
-        entry["calls"] += 1
-        state = _prune_old_days(state, RETENTION_DAYS)
-        _save_state(state, state_file)
+        with _usage_lock:
+            state = _load_state(state_file)
+            today = datetime.now().strftime("%Y-%m-%d")
+            day = state.setdefault(today, {})
+            entry = day.setdefault(model, {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0})
+            entry["prompt_tokens"] += prompt_tokens
+            entry["completion_tokens"] += completion_tokens
+            entry["calls"] += 1
+            state = _prune_old_days(state, RETENTION_DAYS)
+            _save_state(state, state_file)
     except Exception as e:
         log.debug("record_usage failed (non-fatal): %s", e)
 
