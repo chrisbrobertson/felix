@@ -283,8 +283,9 @@ class MemoryCache:
             return results
 
         # Cache mode — use the prefix column
-        # Strip trailing wildcard if present
-        clean_prefix = prefix.rstrip("*")
+        # Strip trailing wildcard and separator so callers can pass either
+        # "calendar-event" or "calendar-event-" and get the same result.
+        clean_prefix = prefix.rstrip("*-")
         rows = self._conn.execute(
             "SELECT * FROM memories WHERE prefix = ?", (clean_prefix,)
         ).fetchall()
