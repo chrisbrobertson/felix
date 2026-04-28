@@ -129,6 +129,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("dismiss", self.cmd_dismiss))
         self.app.add_handler(CommandHandler("wrong", self.cmd_wrong))
         self.app.add_handler(CommandHandler("missed", self.cmd_missed))
+        self.app.add_handler(CommandHandler("todo", self.cmd_todo))
         self.app.add_handler(CommandHandler("accuracy", self.cmd_accuracy))
         self.app.add_handler(CommandHandler("quota", self.cmd_quota))
         self.app.add_handler(CommandHandler("contacts", self.cmd_contacts))
@@ -2120,6 +2121,85 @@ class TelegramChatHandler:
             await update.message.reply_text(f"Error creating commitment: {_safe_error(e)}")
         finally:
             context.user_data["awaiting_missed_reply"] = False
+
+    # ── /todo command (#12) ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _classify_todo(text: str) -> str:
+        """Classify a todo description as inbound/outbound/personal using keyword heuristics."""
+        lower = text.lower()
+        outbound_markers = [
+            "send to", "send ", "deliver ", "share with", "provide to",
+            "give to", "get to", "submit to", "report to", "email to", "forward to",
+        ]
+        inbound_markers = [
+            "follow up with", "follow-up with", "check in with", "check on ",
+            "following up", "ask ", "remind ", "hear from ", "waiting for ",
+            "schedule with", "reach out to", "connect with",
+        ]
+        for marker in outbound_markers:
+            if marker in lower:
+                return "outbound"
+        for marker in inbound_markers:
+            if marker in lower:
+                return "inbound"
+        return "personal"
+
+    async def cmd_todo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Create a personal todo item. /todo <desc> [due:YYYY-MM-DD] [type:personal|inbound|outbound]"""
+        if not self._check_auth(update):
+            return
+
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /todo <description> [due:YYYY-MM-DD] [type:personal|inbound|outbound]\n"
+                "Examples:\n"
+                "  /todo Clean my desk\n"
+                "  /todo Get the report to Jane Doe due:2026-05-01\n"
+                "  /todo Follow up with John on the design doc"
+            )
+            return
+
+        from commitment_tracker import CommitmentTracker
+
+        raw_args = list(context.args)
+        due_date: Optional[str] = None
+        forced_type: Optional[str] = None
+
+        # Extract due: and type: tokens from args
+        remaining = []
+        for token in raw_args:
+            if token.lower().startswith("due:"):
+                due_date = token[4:].strip() or None
+            elif token.lower().startswith("type:"):
+                value = token[5:].strip().lower()
+                if value in ("personal", "inbound", "outbound"):
+                    forced_type = value
+            else:
+                remaining.append(token)
+
+        description = " ".join(remaining).strip()
+        if not description:
+            await update.message.reply_text("Please provide a description after /todo.")
+            return
+
+        commitment_type = forced_type or self._classify_todo(description)
+
+        try:
+            tracker = CommitmentTracker()
+            tracker.create_manual_commitment(
+                commitment_type=commitment_type,
+                description=description,
+                owner="self",
+                due_date=due_date,
+                source_note="Created via /todo command",
+            )
+            due_str = f" — due {due_date}" if due_date else ""
+            await update.message.reply_text(
+                f"✓ Todo added [{commitment_type}]: {description}{due_str}"
+            )
+        except Exception as e:
+            await update.message.reply_text(f"Error creating todo: {_safe_error(e)}")
 
     # ── /accuracy command (FR-14) ─────────────────────────────────────────────
 
