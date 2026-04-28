@@ -688,6 +688,55 @@ def test_production_memories_dir_never_touched_during_tests(tmp_path):
     assert before == after, "production MEMORIES_DIR was mutated"
 
 
+@pytest.mark.asyncio
+async def test_noop_scan_still_runs_cleanup(tmp_path):
+    """Cleanup runs even when no source files have changed (fixes #39).
+
+    Root cause: _cleanup_stale_candidates was only called after processing
+    new source files. When all files were stable (unchanged mtime), the early
+    return bypassed cleanup, allowing candidates to accumulate past the cap.
+    """
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "project-inference-state.json"
+    config_file = tmp_path / "config.yaml"
+
+    # A source file whose mtime matches state — no new files to process
+    mem_file = make_memory_file(
+        memories_dir, "meeting-stable.md", "meeting_transcript", "Old meeting"
+    )
+    mtime = mem_file.stat().st_mtime
+    state_file.write_text(json.dumps({
+        "processed": {"meeting-stable.md": mtime},
+        "last_scan": "2026-04-15T09:00:00",
+    }))
+
+    # A stale candidate file: created 60 days ago, well past default TTL of 30 days
+    stale_created = (datetime.now() - timedelta(days=60)).isoformat()
+    stale_candidate = memories_dir / "project-candidate-old-abc123.md"
+    stale_candidate.write_text(
+        f"---\ntype: project_candidate\ncandidate_type: project\n"
+        f"status: pending_confirmation\ncreated: '{stale_created}'\n"
+        f"source_title: Old candidate\nconfidence: 0.8\n---\n\nOld candidate.\n"
+    )
+
+    config_file.write_text(yaml.dump({"project_inference": {"enabled": True}}))
+
+    with patch.object(pis, "MEMORIES_DIR", memories_dir), \
+         patch.object(pis, "DEPLOY_DIR", tmp_path), \
+         patch.object(pis, "CONFIG_PATH", config_file), \
+         patch("litellm.acompletion", new=AsyncMock()) as mock_llm:
+
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        scanner = ProjectInferenceScanner(role="full", cache=cache)
+        await scanner._scan()
+
+        # LLM should not be called (no new source files)
+        mock_llm.assert_not_called()
+        # Stale candidate must be deleted (cleanup ran on no-op scan)
+        assert not stale_candidate.exists(), "stale candidate should have been cleaned up on no-op scan"
+
+
 # ── Candidate cleanup tests (v1.10.0) ─────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -861,3 +910,51 @@ async def test_cleanup_oldest_first_deletion_order(tmp_path):
     assert (memories_dir / "project-candidate-item-2-000002.md").exists()
     assert (memories_dir / "project-candidate-item-3-000003.md").exists()
     assert (memories_dir / "project-candidate-item-4-000004.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_expires_stale_candidates_cache_mode(tmp_path):
+    """_cleanup_stale_candidates actually deletes stale files when MemoryCache is SQLite-backed.
+
+    Regression for the trailing-dash mismatch: query_by_prefix("project-candidate-")
+    did WHERE prefix = "project-candidate-" in cache mode, but _extract_prefix stores
+    "project-candidate" (no dash), so no rows were ever returned and cleanup was a no-op.
+    """
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    config_file = tmp_path / "config.yaml"
+    cache_db = tmp_path / "memory-cache.sqlite"
+
+    old_date = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%dT%H:%M:%S")
+    stale = _write_candidate(
+        memories_dir,
+        "project-candidate-old-stale-abc123.md",
+        created=old_date,
+        status="pending_confirmation",
+    )
+    # A fresh candidate within TTL — must survive
+    fresh = _write_candidate(
+        memories_dir,
+        "project-candidate-fresh-def456.md",
+        created=datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        status="pending_confirmation",
+    )
+
+    config_file.write_text(yaml.dump({"project_inference": {"enabled": True}}))
+
+    with patch.object(pis, "MEMORIES_DIR", memories_dir), \
+         patch.object(pis, "DEPLOY_DIR", deploy), \
+         patch.object(pis, "CONFIG_PATH", config_file):
+        # SQLite-backed cache (enabled=True)
+        cache = MemoryCache(cache_db, memories_dir)
+        await cache.rebuild()
+
+        scanner = ProjectInferenceScanner(role="full", cache=cache)
+        deleted = await scanner._cleanup_stale_candidates()
+        cache.close()
+
+    assert deleted == 1, "stale candidate must be deleted in cache mode"
+    assert not stale.exists(), "stale file should be gone"
+    assert fresh.exists(), "fresh file should be preserved"

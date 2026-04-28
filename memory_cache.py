@@ -14,6 +14,7 @@ import os
 import re
 import sqlite3
 import time
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional, Union
 
@@ -22,6 +23,21 @@ import yaml
 from utils import read_text_with_retry_async, glob_memories, is_conflict_copy
 
 log = logging.getLogger("memory-cache")
+
+
+class _FrontmatterEncoder(json.JSONEncoder):
+    """JSON encoder that converts YAML-parsed date/datetime objects to ISO strings."""
+
+    def default(self, o):
+        if isinstance(o, (datetime, date)):
+            return o.isoformat()
+        return super().default(o)
+
+
+def _fm_dumps(fm: dict) -> str:
+    """Serialize frontmatter dict to JSON, handling date objects from YAML parsing."""
+    return json.dumps(fm, cls=_FrontmatterEncoder)
+
 
 # Schema version for future migrations
 _SCHEMA_VERSION = 1
@@ -178,7 +194,7 @@ class MemoryCache:
                 "type": fm.get("type"),
                 "status": fm.get("status"),
                 "prefix": _extract_prefix(filename),
-                "frontmatter": json.dumps(fm),
+                "frontmatter": _fm_dumps(fm),
                 "header500": text[:500],
                 "body": text,
             }
@@ -224,7 +240,7 @@ class MemoryCache:
                     "type": fm.get("type"),
                     "status": fm.get("status"),
                     "prefix": _extract_prefix(path.name),
-                    "frontmatter": json.dumps(fm),
+                    "frontmatter": _fm_dumps(fm),
                     "header500": text[:500],
                     "body": text,
                 })
@@ -260,20 +276,56 @@ class MemoryCache:
                     "type": fm.get("type"),
                     "status": fm.get("status"),
                     "prefix": _extract_prefix(path.name),
-                    "frontmatter": json.dumps(fm),
+                    "frontmatter": _fm_dumps(fm),
                     "header500": text[:500],
                     "body": text,
                 })
             return results
 
         # Cache mode — use the prefix column
-        # Strip trailing wildcard if present
-        clean_prefix = prefix.rstrip("*")
+        # Strip trailing wildcard and separator so callers can pass either
+        # "calendar-event" or "calendar-event-" and get the same result.
+        clean_prefix = prefix.rstrip("*-")
         rows = self._conn.execute(
             "SELECT * FROM memories WHERE prefix = ?", (clean_prefix,)
         ).fetchall()
+        results = [dict(row) for row in rows]
 
-        return [dict(row) for row in rows]
+        # Disk fallback: pick up files written since the last sweep that
+        # haven't been indexed yet (e.g. cold start or very first scan).
+        # Filter by _extract_prefix to stay semantically identical to the
+        # SQL query — avoids broadening results when the prefix is a true
+        # prefix of another prefix (e.g. "project" vs "project-candidate").
+        cached_names = {r["filename"] for r in results}
+        for path in glob_memories(self._memories_dir, f"{clean_prefix}*.md"):
+            if path.name in cached_names:
+                continue
+            if _extract_prefix(path.name) != clean_prefix:
+                continue
+            text = await read_text_with_retry_async(path, default=None)
+            if text is None:
+                continue
+            fm = _parse_frontmatter(text)
+            try:
+                stat = path.stat()
+                mtime = stat.st_mtime
+                size = stat.st_size
+            except OSError:
+                mtime = 0.0
+                size = 0
+            results.append({
+                "filename": path.name,
+                "mtime": mtime,
+                "size": size,
+                "type": fm.get("type"),
+                "status": fm.get("status"),
+                "prefix": clean_prefix,
+                "frontmatter": _fm_dumps(fm),
+                "header500": text[:500],
+                "body": text,
+                "indexed_at": 0.0,
+            })
+        return results
 
     async def query_all(
         self, *, exclude_types: Optional[list] = None
@@ -305,7 +357,7 @@ class MemoryCache:
                     "type": t,
                     "status": fm.get("status"),
                     "prefix": _extract_prefix(path.name),
-                    "frontmatter": json.dumps(fm),
+                    "frontmatter": _fm_dumps(fm),
                     "header500": text[:500],
                     "body": text,
                 })
@@ -414,7 +466,7 @@ class MemoryCache:
                 fm.get("type"),
                 fm.get("status"),
                 _extract_prefix(filename),
-                json.dumps(fm),
+                _fm_dumps(fm),
                 text[:500],
                 text,
                 time.time(),

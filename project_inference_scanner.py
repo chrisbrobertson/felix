@@ -453,6 +453,7 @@ class ProjectInferenceScanner:
         for path in to_delete:
             try:
                 path.unlink()
+                await self._cache.invalidate(path.name)
                 deleted += 1
             except OSError:
                 log.debug("Could not delete candidate %s", path.name)
@@ -521,6 +522,7 @@ class ProjectInferenceScanner:
             tmp_path.write_text(content, encoding="utf-8")
             os.rename(str(tmp_path), str(candidate_path))
             log.info("Wrote candidate: %s (confidence=%.2f)", candidate_path.name, fm["confidence"])
+            await self._cache.invalidate(filename)
         except Exception:
             log.exception("Failed to write candidate file %s", candidate_path.name)
             try:
@@ -556,6 +558,10 @@ class ProjectInferenceScanner:
 
         if not candidates:
             log.debug("No new/updated source files to process for project inference")
+            # Still run cleanup: candidates accumulate on every scan but cleanup was only
+            # reached after processing new files. Without this, the cap/TTL is never enforced
+            # once all source files are stable, allowing 600+ candidates to build up (#39).
+            await self._cleanup_stale_candidates()
             return
 
         log.info(
