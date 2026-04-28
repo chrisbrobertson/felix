@@ -472,6 +472,144 @@ async def test_briefing_empty_section_omitted(tmp_path):
     assert "Commitments due today" not in briefing
 
 
+# ── Active Projects in Briefing ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_briefing_includes_active_projects(tmp_path):
+    """Active projects appear in the briefing."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    make_project(memories_dir, "abc123", "Revamp Onboarding", due_date="2026-05-01")
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "MEMORIES_DIR", memories_dir):
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
+            with patch.object(mgr, "_get_local_now", return_value=now):
+                briefing = await mgr._assemble_briefing()
+
+    assert "Active projects" in briefing
+    assert "Revamp Onboarding" in briefing
+    assert "due 2026-05-01" in briefing
+
+
+@pytest.mark.asyncio
+async def test_briefing_marks_new_projects(tmp_path):
+    """Projects created within 7 days are labelled [new]."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    # created 3 days ago — should be marked new
+    recent = (now - timedelta(days=3)).isoformat()
+    make_project(memories_dir, "new123", "Brand New Project", created=recent)
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "MEMORIES_DIR", memories_dir):
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
+            with patch.object(mgr, "_get_local_now", return_value=now):
+                briefing = await mgr._assemble_briefing()
+
+    assert "[new]" in briefing
+    assert "Brand New Project" in briefing
+
+
+@pytest.mark.asyncio
+async def test_briefing_skips_non_active_projects(tmp_path):
+    """Completed and abandoned projects are not shown."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    make_project(memories_dir, "done123", "Finished Project", status="completed")
+    make_project(memories_dir, "drop123", "Dropped Project", status="abandoned")
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "MEMORIES_DIR", memories_dir):
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
+            with patch.object(mgr, "_get_local_now", return_value=now):
+                briefing = await mgr._assemble_briefing()
+
+    assert "Finished Project" not in briefing
+    assert "Dropped Project" not in briefing
+
+
+@pytest.mark.asyncio
+async def test_briefing_shows_milestone_progress(tmp_path):
+    """Milestone completion counts appear for projects that have them."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    milestones = [
+        {"text": "Phase 1", "done": True},
+        {"text": "Phase 2", "done": True},
+        {"text": "Phase 3", "done": False},
+    ]
+    make_project(memories_dir, "ms123", "Big Initiative", milestones=milestones)
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "MEMORIES_DIR", memories_dir):
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
+            with patch.object(mgr, "_get_local_now", return_value=now):
+                briefing = await mgr._assemble_briefing()
+
+    assert "Big Initiative" in briefing
+    assert "2/3 done" in briefing
+
+
+@pytest.mark.asyncio
+async def test_briefing_skips_project_candidates(tmp_path):
+    """project-candidate-* files must not appear in Active projects."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+
+    # Write a candidate directly (not via make_project, which uses wrong prefix)
+    candidate = memories_dir / "project-candidate-work-cleanup-ab1234.md"
+    fm = {
+        "type": "project_candidate",
+        "source_title": "Should Be Hidden",
+        "status": "pending_confirmation",
+    }
+    candidate.write_text(f"---\n{yaml.dump(fm)}---\n\n## Notes\n")
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "MEMORIES_DIR", memories_dir):
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
+            with patch.object(mgr, "_get_local_now", return_value=now):
+                briefing = await mgr._assemble_briefing()
+
+    assert "Should Be Hidden" not in briefing
+
+
 # ── Commitment Alerts ─────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -1299,6 +1437,8 @@ def make_project(
     status: str = "active",
     due_date: str = None,
     category: str = "work",
+    created: str = None,
+    milestones: list = None,
 ) -> Path:
     """Create a project memory file."""
     slug = title.lower().replace(" ", "-")[:40]
@@ -1309,12 +1449,12 @@ def make_project(
         "source_title": title,
         "summary": f"{title} summary",
         "tags": [],
-        "created": "2026-04-10T10:00:00",
+        "created": created or "2026-04-10T10:00:00",
         "due_date": due_date,
         "status": status,
         "priority": "medium",
         "linked_goal": None,
-        "milestones": [],
+        "milestones": milestones or [],
         "inferred_from": [],
         "notes": "",
     }

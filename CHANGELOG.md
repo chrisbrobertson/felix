@@ -6,6 +6,11 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.11.0] — 2026-04-28
+
+### Added
+- Daily briefing now includes an "Active projects" section listing all active `type:project` files with their due dates, milestone completion counts (N/M done), and a `[new]` marker for projects created within the last 7 days (#47).
+
 ### Fixed
 - `memory_cache.query_by_prefix()` in cache mode now includes a disk fallback for files written since the last sweep, preventing `/review` and `/review purge` from returning empty or incomplete results on a cold cache (e.g. right after daemon startup or cache rebuild).
 - `ProjectInferenceScanner._cleanup_stale_candidates()` now evicts deleted candidate rows from the SQLite cache immediately via `invalidate()`, so `/review` no longer lists already-deleted candidates until the next 60-second sweep.

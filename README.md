@@ -466,7 +466,7 @@ MAX_REVIEW_CYCLES=5 scripts/babysit-with-review.sh
 ```
 
 When unmuted, the bot sends:
-- **Daily briefing** at the configured time (default 7:30 AM): today's calendar, due/overdue commitments, new memories since yesterday
+- **Daily briefing** at the configured time (default 7:30 AM): today's calendar, due/overdue commitments, active projects (with milestone progress and `[new]` marker for recent ones), new memories since yesterday
 - **Pre-meeting context** 10 minutes before each calendar event: attendees, related commitments, recent email/Slack threads
 - **Commitment deadline alerts** when items are due today or tomorrow
 - **LLM chat refresh nudge** when imported Claude/ChatGPT conversations are stale (default: 14 days since last import, with 7-day cooldown between nudges)
@@ -552,7 +552,7 @@ Muted state persists across daemon restarts. `/briefing` works even when muted â
 | `/delete <N>` | Delete item N from last list or search |
 | `/rebuild_cache` | Force full rebuild of the SQLite memory cache. Use when cache seems stale or after manual edits to iCloud memories. |
 | **Proactive notifications** | |
-| `/briefing` | Trigger today's briefing now (works even when muted): today's calendar, due/overdue commitments, new memories |
+| `/briefing` | Trigger today's briefing now (works even when muted): today's calendar, due/overdue commitments, active projects with milestones, new memories |
 | `/mute` | Suppress all proactive notifications (briefings, pre-meeting pushes, deadline alerts) |
 | `/unmute` | Resume proactive notifications |
 | **Domain filter** | |
