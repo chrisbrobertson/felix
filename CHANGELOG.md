@@ -6,6 +6,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- `memory_cache.invalidate()` wrongly deleted a valid cache entry (or skipped adding a new one) when iCloud returned EDEADLK while reading the file. The fix checks `path.exists()` before deleting: if the file is present but unreadable the old entry is preserved and the update is retried on the next 60-second sweep cycle. This prevented overdue commitments (and other recently-written files) from appearing in morning briefings when iCloud was actively syncing (#75).
+- Briefing: unparseable `due_date` values (e.g. `"Unknown"`) now emit a `log.warning` instead of silently dropping the commitment, making future date-format bugs diagnosable in the logs.
+
 ## [1.10.1] — 2026-04-28
 
 ### Fixed
