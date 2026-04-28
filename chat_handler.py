@@ -2193,6 +2193,7 @@ class TelegramChatHandler:
                 owner="self",
                 due_date=due_date,
                 source_note="Created via /todo command",
+                force_unique=True,
             )
             due_str = f" — due {due_date}" if due_date else ""
             await update.message.reply_text(

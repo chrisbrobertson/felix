@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -421,11 +422,22 @@ class CommitmentTracker:
         owner: str,
         due_date: Optional[str],
         source_note: str,
+        force_unique: bool = False,
     ) -> Path:
-        """Create a commitment file from manual /missed command (FR-12)."""
-        # SHA-256 for commitment IDs (was SHA-1 through 2026-04-19)
-        source_url = f"manual:{hashlib.sha256(description.encode()).hexdigest()[:12]}"
-        stable_id = _stable_commitment_id(source_url, description, owner)
+        """Create a commitment file from manual /missed or /todo command.
+
+        force_unique=True generates a fresh UUID-based ID each call so repeated
+        todos with the same description create new files instead of overwriting
+        prior state (e.g. a completed "Take vitamins" entry).
+        """
+        if force_unique:
+            unique_token = uuid.uuid4().hex[:12]
+            source_url = f"manual:{unique_token}"
+            stable_id = unique_token
+        else:
+            # SHA-256 for commitment IDs (was SHA-1 through 2026-04-19)
+            source_url = f"manual:{hashlib.sha256(description.encode()).hexdigest()[:12]}"
+            stable_id = _stable_commitment_id(source_url, description, owner)
         commitment_path = self._commitment_path(description, stable_id)
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
