@@ -43,7 +43,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
     "Commitments": [
         ("commitments", "List active commitments"),
         ("todos",       "List and manage todos as a checklist. /todos | /todos done N [M…] | /todos dismiss N"),
-        ("todo",        "Quick-add a personal todo. /todo <desc> [due:YYYY-MM-DD] [type:personal|inbound|outbound]"),
+        ("todo",        "Quick-add a personal todo. /todo <desc> [due:YYYY-MM-DD] [type:personal|waiting_on|outbound]"),
         ("complete",    "Mark commitment N complete"),
         ("dismiss",     "Dismiss commitment N"),
         ("wrong",       "Mark extracted commitment N as a false positive"),
@@ -167,6 +167,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("deepen",         "Re-process reading N with deep analysis: /deepen N"),
         ("note",           "Fetch a URL and save detailed study notes: /note <url>"),
         ("rebuild_cache",  "Rebuild the memory cache from scratch (full role only)"),
+        ("status",         "Show last heartbeat time and status for every loop on all connected instances"),
     ],
 }
 

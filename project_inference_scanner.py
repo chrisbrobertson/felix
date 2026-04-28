@@ -21,6 +21,7 @@ import yaml
 from llm_routes import resolve
 from usage_tracker import record_usage
 from memory_cache import MemoryCache
+from heartbeat import record_beat
 
 log = logging.getLogger("project-inference")
 
@@ -616,10 +617,13 @@ class ProjectInferenceScanner:
         log.info("Project inference scanner started — scanning every %ds", interval)
 
         while not stop_event.is_set():
+            beat_status, beat_error = "ok", None
             try:
                 await self._scan()
-            except Exception:
+            except Exception as exc:
                 log.exception("Uncaught error in project inference cycle")
+                beat_status, beat_error = "error", str(exc)
+            record_beat("project_inference_scanner", beat_status, beat_error)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)
             except asyncio.TimeoutError:

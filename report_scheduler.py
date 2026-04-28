@@ -12,6 +12,7 @@ import yaml
 
 from llm_routes import resolve
 from usage_tracker import record_usage
+from heartbeat import record_beat
 
 if TYPE_CHECKING:
     from telegram import Bot
@@ -382,10 +383,13 @@ class ReportScheduler:
         log.info("Report scheduler started")
 
         while not stop_event.is_set():
+            beat_status, beat_error = "ok", None
             try:
                 await self._check_reports()
-            except Exception as e:
-                log.error(f"Report scheduler error: {e}", exc_info=True)
+            except Exception as exc:
+                log.error(f"Report scheduler error: {exc}", exc_info=True)
+                beat_status, beat_error = "error", str(exc)
+            record_beat("report_scheduler", beat_status, beat_error)
 
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=60)

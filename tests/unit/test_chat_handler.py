@@ -6039,3 +6039,68 @@ async def test_cmd_changes_rejects_out_of_range_hours(handler, brain_dir):
     text = update.message.reply_text.call_args[0][0]
     assert "168" in text  # mentions the max
     mock_agent.generate_change_digest.assert_not_awaited()
+
+
+# ── /status tests ─────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_cmd_status_no_data(handler, brain_dir):
+    """/status with no heartbeat files returns an informative message."""
+    import heartbeat as hb
+    update, context = _make_update(12345)
+    with patch.object(hb, "read_all", return_value=[]):
+        await handler.cmd_status(update, context)
+    text = update.message.reply_text.call_args[0][0]
+    assert "No heartbeat" in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_status_shows_instance(handler, brain_dir):
+    """/status with one healthy instance shows hostname, role, and loop status."""
+    import heartbeat as hb
+    from datetime import datetime, timezone
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    fake_data = [{
+        "hostname": "macstudio",
+        "role": "full",
+        "version": "1.5.0",
+        "daemon_started": now_iso,
+        "last_heartbeat": now_iso,
+        "loops": {
+            "browser_watcher": {"last_run": now_iso, "status": "ok", "error": None},
+            "email_scanner":   {"last_run": now_iso, "status": "error", "error": "timeout"},
+        },
+    }]
+    update, context = _make_update(12345)
+    with patch.object(hb, "read_all", return_value=fake_data):
+        await handler.cmd_status(update, context)
+    text = update.message.reply_text.call_args[0][0]
+    assert "macstudio" in text
+    assert "full" in text
+    assert "browser_watcher" in text
+    assert "OK" in text
+    assert "ERR" in text
+    assert "timeout" in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_status_stale_instance(handler, brain_dir):
+    """/status flags instances that haven't reported in 10+ minutes."""
+    import heartbeat as hb
+    from datetime import datetime, timezone, timedelta
+
+    old_iso = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+    fake_data = [{
+        "hostname": "macbook-pro",
+        "role": "watcher",
+        "version": "1.5.0",
+        "daemon_started": old_iso,
+        "last_heartbeat": old_iso,
+        "loops": {},
+    }]
+    update, context = _make_update(12345)
+    with patch.object(hb, "read_all", return_value=fake_data):
+        await handler.cmd_status(update, context)
+    text = update.message.reply_text.call_args[0][0]
+    assert "STALE" in text

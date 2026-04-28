@@ -16,6 +16,7 @@ from usage_tracker import record_usage
 from secrets import get_secret_or_env
 from slack_client import SlackClient
 from utils import load_config
+from heartbeat import record_beat
 
 log = logging.getLogger("slack-scanner")
 
@@ -377,6 +378,7 @@ class SlackScanner:
         interval = sc.get("interval_seconds", 300)
 
         while not stop_event.is_set():
+            beat_status, beat_error = "ok", None
             try:
                 # Resolve self on first iteration
                 if not self._self_resolved:
@@ -386,8 +388,10 @@ class SlackScanner:
                     self._self_resolved = True
 
                 await self._run_scan()
-            except Exception:
+            except Exception as exc:
                 log.exception("Uncaught error in slack scanner cycle")
+                beat_status, beat_error = "error", str(exc)
+            record_beat("slack_scanner", beat_status, beat_error)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)
             except asyncio.TimeoutError:

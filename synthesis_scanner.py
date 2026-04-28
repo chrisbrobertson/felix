@@ -14,6 +14,7 @@ from litellm import acompletion
 from llm_routes import resolve
 from usage_tracker import record_usage
 from memory_writer import MemoryWriter
+from heartbeat import record_beat
 
 log = logging.getLogger("synthesis-scanner")
 
@@ -238,10 +239,13 @@ class SynthesisScanner:
         log.info("Synthesis scanner started — scanning every %ds", interval)
 
         while not stop_event.is_set():
+            beat_status, beat_error = "ok", None
             try:
                 await self.run_once()
-            except Exception:
+            except Exception as exc:
                 log.exception("Uncaught error in synthesis scanner cycle")
+                beat_status, beat_error = "error", str(exc)
+            record_beat("synthesis_scanner", beat_status, beat_error)
 
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)

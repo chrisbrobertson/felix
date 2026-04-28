@@ -12,6 +12,7 @@ from llm_routes import resolve
 from usage_tracker import record_usage
 from utils import load_config
 from memory_cache import MemoryCache
+from heartbeat import record_beat
 
 log = logging.getLogger("index-builder")
 
@@ -126,10 +127,13 @@ class IndexBuilder:
         while not stop_event.is_set():
             config = load_config(BRAIN_DIR / "config.yaml")
             interval = config.get("memory", {}).get("index_rebuild_interval", 3600)
+            beat_status, beat_error = "ok", None
             try:
                 await self._build()
-            except Exception as e:
-                log.error("Index build loop error (will retry next cycle): %s", e)
+            except Exception as exc:
+                log.error("Index build loop error (will retry next cycle): %s", exc)
+                beat_status, beat_error = "error", str(exc)
+            record_beat("index_builder", beat_status, beat_error)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)
             except asyncio.TimeoutError:

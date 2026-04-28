@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+from heartbeat import record_beat
+
 log = logging.getLogger("quota-scanner")
 
 DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
@@ -203,7 +205,13 @@ class QuotaScanner:
         log.info("QuotaScanner started — interval: %d seconds", interval)
 
         while not stop_event.is_set():
-            await self._tick()
+            beat_status, beat_error = "ok", None
+            try:
+                await self._tick()
+            except Exception as exc:
+                log.exception("Uncaught error in quota scanner cycle")
+                beat_status, beat_error = "error", str(exc)
+            record_beat("quota_scanner", beat_status, beat_error)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)
             except asyncio.TimeoutError:

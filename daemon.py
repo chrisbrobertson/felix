@@ -18,6 +18,7 @@ from email_scanner import EmailScanner
 from calendar_scanner import CalendarScanner
 from slack_scanner import SlackScanner
 from memory_cache import MemoryCache
+import heartbeat as hb
 
 LOG_FORMAT = "%(asctime)s [%(name)s] %(levelname)s %(message)s"
 LOG_MAX_BYTES = 10_000_000   # 10 MB per file
@@ -126,6 +127,8 @@ async def main():
     # role is per-machine. Set SECOND_BRAIN_ROLE in each machine's launchd plist.
     role = os.environ.get("SECOND_BRAIN_ROLE") or config.get("daemon", {}).get("role", "full")
     log.info(f"Starting second-brain daemon v{version} — role: {role}")
+
+    hb.init(BRAIN_DIR, role, version)
 
     # ── Memory cache setup ────────────────────────────────────────────────────
     # Full role: SQLite cache at ~/secondbrain/memory-cache.sqlite

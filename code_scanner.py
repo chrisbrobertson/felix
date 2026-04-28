@@ -17,6 +17,7 @@ from llm_routes import resolve
 from usage_tracker import record_usage
 from skill_executor import SkillExecutor
 from utils import load_config
+from heartbeat import record_beat
 
 log = logging.getLogger("code-scanner")
 
@@ -360,10 +361,13 @@ class CodeScanner:
         log.info("Code scanner started — polling every %ds", interval)
 
         while not stop_event.is_set():
+            beat_status, beat_error = "ok", None
             try:
                 await self._run_scan()
-            except Exception:
+            except Exception as exc:
                 log.exception("Uncaught error in project scanner scan cycle")
+                beat_status, beat_error = "error", str(exc)
+            record_beat("code_scanner", beat_status, beat_error)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)
             except asyncio.TimeoutError:

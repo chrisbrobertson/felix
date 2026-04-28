@@ -21,6 +21,7 @@ from skill_executor import SkillExecutor, SkillAuthError
 from content_fetcher import fetch_url_content
 from github_client import GitHubClient, _STANDARD_LABELS
 from goals_tracker import GoalManager
+import heartbeat as hb
 
 log = logging.getLogger("chat-handler")
 
@@ -230,6 +231,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("deepen", self.cmd_deepen))
         self.app.add_handler(CommandHandler("note", self.cmd_note))
         self.app.add_handler(CommandHandler("rebuild_cache", self.cmd_rebuild_cache))
+        self.app.add_handler(CommandHandler("status", self.cmd_status))
         # Circles
         self.app.add_handler(CommandHandler("circles", self.cmd_circles))
         self.app.add_handler(CommandHandler("circle", self.cmd_circle))
@@ -4558,6 +4560,77 @@ class TelegramChatHandler:
         except Exception as e:
             log.exception("Cache rebuild failed")
             await update.message.reply_text(f"Cache rebuild failed: {_safe_error(e)}")
+
+    async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show last heartbeat time and loop status for all connected instances."""
+        if not self._check_auth(update):
+            return
+
+        instances = hb.read_all(BRAIN_DIR)
+        if not instances:
+            await update.message.reply_text(
+                "No heartbeat data found.\n"
+                "Instances write heartbeat-{hostname}.json to the brain dir "
+                "after each scan iteration — data will appear once the first iteration completes."
+            )
+            return
+
+        now = datetime.now(timezone.utc)
+        lines = []
+        for inst in instances:
+            hostname = inst.get("hostname", "unknown")
+            role = inst.get("role", "?")
+            version = inst.get("version", "?")
+            last_hb = inst.get("last_heartbeat", "")
+            try:
+                hb_dt = datetime.fromisoformat(last_hb)
+                age_s = int((now - hb_dt).total_seconds())
+                if age_s < 60:
+                    age_str = f"{age_s}s ago"
+                elif age_s < 3600:
+                    age_str = f"{age_s // 60}m ago"
+                else:
+                    age_str = f"{age_s // 3600}h ago"
+                stale = age_s > 600  # no heartbeat in 10+ minutes
+            except Exception:
+                age_str = "unknown"
+                stale = True
+
+            header = f"[{hostname}] {role} v{version}"
+            if stale:
+                header += "  [STALE]"
+            header += f"  (last seen {age_str})"
+            lines.append(header)
+
+            loops = inst.get("loops", {})
+            if loops:
+                for loop_name, info in sorted(loops.items()):
+                    status = info.get("status", "?")
+                    last_run = info.get("last_run", "")
+                    error = info.get("error")
+                    try:
+                        run_dt = datetime.fromisoformat(last_run)
+                        run_age_s = int((now - run_dt).total_seconds())
+                        if run_age_s < 60:
+                            run_str = f"{run_age_s}s ago"
+                        elif run_age_s < 3600:
+                            run_str = f"{run_age_s // 60}m ago"
+                        else:
+                            run_str = f"{run_age_s // 3600}h ago"
+                    except Exception:
+                        run_str = "unknown"
+
+                    flag = "OK " if status == "ok" else "ERR"
+                    line = f"  {flag}  {loop_name:<32} {run_str}"
+                    if status != "ok" and error:
+                        line += f"\n       {error[:80]}"
+                    lines.append(line)
+            else:
+                lines.append("  (no loop data yet)")
+
+            lines.append("")
+
+        await update.message.reply_text("\n".join(lines).rstrip(), parse_mode=None)
 
     # ── /code command ─────────────────────────────────────────────────────────
 
