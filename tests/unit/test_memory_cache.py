@@ -527,8 +527,8 @@ async def test_corrupt_db_recovery(tmp_path, memories_dir):
 
 
 @pytest.mark.asyncio
-async def test_edeadlk_handling(cache_db, memories_dir):
-    """EDEADLK simulation: retry helper handles it gracefully."""
+async def test_edeadlk_skips_when_file_exists(cache_db, memories_dir):
+    """EDEADLK on a file that exists: invalidate skips (not delete), retries later."""
     from memory_cache import MemoryCache
 
     _write_memory(
@@ -540,37 +540,55 @@ async def test_edeadlk_handling(cache_db, memories_dir):
 
     cache = MemoryCache(cache_db, memories_dir)
 
-    # Patch read_text_with_retry_async to raise EDEADLK once, then succeed
-    call_count = 0
+    async def mock_read_fail(path, default=None):
+        return default  # Simulate persistent EDEADLK
 
-    async def mock_read(path, default=None):
-        nonlocal call_count
-        call_count += 1
-        if call_count == 1:
-            # First call: simulate EDEADLK → should return default
-            return default
-        # Second call: succeed
-        return path.read_text()
-
-    with patch("memory_cache.read_text_with_retry_async", side_effect=mock_read):
-        # First invalidate → EDEADLK → skips
+    with patch("memory_cache.read_text_with_retry_async", side_effect=mock_read_fail):
         await cache.invalidate("2026-04-25-test-abc123.md")
 
-        # Cache should be empty (file wasn't added)
-        conn = sqlite3.connect(str(cache_db))
-        count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-        conn.close()
-        # Since default=None, invalidate sees None and tries to DELETE (no-op if not present)
-        assert count == 0
+    # File exists on disk but was unreadable — cache should be empty (skipped, not deleted)
+    conn = sqlite3.connect(str(cache_db))
+    count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+    conn.close()
+    assert count == 0
 
-    # Reset call count and try again (second call succeeds)
-    call_count = 0
-    with patch("memory_cache.read_text_with_retry_async", side_effect=mock_read):
-        await cache.invalidate("2026-04-25-test-abc123.md")
-
-    # Now should be populated (second attempt)
+    # On next sweep when file becomes readable, it should get indexed
+    await cache.invalidate("2026-04-25-test-abc123.md")
     entry = await cache.get("2026-04-25-test-abc123.md")
     assert entry is not None
+
+    cache.close()
+
+
+@pytest.mark.asyncio
+async def test_edeadlk_preserves_existing_cache_entry(cache_db, memories_dir):
+    """EDEADLK during update preserves the old (valid) cache row."""
+    from memory_cache import MemoryCache
+
+    _write_memory(
+        memories_dir,
+        "2026-04-25-test-abc123.md",
+        {"type": "commitment"},
+        "Original body"
+    )
+
+    cache = MemoryCache(cache_db, memories_dir)
+    # Populate cache with the original content
+    await cache.invalidate("2026-04-25-test-abc123.md")
+    entry_before = await cache.get("2026-04-25-test-abc123.md")
+    assert entry_before is not None
+
+    # Simulate EDEADLK on a subsequent update attempt
+    async def mock_read_fail(path, default=None):
+        return default
+
+    with patch("memory_cache.read_text_with_retry_async", side_effect=mock_read_fail):
+        await cache.invalidate("2026-04-25-test-abc123.md")
+
+    # Old entry must still be present — EDEADLK must not delete valid cached data
+    entry_after = await cache.get("2026-04-25-test-abc123.md")
+    assert entry_after is not None
+    assert entry_after["body"] == entry_before["body"]
 
     cache.close()
 

@@ -373,12 +373,17 @@ class NotificationManager:
             if not due_date_str:
                 continue
             try:
-                due_date = datetime.fromisoformat(due_date_str).date()
+                due_date = datetime.fromisoformat(str(due_date_str)).date()
                 if due_date == today:
                     due_today.append(fm)
                 elif due_date < today:
                     overdue.append(fm)
             except Exception:
+                log.warning(
+                    "briefing: unparseable due_date %r in %s — skipping",
+                    due_date_str,
+                    fm.get("source_title", "?"),
+                )
                 continue
 
         if due_today:

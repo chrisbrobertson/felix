@@ -380,7 +380,12 @@ class MemoryCache:
         text = await read_text_with_retry_async(path, default=None)
 
         if text is None:
-            # File missing — delete row
+            if path.exists():
+                # File is present on disk but unreadable — iCloud EDEADLK most likely.
+                # Keep the existing cache row (if any) and let the next sweep retry.
+                log.warning("invalidate: %s — exists but unreadable, will retry", filename)
+                return
+            # File is genuinely gone — remove it from cache.
             self._conn.execute("DELETE FROM memories WHERE filename = ?", (filename,))
             self._conn.commit()
             return
