@@ -269,6 +269,10 @@ class TelegramChatHandler:
         self._chat_history: dict = self._load_history()  # chat_id → list of {role, content}
         self._chat_history_locks: dict = {} # chat_id → asyncio.Lock
         self.HISTORY_WINDOW_TURNS = 15      # keep last 15 user+assistant pairs (30 messages)
+        # Token budget for history injected into each request. Memory context already
+        # consumes up to MAX_CONTEXT_TOKENS (150K); reserving 20K for history leaves
+        # ~30K for system prompt, tools, new user message, and response inside 200K window.
+        self.HISTORY_TOKEN_BUDGET = 20_000
         # Last /review result set — used by /review <N>, /confirm <N>, /reject <N>, /edit <N>.
         self._last_candidate_set: list = []
         # Last /dupes result set — used by /merge <N>, /keep <N>.
@@ -592,6 +596,25 @@ class TelegramChatHandler:
             # Fallback: rough heuristic of 1 token ≈ 4 chars
             log.debug(f"Token counter failed, using char/4 fallback: {e}")
             return len(text) // 4
+
+    def _trim_history_tokens(self, history: list) -> list:
+        """Return a copy of history trimmed to HISTORY_TOKEN_BUDGET by dropping oldest pairs.
+
+        Always drops in user+assistant pairs to preserve role alternation. Keeps at
+        least the most recent pair even if it alone exceeds the budget so the
+        conversation isn't silently lost on a single oversized turn.
+        """
+        trimmed = list(history)
+        if len(trimmed) < 2:
+            return trimmed
+        total = sum(self._count_tokens(m.get("content", "") or "") for m in trimmed)
+        while total > self.HISTORY_TOKEN_BUDGET and len(trimmed) > 2:
+            pair_tokens = sum(
+                self._count_tokens(m.get("content", "") or "") for m in trimmed[:2]
+            )
+            total -= pair_tokens
+            trimmed = trimmed[2:]
+        return trimmed
 
     def _edit_skip_domains(self, action: str, domain: str):
         """Add or remove a domain from browser_watcher.skip_domains in config.yaml.
@@ -6531,13 +6554,18 @@ class TelegramChatHandler:
                 or t["function"]["name"] not in ("deliver_pending_replies", "discard_pending_replies")
             ]
 
+            # Trim to token budget before sending — memory context already consumes
+            # up to 150K tokens; without this, a long thread can exceed the 200K window.
+            history_for_api = self._trim_history_tokens(history)
+
+
             try:
                 response = await asyncio.wait_for(
                     self.executor.run_with_tools(
                         inputs={"memory_context": memory_context, "user_query": query},
                         tools=active_tools,
                         tool_dispatch=tool_dispatch,
-                        history=history,
+                        history=history_for_api,
                     ),
                     timeout=240.0,
                 )

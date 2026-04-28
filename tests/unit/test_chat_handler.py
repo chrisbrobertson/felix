@@ -556,6 +556,57 @@ async def test_chat_history_window_truncates_to_window_turns(handler, brain_dir)
     assert len(history) == handler.HISTORY_WINDOW_TURNS * 2
     # The oldest messages are dropped; most recent query is preserved
     assert history[-2]["content"] == f"Message {overflow - 1}"
+    # Pair integrity: oldest retained entry must be a user message (not a stranded assistant),
+    # and all even-indexed entries must be user, all odd-indexed entries must be assistant.
+    assert history[0]["role"] == "user", "oldest retained message must be a user turn"
+    for i in range(0, len(history), 2):
+        assert history[i]["role"] == "user", f"index {i} must be user"
+        assert history[i + 1]["role"] == "assistant", f"index {i + 1} must be assistant"
+
+
+@pytest.mark.asyncio
+async def test_trim_history_tokens_drops_oldest_pairs(handler):
+    """_trim_history_tokens removes oldest user+assistant pairs until within budget."""
+    # Build a history that far exceeds the token budget using large synthetic turns.
+    # Each message is ~6000 chars; at char/4 heuristic that's ~1500 tokens each.
+    # 10 pairs × 2 messages × 1500 tokens = 30K tokens, well over the 20K budget.
+    big_content = "x" * 6000
+    history = []
+    for i in range(10):
+        history.append({"role": "user", "content": big_content})
+        history.append({"role": "assistant", "content": big_content})
+
+    trimmed = handler._trim_history_tokens(history)
+
+    # Must stay within budget (using the same char/4 heuristic the method uses)
+    total_tokens = sum(len(m.get("content", "")) // 4 for m in trimmed)
+    assert total_tokens <= handler.HISTORY_TOKEN_BUDGET
+    # Must retain at least the last pair
+    assert len(trimmed) >= 2
+    # Oldest retained entry must be a user message (pairs always dropped together)
+    assert trimmed[0]["role"] == "user"
+    # All pairs must have correct alternating roles
+    for i in range(0, len(trimmed), 2):
+        assert trimmed[i]["role"] == "user"
+        assert trimmed[i + 1]["role"] == "assistant"
+    # Most recent content is preserved
+    assert trimmed[-1]["content"] == big_content
+    assert trimmed[-2]["content"] == big_content
+
+
+@pytest.mark.asyncio
+async def test_trim_history_tokens_keeps_last_pair_even_if_oversized(handler):
+    """_trim_history_tokens never drops the final pair even if it exceeds the budget."""
+    # Single pair with content that exceeds the budget on its own.
+    huge_content = "y" * (handler.HISTORY_TOKEN_BUDGET * 5)
+    history = [
+        {"role": "user", "content": huge_content},
+        {"role": "assistant", "content": huge_content},
+    ]
+    trimmed = handler._trim_history_tokens(history)
+    assert len(trimmed) == 2
+    assert trimmed[0]["role"] == "user"
+    assert trimmed[1]["role"] == "assistant"
 
 
 @pytest.mark.asyncio
