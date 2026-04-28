@@ -506,6 +506,63 @@ class NotificationManager:
             except Exception:
                 pass
 
+        # Active projects snapshot
+        try:
+            project_entries = await self._cache.query_by_type("project", status="active")
+            active_projects = []
+            new_threshold = now - timedelta(days=7)
+            for entry in project_entries:
+                if "project-candidate-" in entry["filename"]:
+                    continue
+                try:
+                    fm = json.loads(entry["frontmatter"])
+                    if fm.get("type") != "project":
+                        continue
+                    title = fm.get("source_title") or Path(entry["filename"]).stem
+                    due_raw = fm.get("due_date")
+                    due_str = str(due_raw) if due_raw else None
+                    created_str = fm.get("created", "")
+                    is_new = False
+                    if created_str:
+                        try:
+                            created_dt = datetime.fromisoformat(created_str)
+                            if now.tzinfo is not None and created_dt.tzinfo is None:
+                                created_dt = created_dt.replace(tzinfo=now.tzinfo)
+                            elif now.tzinfo is None and created_dt.tzinfo is not None:
+                                created_dt = created_dt.replace(tzinfo=None)
+                            is_new = created_dt >= new_threshold
+                        except Exception:
+                            pass
+                    milestones = fm.get("milestones") or []
+                    total_ms = len(milestones)
+                    done_ms = sum(1 for m in milestones if m.get("done"))
+                    active_projects.append({
+                        "title": title,
+                        "due_str": due_str,
+                        "is_new": is_new,
+                        "total_ms": total_ms,
+                        "done_ms": done_ms,
+                    })
+                except Exception:
+                    continue
+
+            # Sort by due_date ascending, nulls last
+            active_projects.sort(key=lambda p: p["due_str"] or "9999-12-31")
+
+            if active_projects:
+                lines.append(f"\nActive projects ({len(active_projects)}):")
+                for proj in active_projects[:10]:
+                    label = "[new] " if proj["is_new"] else ""
+                    due_part = f" — due {proj['due_str']}" if proj["due_str"] else ""
+                    ms_part = (
+                        f" ({proj['done_ms']}/{proj['total_ms']} done)"
+                        if proj["total_ms"] > 0
+                        else ""
+                    )
+                    lines.append(f"• {label}{proj['title']}{due_part}{ms_part}")
+        except Exception:
+            log.exception("briefing: error building active projects section")
+
         # New memories since yesterday
         new_count = 0
         yesterday_midnight = datetime.combine(yesterday, datetime.min.time())
