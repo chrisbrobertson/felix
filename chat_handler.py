@@ -3609,6 +3609,7 @@ class TelegramChatHandler:
             if created_dt < cutoff:
                 try:
                     (BRAIN_DIR / "memories" / row["filename"]).unlink()
+                    await self._cache.invalidate(row["filename"])
                     deleted += 1
                 except OSError:
                     pass

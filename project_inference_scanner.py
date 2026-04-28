@@ -521,6 +521,7 @@ class ProjectInferenceScanner:
             tmp_path.write_text(content, encoding="utf-8")
             os.rename(str(tmp_path), str(candidate_path))
             log.info("Wrote candidate: %s (confidence=%.2f)", candidate_path.name, fm["confidence"])
+            await self._cache.invalidate(filename)
         except Exception:
             log.exception("Failed to write candidate file %s", candidate_path.name)
             try:
