@@ -1977,7 +1977,7 @@ async def test_github_fallback_when_pat_missing(handler, brain_dir):
 
 @pytest.mark.asyncio
 async def test_github_enabled_create_feature(handler, brain_dir):
-    """With GitHub enabled, /feature creates a GH issue not a local file."""
+    """With GitHub enabled, /feature creates a GH issue AND a local memory file."""
     mock_gh = AsyncMock()
     mock_gh.enabled = True
     mock_gh.create_issue = AsyncMock(return_value={
@@ -1994,11 +1994,17 @@ async def test_github_enabled_create_feature(handler, brain_dir):
     assert "kind:feature" in labels
     reply = update.message.reply_text.call_args[0][0]
     assert "42" in reply
+    # Local memory file must also exist with github_issue_number set
+    files = list((brain_dir / "memories").glob("feature-request-*.md"))
+    assert len(files) == 1
+    fm = _parse_fm(files[0])
+    assert fm.get("github_issue_number") == 42
+    assert fm.get("kind") == "feature"
 
 
 @pytest.mark.asyncio
 async def test_github_enabled_create_bug(handler, brain_dir):
-    """With GitHub enabled, /bug creates an issue with kind:bug label."""
+    """With GitHub enabled, /bug creates an issue with kind:bug label AND a local memory file."""
     mock_gh = AsyncMock()
     mock_gh.enabled = True
     mock_gh.create_issue = AsyncMock(return_value={
@@ -2013,6 +2019,12 @@ async def test_github_enabled_create_bug(handler, brain_dir):
     call = mock_gh.create_issue.call_args
     labels = call.kwargs.get("labels") or call.args[2]
     assert "kind:bug" in labels
+    # Local memory file must also exist with github_issue_number set
+    files = list((brain_dir / "memories").glob("feature-request-*.md"))
+    assert len(files) == 1
+    fm = _parse_fm(files[0])
+    assert fm.get("github_issue_number") == 7
+    assert fm.get("kind") == "bug"
 
 
 @pytest.mark.asyncio
@@ -2129,8 +2141,8 @@ async def test_feature_import_preview(handler, brain_dir):
 
 
 @pytest.mark.asyncio
-async def test_feature_import_confirm_creates_and_archives(handler, brain_dir):
-    """/feature_import confirm creates GH issues and moves local files to archive/."""
+async def test_feature_import_confirm_creates_and_retains_locally(handler, brain_dir):
+    """/feature_import confirm creates GH issues and keeps local files in memories/."""
     mock_gh = AsyncMock()
     mock_gh.enabled = True
     mock_gh.repo = "owner/repo"
@@ -2151,11 +2163,16 @@ async def test_feature_import_confirm_creates_and_archives(handler, brain_dir):
     update, ctx = _make_update(12345, ["confirm"])
     await handler.cmd_feature_import(update, ctx)
     assert mock_gh.create_issue.call_count == 2
-    # Files should be in archive/
+    # Files must remain in memories/ (not moved to archive)
+    remaining = list(memories_dir.glob("feature-request-*.md"))
+    assert len(remaining) == 2
+    # Each file must have github_issue_number stamped in frontmatter
+    for f in remaining:
+        fm = _parse_fm(f)
+        assert "github_issue_number" in fm
+    # archive/ should not exist (or be empty)
     archive = memories_dir / "archive"
-    assert archive.exists()
-    archived = list(archive.glob("feature-request-*.md"))
-    assert len(archived) == 2
+    assert not archive.exists() or not list(archive.glob("feature-request-*.md"))
     reply = update.message.reply_text.call_args[0][0]
     assert "2" in reply
 
