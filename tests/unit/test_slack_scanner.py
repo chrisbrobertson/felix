@@ -83,6 +83,26 @@ async def test_invalid_token_logs_error_and_exits(scanner, tmp_path, caplog):
 
 
 @pytest.mark.asyncio
+async def test_auth_failure_records_error_beat(scanner, tmp_path):
+    """_resolve_self failure → record_beat called with 'error' before run_loop exits."""
+    from slack_client import SlackClient
+
+    with patch.dict(os.environ, {"SLACK_USER_TOKEN": "xoxp-invalid"}):
+        stop = asyncio.Event()
+
+        async def mock_api_call(method, params=None, **kwargs):
+            return None  # auth.test failure
+
+        with patch.object(SlackClient, "api_call", side_effect=mock_api_call), \
+             patch("slack_scanner.record_beat") as mock_beat:
+            await scanner.run_loop(stop)
+
+        calls = mock_beat.call_args_list
+        assert any(c.args[1] == "error" for c in calls), \
+            f"Expected error beat on auth failure; got {calls}"
+
+
+@pytest.mark.asyncio
 async def test_resolve_self_populates_own_user_id(tmp_path):
     """_resolve_self caches own_user_id from auth.test response."""
     scanner = SlackScanner(role="full")

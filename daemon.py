@@ -256,12 +256,15 @@ async def main():
         async def cache_sweep_loop(stop_event):
             """Sweep cache every 60s to catch iCloud-arrived files from watcher."""
             while not stop_event.is_set():
+                beat_status, beat_error = "ok", None
                 try:
                     added, updated, removed = await cache.sweep()
                     if added or updated or removed:
                         log.info(f"Cache sweep: {added} added, {updated} updated, {removed} removed")
-                except Exception:
+                except Exception as exc:
                     log.exception("Cache sweep failed")
+                    beat_status, beat_error = "error", str(exc)
+                hb.record_beat("cache_sweep", beat_status, beat_error)
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=60)
                 except asyncio.TimeoutError:

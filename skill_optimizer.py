@@ -126,7 +126,13 @@ class SkillOptimizer:
             # Run the optimization pass
             if stop_event.is_set():
                 break
-            await self._run_daily_pass(stop_event)
+            beat_status, beat_error = "ok", None
+            try:
+                await self._run_daily_pass(stop_event)
+            except Exception as exc:
+                log.exception("Daily optimization pass failed")
+                beat_status, beat_error = "error", str(exc)
+            record_beat("skill_optimizer", beat_status, beat_error)
 
     async def _run_daily_pass(self, stop_event: asyncio.Event):
         """One full optimization pass: merge logs, score, optimize eligible skills."""

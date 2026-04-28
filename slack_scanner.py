@@ -384,6 +384,7 @@ class SlackScanner:
                 if not self._self_resolved:
                     if not await self._resolve_self():
                         log.warning("Slack scanner disabled — auth.test failed")
+                        record_beat("slack_scanner", "error", "auth.test failed")
                         return
                     self._self_resolved = True
 
