@@ -29,6 +29,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `install.sh` now runs a Python smoke import (`import daemon` + `from chat_handler import TelegramChatHandler` on full role) after deploying source files and before reloading launchd. If the deployed artefact would crash at import time, the installer exits 1 and leaves the running daemon untouched.
 
 ### Fixed
+- `llm_routes._build_routes()`: replaced `str | None` union syntax (Python 3.10+) with `Optional[str]` so the module imports without error on Python 3.9 (#53).
 - `email_scanner`: stale-memory reclassification no longer full-scans `MEMORIES_DIR` on every 5-minute cycle while a backlog exists. Discovered stale paths are persisted in `state["stale_queue"]` and drained incrementally; the glob scan only re-runs when `CLASSIFIER_VERSION` is bumped. In steady state (queue empty, version current) the scan is skipped entirely (#99).
 - `email_scanner`: reclassifying a stale memory file no longer overwrites its `## Messages` section with a single summary string. The original per-message lines are now parsed back from the file and passed through `_write_memory` unchanged, preserving the full message history for downstream consumers such as `commitment_tracker` and `project_inference_scanner` (#99).
 - `email_scanner`: refined classification guide — forwarded business emails from real people (e.g. "Fw: REMINDER: … Order Document") now correctly classify as `human` instead of `transactional`, so `commitment_tracker` no longer silently skips them (#98).

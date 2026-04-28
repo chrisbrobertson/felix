@@ -20,6 +20,7 @@ resolution deterministic and testable.
 """
 
 import os
+from typing import Optional
 
 # Canonical "quality tier" model for each provider (sonnet/GPT-4o-class).
 # Mirrors the _QUALITY_MODEL table in scripts/apply_skill_provider.py.
@@ -45,7 +46,7 @@ def _get_provider() -> str:
     return os.environ.get("SECOND_BRAIN_PROVIDER", "claude").lower()
 
 
-def _build_routes(provider: str | None = None) -> dict[str, str]:
+def _build_routes(provider: Optional[str] = None) -> dict:
     """Build the alias→model-ID table for the given (or current) provider."""
     p = provider if provider is not None else _get_provider()
     quality = _QUALITY_MODEL.get(p, _QUALITY_MODEL["claude"])
