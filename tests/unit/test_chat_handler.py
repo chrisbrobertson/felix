@@ -3573,10 +3573,10 @@ def test_match_verb_in_group_ambiguous_returns_none(handler):
         ch_module.COMMAND_REGISTRY["Goals"] = orig
 
 def test_match_verb_in_group_excludes_base(handler):
-    """goal verb on Goals group should not match the goal entry itself (but goals is ok)"""
+    """goal verb on Goals group is ambiguous now that goal_note and goal_due also start with 'goal'"""
     result = handler._match_verb_in_group("Goals", "goal", "goal")
-    # "goal" matches "goals" at tier-4 (prefix), which is valid and distinct from base
-    assert result == "goals"
+    # tier-4 (prefix) now hits goals, goal_note, goal_due → ambiguous → None
+    assert result is None
 
 def test_format_group_help_is_dynamic(handler):
     """Adding a command to COMMAND_REGISTRY makes it appear in format output"""

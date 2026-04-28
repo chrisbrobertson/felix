@@ -382,3 +382,144 @@ def test_list_projects_skips_candidates_without_reading(manager, memories_dir):
     candidate_reads = [n for n in read_calls if n.startswith("project-candidate-")]
     assert candidate_reads == [], f"Expected 0 candidate reads, got: {candidate_reads}"
     assert len(read_calls) == 3
+
+
+# ── append_goal_note Tests ────────────────────────────────────────────────────
+
+def test_append_goal_note_first_note(manager, memories_dir):
+    """First note is written with date prefix to previously empty notes field."""
+    path = manager.create_goal(title="Note Test", category="work")
+    manager.append_goal_note(path, "first note")
+
+    with open(path) as f:
+        content = f.read()
+    fm_text = content.split("---\n")[1]
+    fm = yaml.safe_load(fm_text)
+
+    assert "first note" in fm["notes"]
+    # Date prefix format [YYYY-MM-DD]
+    import re
+    assert re.search(r"\[\d{4}-\d{2}-\d{2}\]", fm["notes"])
+
+
+def test_append_goal_note_accumulates(manager, memories_dir):
+    """Second note is appended, not replacing the first."""
+    path = manager.create_goal(title="Accumulate", category="personal")
+    manager.append_goal_note(path, "note one")
+    manager.append_goal_note(path, "note two")
+
+    with open(path) as f:
+        content = f.read()
+    fm_text = content.split("---\n")[1]
+    fm = yaml.safe_load(fm_text)
+
+    assert "note one" in fm["notes"]
+    assert "note two" in fm["notes"]
+
+
+# ── update_goal_due Tests ─────────────────────────────────────────────────────
+
+def test_update_goal_due_sets_date(manager, memories_dir):
+    """Due date is updated to new value."""
+    path = manager.create_goal(title="Due Test", category="work", due_date="2026-12-31")
+    manager.update_goal_due(path, "2027-03-15")
+
+    with open(path) as f:
+        content = f.read()
+    fm_text = content.split("---\n")[1]
+    fm = yaml.safe_load(fm_text)
+
+    assert fm["due_date"] == "2027-03-15"
+
+
+def test_update_goal_due_clears_with_none_string(manager, memories_dir):
+    """Passing 'none' clears the due date to None."""
+    path = manager.create_goal(title="Clear Due", category="work", due_date="2026-06-30")
+    manager.update_goal_due(path, "none")
+
+    with open(path) as f:
+        content = f.read()
+    fm_text = content.split("---\n")[1]
+    fm = yaml.safe_load(fm_text)
+
+    assert fm["due_date"] is None
+
+
+def test_update_goal_due_invalid_format(manager, memories_dir):
+    """Bad date format raises ValueError."""
+    path = manager.create_goal(title="Bad Date", category="work")
+
+    with pytest.raises(ValueError) as exc:
+        manager.update_goal_due(path, "31-12-2026")
+
+    assert "YYYY-MM-DD" in str(exc.value)
+
+
+# ── append_project_note Tests ─────────────────────────────────────────────────
+
+def test_append_project_note_first_note(manager, memories_dir):
+    """First note is written with date prefix."""
+    path = manager.create_project(title="Project Note Test", category="work")
+    manager.append_project_note(path, "first project note")
+
+    with open(path) as f:
+        content = f.read()
+    fm_text = content.split("---\n")[1]
+    fm = yaml.safe_load(fm_text)
+
+    assert "first project note" in fm["notes"]
+    import re
+    assert re.search(r"\[\d{4}-\d{2}-\d{2}\]", fm["notes"])
+
+
+def test_append_project_note_accumulates(manager, memories_dir):
+    """Second note appended after first."""
+    path = manager.create_project(title="Accumulate Project", category="work")
+    manager.append_project_note(path, "alpha")
+    manager.append_project_note(path, "beta")
+
+    with open(path) as f:
+        content = f.read()
+    fm_text = content.split("---\n")[1]
+    fm = yaml.safe_load(fm_text)
+
+    assert "alpha" in fm["notes"]
+    assert "beta" in fm["notes"]
+
+
+# ── update_project_due Tests ──────────────────────────────────────────────────
+
+def test_update_project_due_sets_date(manager, memories_dir):
+    """Project due date updated to new value."""
+    path = manager.create_project(title="Project Due", category="work", due_date="2026-12-31")
+    manager.update_project_due(path, "2027-06-01")
+
+    with open(path) as f:
+        content = f.read()
+    fm_text = content.split("---\n")[1]
+    fm = yaml.safe_load(fm_text)
+
+    assert fm["due_date"] == "2027-06-01"
+
+
+def test_update_project_due_clears_with_none_string(manager, memories_dir):
+    """'none' string clears project due date."""
+    path = manager.create_project(title="Clear Project Due", category="work", due_date="2026-06-30")
+    manager.update_project_due(path, "none")
+
+    with open(path) as f:
+        content = f.read()
+    fm_text = content.split("---\n")[1]
+    fm = yaml.safe_load(fm_text)
+
+    assert fm["due_date"] is None
+
+
+def test_update_project_due_invalid_format(manager, memories_dir):
+    """Bad date format raises ValueError."""
+    path = manager.create_project(title="Bad Project Date", category="work")
+
+    with pytest.raises(ValueError) as exc:
+        manager.update_project_due(path, "not-a-date")
+
+    assert "YYYY-MM-DD" in str(exc.value)

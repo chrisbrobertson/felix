@@ -158,6 +158,8 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("goal", self.cmd_goal))
         self.app.add_handler(CommandHandler("completegoal", self.cmd_completegoal))
         self.app.add_handler(CommandHandler("abandongoal", self.cmd_abandongoal))
+        self.app.add_handler(CommandHandler("goal_note", self.cmd_goal_note))
+        self.app.add_handler(CommandHandler("goal_due", self.cmd_goal_due))
         # Projects
         self.app.add_handler(CommandHandler("addproject", self.cmd_addproject))
         self.app.add_handler(CommandHandler("projects", self.cmd_projects))
@@ -167,6 +169,8 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("holdproject", self.cmd_holdproject))
         self.app.add_handler(CommandHandler("addmilestone", self.cmd_addmilestone))
         self.app.add_handler(CommandHandler("milestone", self.cmd_milestone))
+        self.app.add_handler(CommandHandler("project_note", self.cmd_project_note))
+        self.app.add_handler(CommandHandler("project_due", self.cmd_project_due))
         self.app.add_handler(CommandHandler("linkgoal", self.cmd_linkgoal))
         self.app.add_handler(CommandHandler("unlinkgoal", self.cmd_unlinkgoal))
         self.app.add_handler(CommandHandler("changes", self.cmd_changes))
@@ -2676,6 +2680,54 @@ class TelegramChatHandler:
             log.exception("Error in cmd_abandongoal")
             await update.message.reply_text(f"Error abandoning goal: {_safe_error(e)}")
 
+    async def cmd_goal_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if len(context.args) < 2:
+            await update.message.reply_text("Usage: /goal_note <N> <text>")
+            return
+
+        path, err = self._resolve_goal_index(context.args[0])
+        if path is None:
+            await update.message.reply_text(err)
+            return
+
+        note = " ".join(context.args[1:])
+        try:
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title", "")
+            self._goal_manager.append_goal_note(path, note)
+            await update.message.reply_text(f"Note added to \"{title}\".")
+        except Exception as e:
+            log.exception("Error in cmd_goal_note")
+            await update.message.reply_text(f"Error adding note: {_safe_error(e)}")
+
+    async def cmd_goal_due(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if len(context.args) < 2:
+            await update.message.reply_text("Usage: /goal_due <N> <YYYY-MM-DD|none>")
+            return
+
+        path, err = self._resolve_goal_index(context.args[0])
+        if path is None:
+            await update.message.reply_text(err)
+            return
+
+        due_date = context.args[1]
+        try:
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title", "")
+            self._goal_manager.update_goal_due(path, due_date)
+            cleared = due_date.lower() == "none"
+            msg = f"Due date cleared for \"{title}\"." if cleared else f"Due date set to {due_date} for \"{title}\"."
+            await update.message.reply_text(msg)
+        except ValueError as e:
+            await update.message.reply_text(f"Error: {_safe_error(e)}")
+        except Exception as e:
+            log.exception("Error in cmd_goal_due")
+            await update.message.reply_text(f"Error updating due date: {_safe_error(e)}")
+
     # ── Projects commands ─────────────────────────────────────────────────────
 
     async def cmd_addproject(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2962,6 +3014,54 @@ class TelegramChatHandler:
         except Exception as e:
             log.exception("Error in cmd_holdproject")
             await update.message.reply_text(f"Error putting project on hold: {_safe_error(e)}")
+
+    async def cmd_project_note(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if len(context.args) < 2:
+            await update.message.reply_text("Usage: /project_note <N> <text>")
+            return
+
+        path, err = self._resolve_project_index(context.args[0])
+        if path is None:
+            await update.message.reply_text(err)
+            return
+
+        note = " ".join(context.args[1:])
+        try:
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title", "")
+            self._goal_manager.append_project_note(path, note)
+            await update.message.reply_text(f"Note added to \"{title}\".")
+        except Exception as e:
+            log.exception("Error in cmd_project_note")
+            await update.message.reply_text(f"Error adding note: {_safe_error(e)}")
+
+    async def cmd_project_due(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        if len(context.args) < 2:
+            await update.message.reply_text("Usage: /project_due <N> <YYYY-MM-DD|none>")
+            return
+
+        path, err = self._resolve_project_index(context.args[0])
+        if path is None:
+            await update.message.reply_text(err)
+            return
+
+        due_date = context.args[1]
+        try:
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title", "")
+            self._goal_manager.update_project_due(path, due_date)
+            cleared = due_date.lower() == "none"
+            msg = f"Due date cleared for \"{title}\"." if cleared else f"Due date set to {due_date} for \"{title}\"."
+            await update.message.reply_text(msg)
+        except ValueError as e:
+            await update.message.reply_text(f"Error: {_safe_error(e)}")
+        except Exception as e:
+            log.exception("Error in cmd_project_due")
+            await update.message.reply_text(f"Error updating due date: {_safe_error(e)}")
 
     async def cmd_addmilestone(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):

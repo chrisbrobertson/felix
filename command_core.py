@@ -55,6 +55,8 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("goal",          "Show goal N from last list"),
         ("completegoal",  "Mark goal N as completed"),
         ("abandongoal",   "Mark goal N as abandoned"),
+        ("goal_note",     "Append a timestamped note to goal N: /goal_note N text"),
+        ("goal_due",      "Update due date on goal N: /goal_due N YYYY-MM-DD|none"),
     ],
     "Projects": [
         ("addproject",      "Add a new project"),
@@ -63,6 +65,8 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("completeproject", "Mark project N as completed"),
         ("abandonproject",  "Mark project N as abandoned"),
         ("holdproject",     "Put project N on hold"),
+        ("project_note",    "Append a timestamped note to project N: /project_note N text"),
+        ("project_due",     "Update due date on project N: /project_due N YYYY-MM-DD|none"),
         ("addmilestone",    "Add milestone to project N: /addmilestone N text"),
         ("milestone",       "Toggle milestone M on project N: /milestone N M"),
         ("linkgoal",        "Link project N to goal M: /linkgoal N M"),

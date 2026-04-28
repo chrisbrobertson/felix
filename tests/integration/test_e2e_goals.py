@@ -52,3 +52,23 @@ async def test_abandongoal_smoke(handler, mk_update, brain_dir):
     update2, ctx2 = mk_update("/abandongoal", args=["1"])
     await handler.cmd_abandongoal(update2, ctx2)
     update2.message.reply_text.assert_called()
+
+
+async def test_goal_note_smoke(handler, mk_update, brain_dir):
+    from tests.integration import seed
+    seed.goal(brain_dir)
+    update, ctx = mk_update("/goals")
+    await handler.cmd_goals(update, ctx)
+    update2, ctx2 = mk_update("/goal_note", args=["1", "Progress", "update"])
+    await handler.cmd_goal_note(update2, ctx2)
+    update2.message.reply_text.assert_called()
+
+
+async def test_goal_due_smoke(handler, mk_update, brain_dir):
+    from tests.integration import seed
+    seed.goal(brain_dir)
+    update, ctx = mk_update("/goals")
+    await handler.cmd_goals(update, ctx)
+    update2, ctx2 = mk_update("/goal_due", args=["1", "2027-01-01"])
+    await handler.cmd_goal_due(update2, ctx2)
+    update2.message.reply_text.assert_called()

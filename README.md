@@ -256,6 +256,10 @@ Items with low confidence (0.5‚Äì0.69) show a ‚ö†Ô∏è indicator. The default thre
 
 /completegoal 3          # mark goal #3 as completed
 /abandongoal 3           # mark goal #3 as abandoned
+
+/goal_note 3 Spoke to coach today about training plan   # append a timestamped note to goal #3
+/goal_due 3 2026-09-30   # update the due date on goal #3
+/goal_due 3 none         # clear the due date on goal #3
 ```
 
 Goals represent outcomes you want to achieve. Each has a category, optional due date, and priority. You can also create goals through natural language: say "I want to run a 5K by June" and the assistant will create the goal automatically.
@@ -277,6 +281,10 @@ Goals with approaching deadlines receive proactive notifications at 7 days and 1
 
 /addmilestone 3 Lock feature scope       # add a milestone to project #3
 /milestone 3 2           # toggle milestone #2 on project #3 (done/undone)
+
+/project_note 3 Kicked off design sprint   # append a timestamped note to project #3
+/project_due 3 2026-10-31   # update the due date on project #3
+/project_due 3 none          # clear the due date on project #3
 
 /linkgoal 3 2            # link project #3 to goal #2 (from last /goals list)
 /unlinkgoal 3            # remove the goal link from project #3
@@ -504,6 +512,8 @@ Muted state persists across daemon restarts. `/briefing` works even when muted ‚
 | `/goal <N>` | Show detail for goal N from the last list |
 | `/completegoal <N>` | Mark goal N as completed |
 | `/abandongoal <N>` | Mark goal N as abandoned |
+| `/goal_note <N> <text>` | Append a timestamped note to goal N |
+| `/goal_due <N> <YYYY-MM-DD\|none>` | Update or clear the due date on goal N |
 | **Projects** | |
 | `/addproject` | Create a new project (conversational flow) |
 | `/projects [category\|status]` | List projects; status options: active, completed, abandoned, on-hold |
@@ -511,6 +521,8 @@ Muted state persists across daemon restarts. `/briefing` works even when muted ‚
 | `/completeproject <N>` | Mark project N as completed |
 | `/abandonproject <N>` | Mark project N as abandoned |
 | `/holdproject <N>` | Put project N on hold |
+| `/project_note <N> <text>` | Append a timestamped note to project N |
+| `/project_due <N> <YYYY-MM-DD\|none>` | Update or clear the due date on project N |
 | `/addmilestone <N> <text>` | Add a milestone to project N |
 | `/milestone <N> <M>` | Toggle milestone M on project N (done/undone) |
 | `/linkgoal <N> <M>` | Link project N to goal M (from last `/goals` list) |
