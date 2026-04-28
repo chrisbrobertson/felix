@@ -3292,7 +3292,7 @@ class TelegramChatHandler:
 
         # Use cache to avoid reading every candidate file (can be 500+ on active installs).
         # cmd_review_purge uses the same pattern — keep them consistent.
-        rows = await self._cache.query_by_prefix("project-candidate-")
+        rows = await self._cache.query_by_prefix("project-candidate")
 
         project_candidates = []  # list of (Path, fm_dict)
         code_candidates = []     # list of (Path, fm_dict)
@@ -3437,6 +3437,7 @@ class TelegramChatHandler:
                 from goals_tracker import GoalManager
                 manager = GoalManager(BRAIN_DIR / "memories", config)
                 created_path = manager.confirm_candidate(path, category_override=category)
+                await self._cache.invalidate(path.name)
                 title = extracted.get("title", source_title.replace(" (candidate)", ""))
                 await update.message.reply_text(f"Project confirmed: \"{title}\" [{category}]")
             except ValueError as e:
@@ -3487,6 +3488,7 @@ class TelegramChatHandler:
 
                 # Delete candidate
                 path.unlink()
+                await self._cache.invalidate(path.name)
 
                 await update.message.reply_text(f"Repo confirmed: \"{name}\" added to code index")
 
@@ -3568,6 +3570,7 @@ class TelegramChatHandler:
         # Delete candidate
         try:
             path.unlink()
+            await self._cache.invalidate(path.name)
             await update.message.reply_text(f"Rejected: \"{source_title}\"")
         except Exception as e:
             await update.message.reply_text(f"Error deleting candidate: {_safe_error(e)}")
@@ -3589,7 +3592,7 @@ class TelegramChatHandler:
 
         cutoff = datetime.now() - timedelta(days=days)
 
-        rows = await self._cache.query_by_prefix("project-candidate-")
+        rows = await self._cache.query_by_prefix("project-candidate")
         deleted = 0
         for row in rows:
             try:
@@ -3674,6 +3677,7 @@ class TelegramChatHandler:
             tmp_path = path.with_suffix(".tmp")
             tmp_path.write_text(new_content, encoding="utf-8")
             os.rename(str(tmp_path), str(path))
+            await self._cache.invalidate(path.name)
             await update.message.reply_text(f"Updated {key} → {value} on candidate \"{source_title}\"")
         except Exception as e:
             log.exception("Error editing candidate")
