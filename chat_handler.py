@@ -1767,7 +1767,12 @@ class TelegramChatHandler:
         # Sync to GitHub first (before touching local) so the two stores stay consistent.
         # If GitHub rejects the update, return an error without mutating the local file.
         gh_number = fm.get("github_issue_number")
-        if gh_number and self.github.enabled:
+        if gh_number:
+            if not self.github.enabled:
+                return (
+                    f"Cannot update GitHub issue #{gh_number}: "
+                    "GitHub integration not configured (GITHUB_PAT / GITHUB_REPO missing)"
+                )
             try:
                 await self._gh_set_status(gh_number, status)
             except Exception as gh_e:
