@@ -122,10 +122,10 @@ grep -rL "github_issue_number" . --include="feature-request-*.md"
 grep -rl "priority: high" . --include="feature-request-*.md"
 ```
 
-### Archive
+### Promotion
 
-After promotion via `/feature_import` or `scripts/promote_local_features.py`, files are
-moved to `memories/archive/` and their frontmatter gains `github_issue_number`.
+After promotion via `/feature_import` or `scripts/promote_local_features.py`, files
+**stay in `memories/`** with `github_issue_number` stamped into their frontmatter.
 Both promoters skip files that already have that field (`chat_handler.py:5418-5481`).
 
 ---
