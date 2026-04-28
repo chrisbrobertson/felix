@@ -91,6 +91,7 @@ def handler(brain_dir, deploy_dir, fake_llm, monkeypatch):
 
         # Inject dependencies that daemon.py sets
         h.notification_manager = MagicMock()
+        h.notification_manager._assemble_briefing = AsyncMock(return_value="Good morning. Briefing stub.")
         h.skill_creator = MagicMock()
         h.report_scheduler = MagicMock()
 

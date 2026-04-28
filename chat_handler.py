@@ -5063,7 +5063,7 @@ class TelegramChatHandler:
             return
 
         # Assemble and send briefing without updating last_briefing_date
-        briefing_text = self.notification_manager._assemble_briefing()
+        briefing_text = await self.notification_manager._assemble_briefing()
         await update.message.reply_text(briefing_text)
 
     async def cmd_mute(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

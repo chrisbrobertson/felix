@@ -4923,3 +4923,26 @@ def test_list_projects_text_code_routes_to_code_repos(handler, brain_dir):
     text = handler._list_projects_text(category="code")
     assert "myrepo" in text
     assert "GoalManager Project" not in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_briefing_awaits_assemble_briefing(handler):
+    """/briefing must await _assemble_briefing() — without await the coroutine is sent as-is."""
+    briefing_content = "Good morning. Here's your briefing for Monday, April 28:"
+
+    # notification_manager with an async _assemble_briefing
+    mock_nm = MagicMock()
+    mock_nm._assemble_briefing = AsyncMock(return_value=briefing_content)
+    handler.notification_manager = mock_nm
+
+    update = MagicMock()
+    update.effective_user.id = handler.allowed_user_id
+    update.message.reply_text = AsyncMock()
+    context = MagicMock()
+
+    await handler.cmd_briefing(update, context)
+
+    update.message.reply_text.assert_called_once_with(briefing_content)
+    # Verify it was called with the resolved string, not a coroutine object
+    arg = update.message.reply_text.call_args[0][0]
+    assert isinstance(arg, str), f"reply_text received {type(arg)} instead of str — missing await?"
