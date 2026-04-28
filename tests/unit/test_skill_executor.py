@@ -25,6 +25,15 @@ def _auth_err(msg="invalid key"):
     return _AuthError(message=msg, llm_provider="test", model="test-model")
 
 
+def _perm_err(msg="model not available for your tier"):
+    """Construct a litellm PermissionDeniedError (model-tier/entitlement 403)."""
+    mock_resp = MagicMock()
+    mock_resp.request = MagicMock()
+    mock_resp.status_code = 403
+    mock_resp.headers = {}
+    return _PermError(message=msg, llm_provider="test", model="test-model", response=mock_resp)
+
+
 
 SKILL_CONTENT = """\
 ---
@@ -412,9 +421,75 @@ async def test_run_auth_error_returns_none_not_retried(executor_full, caplog):
 
 
 
-def test_auth_errors_tuple_includes_permission_denied():
-    """_AUTH_ERRORS must include both AuthenticationError and PermissionDeniedError."""
-    assert se._AUTH_ERRORS == (se.LiteLLMAuthError, se.LiteLLMPermissionError)
+async def test_run_permission_denied_falls_back_to_next_model(skills_dir):
+    """PermissionDeniedError on preferred model (model-tier 403) must fall back to the fallback model."""
+    with patch.object(se, "SKILLS_DIR", skills_dir):
+        executor = se.SkillExecutor("summarize-webpage", role="full")
+
+    call_count = 0
+
+    def side_effect(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise _perm_err()
+        mock = MagicMock()
+        mock.choices[0].message.content = "from fallback after perm denied"
+        return mock
+
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=side_effect)), \
+         patch.object(se, "BRAIN_DIR", skills_dir.parent):
+        result = await executor.run({"url": "u", "title": "t", "content": "c"})
+
+    assert result == "from fallback after perm denied"
+    assert call_count == 2, "Must try fallback after PermissionDeniedError on preferred"
+
+
+async def test_run_permission_denied_all_models_returns_none(skills_dir, caplog):
+    """PermissionDeniedError on all models returns None (no short-circuit before trying fallback)."""
+    with patch.object(se, "SKILLS_DIR", skills_dir):
+        executor = se.SkillExecutor("summarize-webpage", role="full")
+
+    mock_ac = AsyncMock(side_effect=_perm_err())
+    with patch("skill_executor.acompletion", new=mock_ac), \
+         patch.object(se, "BRAIN_DIR", skills_dir.parent), \
+         caplog.at_level(logging.WARNING, logger="skill-executor"):
+        result = await executor.run({"url": "u", "title": "t", "content": "c"})
+
+    assert result is None
+    assert mock_ac.call_count == 2, "Must try both models before giving up on PermissionDeniedError"
+    assert any("permission denied" in r.message.lower() for r in caplog.records)
+
+
+async def test_run_with_tools_permission_denied_falls_back(skills_dir):
+    """PermissionDeniedError on preferred model falls back in run_with_tools()."""
+    with patch.object(se, "SKILLS_DIR", skills_dir):
+        executor = se.SkillExecutor("summarize-webpage", role="full")
+
+    call_count = 0
+    msg = MagicMock()
+    msg.content = "tools result from fallback"
+    msg.tool_calls = None
+
+    def side_effect(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise _perm_err()
+        response = MagicMock()
+        response.choices[0].message = msg
+        return response
+
+    with patch("skill_executor.acompletion", new=AsyncMock(side_effect=side_effect)), \
+         patch.object(se, "BRAIN_DIR", skills_dir.parent):
+        result = await executor.run_with_tools(
+            inputs={"query": "test"},
+            tools=[],
+            tool_dispatch=AsyncMock(),
+        )
+
+    assert result == "tools result from fallback"
+    assert call_count == 2
 
 
 async def test_run_transient_error_falls_back_to_next_model(skills_dir):
