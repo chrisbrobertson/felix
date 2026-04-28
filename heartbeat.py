@@ -72,7 +72,7 @@ def _flush() -> None:
         tmp.write_text(json.dumps(data, indent=2))
         tmp.rename(path)
     except Exception as exc:
-        log.debug("Heartbeat flush failed: %s", exc)
+        log.warning("Heartbeat flush failed: %s", exc)
 
 
 def read_all(brain_dir: Path) -> list:

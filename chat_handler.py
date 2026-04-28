@@ -4623,14 +4623,14 @@ class TelegramChatHandler:
                     flag = "OK " if status == "ok" else "ERR"
                     line = f"  {flag}  {loop_name:<32} {run_str}"
                     if status != "ok" and error:
-                        line += f"\n       {error[:80]}"
+                        line += f"\n       {re.sub(r'/\\S+/\\S+', '[path]', error)[:80]}"
                     lines.append(line)
             else:
                 lines.append("  (no loop data yet)")
 
             lines.append("")
 
-        await update.message.reply_text("\n".join(lines).rstrip(), parse_mode=None)
+        await self._send_reply(update, "\n".join(lines).rstrip())
 
     # ── /code command ─────────────────────────────────────────────────────────
 
