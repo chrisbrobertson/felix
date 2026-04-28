@@ -6104,3 +6104,32 @@ async def test_cmd_status_stale_instance(handler, brain_dir):
         await handler.cmd_status(update, context)
     text = update.message.reply_text.call_args[0][0]
     assert "STALE" in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_status_error_scrubs_filesystem_paths(handler, brain_dir):
+    """/status redacts filesystem paths from loop error messages."""
+    import heartbeat as hb
+    from datetime import datetime, timezone, timedelta
+
+    recent_iso = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
+    fake_data = [{
+        "hostname": "macbook-pro",
+        "role": "full",
+        "version": "1.5.0",
+        "daemon_started": recent_iso,
+        "last_heartbeat": recent_iso,
+        "loops": {
+            "email_scanner": {
+                "last_run": recent_iso,
+                "status": "error",
+                "error": "FileNotFoundError: '/Users/chris/secondbrain/email-state.json'",
+            }
+        },
+    }]
+    update, context = _make_update(12345)
+    with patch.object(hb, "read_all", return_value=fake_data):
+        await handler.cmd_status(update, context)
+    text = update.message.reply_text.call_args[0][0]
+    assert "/Users/chris/secondbrain/email-state.json" not in text
+    assert "[path]" in text

@@ -778,42 +778,51 @@ class TelegramChatHandler:
             except asyncio.TimeoutError:
                 pass  # normal 30s tick
 
-            state = self._load_pending()
-            if not state:
-                continue
-            if not await self._is_telegram_reachable():
-                continue
-
-            for chat_id_str, entry in list(state.items()):
-                pending = entry.get("pending", [])
-                if not pending or entry.get("summary_sent"):
+            beat_status, beat_error = "ok", None
+            try:
+                state = self._load_pending()
+                if not state:
+                    hb.record_beat("reconnect_worker", beat_status, beat_error)
                     continue
-                count = len(pending)
-                notification_text = (
-                    f"📬 Network is back. I have {count} response"
-                    f"{'s' if count != 1 else ''} I couldn't deliver earlier.\n\n"
-                    f"• /deliver — send them now\n"
-                    f"• /discard — drop them"
-                )
-                try:
-                    await self.app.bot.send_message(
-                        chat_id=int(chat_id_str),
-                        text=notification_text,
-                    )
-                    # Add to chat history so LLM has context when user responds
-                    turns = self._chat_history.setdefault(int(chat_id_str), [])
-                    turns.append({"role": "assistant", "content": notification_text})
-                    max_msgs = self.HISTORY_WINDOW_TURNS * 2
-                    if len(turns) > max_msgs:
-                        self._chat_history[int(chat_id_str)] = turns[-max_msgs:]
-                    self._save_history()
+                if not await self._is_telegram_reachable():
+                    hb.record_beat("reconnect_worker", beat_status, beat_error)
+                    continue
 
-                    entry["summary_sent"] = True
-                    state[chat_id_str] = entry
-                    self._save_pending(state)
-                    log.info("Notified chat %s of %d queued reply/replies", chat_id_str, count)
-                except Exception as e:
-                    log.warning("Reconnect summary send failed for %s: %s", chat_id_str, e)
+                for chat_id_str, entry in list(state.items()):
+                    pending = entry.get("pending", [])
+                    if not pending or entry.get("summary_sent"):
+                        continue
+                    count = len(pending)
+                    notification_text = (
+                        f"📬 Network is back. I have {count} response"
+                        f"{'s' if count != 1 else ''} I couldn't deliver earlier.\n\n"
+                        f"• /deliver — send them now\n"
+                        f"• /discard — drop them"
+                    )
+                    try:
+                        await self.app.bot.send_message(
+                            chat_id=int(chat_id_str),
+                            text=notification_text,
+                        )
+                        # Add to chat history so LLM has context when user responds
+                        turns = self._chat_history.setdefault(int(chat_id_str), [])
+                        turns.append({"role": "assistant", "content": notification_text})
+                        max_msgs = self.HISTORY_WINDOW_TURNS * 2
+                        if len(turns) > max_msgs:
+                            self._chat_history[int(chat_id_str)] = turns[-max_msgs:]
+                        self._save_history()
+
+                        entry["summary_sent"] = True
+                        state[chat_id_str] = entry
+                        self._save_pending(state)
+                        log.info("Notified chat %s of %d queued reply/replies", chat_id_str, count)
+                    except Exception as e:
+                        log.warning("Reconnect summary send failed for %s: %s", chat_id_str, e)
+            except Exception as exc:
+                log.exception("Reconnect worker iteration failed: %s", exc)
+                beat_status, beat_error = "error", str(exc)
+
+            hb.record_beat("reconnect_worker", beat_status, beat_error)
 
     async def _on_telegram_error(self, update, context: ContextTypes.DEFAULT_TYPE):
         """Catch all unhandled exceptions from handlers.
@@ -4623,7 +4632,7 @@ class TelegramChatHandler:
                     flag = "OK " if status == "ok" else "ERR"
                     line = f"  {flag}  {loop_name:<32} {run_str}"
                     if status != "ok" and error:
-                        line += f"\n       {re.sub(r'/\\S+/\\S+', '[path]', error)[:80]}"
+                        line += f"\n       {re.sub(r'/\S+/\S+', '[path]', error)[:80]}"
                     lines.append(line)
             else:
                 lines.append("  (no loop data yet)")
