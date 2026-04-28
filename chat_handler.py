@@ -4152,7 +4152,7 @@ class TelegramChatHandler:
                     )
                     return
             text = render_usage(days)
-        await update.message.reply_text(text)
+        await self._send_reply(update, text)
 
     async def cmd_rebuild_cache(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Rebuild the memory cache from scratch."""
