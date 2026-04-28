@@ -556,6 +556,10 @@ class ProjectInferenceScanner:
 
         if not candidates:
             log.debug("No new/updated source files to process for project inference")
+            # Still run cleanup: candidates accumulate on every scan but cleanup was only
+            # reached after processing new files. Without this, the cap/TTL is never enforced
+            # once all source files are stable, allowing 600+ candidates to build up (#39).
+            await self._cleanup_stale_candidates()
             return
 
         log.info(

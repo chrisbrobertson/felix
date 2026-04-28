@@ -9,6 +9,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 - `memory_cache.invalidate()` wrongly deleted a valid cache entry (or skipped adding a new one) when iCloud returned EDEADLK while reading the file. The fix checks `path.exists()` before deleting: if the file is present but unreadable the old entry is preserved and the update is retried on the next 60-second sweep cycle. This prevented overdue commitments (and other recently-written files) from appearing in morning briefings when iCloud was actively syncing (#75).
 - Briefing: unparseable `due_date` values (e.g. `"Unknown"`) now emit a `log.warning` instead of silently dropping the commitment, making future date-format bugs diagnosable in the logs.
+- `ProjectInferenceScanner._scan()` early-returned without running `_cleanup_stale_candidates()` when no source files had changed. This caused project candidates to accumulate past the configured cap (default 200) because cleanup only ran after new files were processed. Fix: always run cleanup on every scan cycle (#39).
+- `cmd_review` refactored to use `self._cache.query_by_prefix()` instead of globbing + reading each candidate file 2–3 times. With 600+ accumulated candidates this caused multi-second iCloud fan-outs during `/review` (#39).
+- `memory_cache` pass-through mode serialises YAML `datetime.date` objects in frontmatter to JSON ISO strings; previously `json.dumps` raised `TypeError` on date-valued fields like `due_date: 2026-07-01`.
 
 ## [1.10.1] — 2026-04-28
 

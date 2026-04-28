@@ -14,6 +14,7 @@ import os
 import re
 import sqlite3
 import time
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional, Union
 
@@ -22,6 +23,21 @@ import yaml
 from utils import read_text_with_retry_async, glob_memories, is_conflict_copy
 
 log = logging.getLogger("memory-cache")
+
+
+class _FrontmatterEncoder(json.JSONEncoder):
+    """JSON encoder that converts YAML-parsed date/datetime objects to ISO strings."""
+
+    def default(self, o):
+        if isinstance(o, (datetime, date)):
+            return o.isoformat()
+        return super().default(o)
+
+
+def _fm_dumps(fm: dict) -> str:
+    """Serialize frontmatter dict to JSON, handling date objects from YAML parsing."""
+    return json.dumps(fm, cls=_FrontmatterEncoder)
+
 
 # Schema version for future migrations
 _SCHEMA_VERSION = 1
@@ -178,7 +194,7 @@ class MemoryCache:
                 "type": fm.get("type"),
                 "status": fm.get("status"),
                 "prefix": _extract_prefix(filename),
-                "frontmatter": json.dumps(fm),
+                "frontmatter": _fm_dumps(fm),
                 "header500": text[:500],
                 "body": text,
             }
@@ -224,7 +240,7 @@ class MemoryCache:
                     "type": fm.get("type"),
                     "status": fm.get("status"),
                     "prefix": _extract_prefix(path.name),
-                    "frontmatter": json.dumps(fm),
+                    "frontmatter": _fm_dumps(fm),
                     "header500": text[:500],
                     "body": text,
                 })
@@ -260,7 +276,7 @@ class MemoryCache:
                     "type": fm.get("type"),
                     "status": fm.get("status"),
                     "prefix": _extract_prefix(path.name),
-                    "frontmatter": json.dumps(fm),
+                    "frontmatter": _fm_dumps(fm),
                     "header500": text[:500],
                     "body": text,
                 })
@@ -305,7 +321,7 @@ class MemoryCache:
                     "type": t,
                     "status": fm.get("status"),
                     "prefix": _extract_prefix(path.name),
-                    "frontmatter": json.dumps(fm),
+                    "frontmatter": _fm_dumps(fm),
                     "header500": text[:500],
                     "body": text,
                 })
@@ -414,7 +430,7 @@ class MemoryCache:
                 fm.get("type"),
                 fm.get("status"),
                 _extract_prefix(filename),
-                json.dumps(fm),
+                _fm_dumps(fm),
                 text[:500],
                 text,
                 time.time(),

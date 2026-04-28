@@ -688,6 +688,55 @@ def test_production_memories_dir_never_touched_during_tests(tmp_path):
     assert before == after, "production MEMORIES_DIR was mutated"
 
 
+@pytest.mark.asyncio
+async def test_noop_scan_still_runs_cleanup(tmp_path):
+    """Cleanup runs even when no source files have changed (fixes #39).
+
+    Root cause: _cleanup_stale_candidates was only called after processing
+    new source files. When all files were stable (unchanged mtime), the early
+    return bypassed cleanup, allowing candidates to accumulate past the cap.
+    """
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "project-inference-state.json"
+    config_file = tmp_path / "config.yaml"
+
+    # A source file whose mtime matches state — no new files to process
+    mem_file = make_memory_file(
+        memories_dir, "meeting-stable.md", "meeting_transcript", "Old meeting"
+    )
+    mtime = mem_file.stat().st_mtime
+    state_file.write_text(json.dumps({
+        "processed": {"meeting-stable.md": mtime},
+        "last_scan": "2026-04-15T09:00:00",
+    }))
+
+    # A stale candidate file: created 60 days ago, well past default TTL of 30 days
+    stale_created = (datetime.now() - timedelta(days=60)).isoformat()
+    stale_candidate = memories_dir / "project-candidate-old-abc123.md"
+    stale_candidate.write_text(
+        f"---\ntype: project_candidate\ncandidate_type: project\n"
+        f"status: pending_confirmation\ncreated: '{stale_created}'\n"
+        f"source_title: Old candidate\nconfidence: 0.8\n---\n\nOld candidate.\n"
+    )
+
+    config_file.write_text(yaml.dump({"project_inference": {"enabled": True}}))
+
+    with patch.object(pis, "MEMORIES_DIR", memories_dir), \
+         patch.object(pis, "DEPLOY_DIR", tmp_path), \
+         patch.object(pis, "CONFIG_PATH", config_file), \
+         patch("litellm.acompletion", new=AsyncMock()) as mock_llm:
+
+        cache = MemoryCache(None, memories_dir, enabled=False)
+        scanner = ProjectInferenceScanner(role="full", cache=cache)
+        await scanner._scan()
+
+        # LLM should not be called (no new source files)
+        mock_llm.assert_not_called()
+        # Stale candidate must be deleted (cleanup ran on no-op scan)
+        assert not stale_candidate.exists(), "stale candidate should have been cleaned up on no-op scan"
+
+
 # ── Candidate cleanup tests (v1.10.0) ─────────────────────────────────────────
 
 @pytest.mark.asyncio

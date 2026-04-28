@@ -3290,55 +3290,34 @@ class TelegramChatHandler:
         if not self._check_auth(update):
             return
 
-        memories_dir = BRAIN_DIR / "memories"
-        if not memories_dir.exists():
-            await update.message.reply_text("No memories directory found.")
-            return
+        # Use cache to avoid reading every candidate file (can be 500+ on active installs).
+        # cmd_review_purge uses the same pattern — keep them consistent.
+        rows = await self._cache.query_by_prefix("project-candidate-")
 
-        # Collect pending candidates
-        project_candidates = []
-        code_candidates = []
+        project_candidates = []  # list of (Path, fm_dict)
+        code_candidates = []     # list of (Path, fm_dict)
 
-        for f in sorted(memories_dir.glob("project-candidate-*.md")):
+        for row in rows:
             try:
-                header = f.read_text(encoding="utf-8")[:500]
-                fm_type = ""
-                status = ""
-                candidate_type = ""
-                for line in header.split("\n"):
-                    stripped = line.strip()
-                    if stripped.startswith("type:"):
-                        fm_type = stripped[5:].strip().strip('"').strip("'")
-                    elif stripped.startswith("status:"):
-                        status = stripped[7:].strip().strip('"').strip("'")
-                    elif stripped.startswith("candidate_type:"):
-                        candidate_type = stripped[15:].strip().strip('"').strip("'")
-
-                if fm_type == "project_candidate" and status == "pending_confirmation":
-                    if candidate_type == "project":
-                        project_candidates.append(f)
-                    elif candidate_type == "code_repo":
-                        code_candidates.append(f)
+                fm = json.loads(row["frontmatter"]) if isinstance(row["frontmatter"], str) else row["frontmatter"]
             except Exception:
                 continue
+            if fm.get("type") != "project_candidate" or fm.get("status") != "pending_confirmation":
+                continue
+            path = BRAIN_DIR / "memories" / row["filename"]
+            candidate_type = fm.get("candidate_type", "")
+            if candidate_type == "project":
+                project_candidates.append((path, fm))
+            elif candidate_type == "code_repo":
+                code_candidates.append((path, fm))
 
-        # Sort by created descending (newest first)
-        def created_key(p: Path) -> str:
-            try:
-                content = p.read_text(encoding="utf-8")
-                parts = content.split("---", 2)
-                if len(parts) >= 3:
-                    fm = yaml.safe_load(parts[1]) or {}
-                    return fm.get("created", "")
-            except Exception:
-                return ""
-            return ""
+        # Sort by created descending (newest first) using cached frontmatter — no extra reads
+        project_candidates.sort(key=lambda x: x[1].get("created", ""), reverse=True)
+        code_candidates.sort(key=lambda x: x[1].get("created", ""), reverse=True)
 
-        project_candidates.sort(key=created_key, reverse=True)
-        code_candidates.sort(key=created_key, reverse=True)
-
-        # Populate session result set
-        self._last_candidate_set = project_candidates + code_candidates
+        # Populate session result set (paths only, for confirm/reject/edit resolution)
+        all_candidates = project_candidates + code_candidates
+        self._last_candidate_set = [item[0] for item in all_candidates]
         self._active_list = self._last_candidate_set
 
         # If args[0] is a number, show detail
@@ -3377,36 +3356,22 @@ class TelegramChatHandler:
 
         if project_candidates:
             lines.append(f"\nProjects ({len(project_candidates)}):")
-            for i, f in enumerate(project_candidates, 1):
-                try:
-                    content = f.read_text(encoding="utf-8")
-                    parts = content.split("---", 2)
-                    if len(parts) >= 3:
-                        fm = yaml.safe_load(parts[1]) or {}
-                        title = fm.get("source_title", "Untitled").replace(" (candidate)", "")
-                        category = fm.get("category_guess", "other")
-                        confidence = fm.get("confidence", 0.0)
-                        evidence = fm.get("evidence", [])
-                        evidence_str = f"from {evidence[0]}" if evidence else ""
-                        lines.append(
-                            f"{i}. {title} — {category} — confidence {int(confidence * 100)}% ({evidence_str})"
-                        )
-                except Exception:
-                    lines.append(f"{i}. (error reading candidate)")
+            for i, (f, fm) in enumerate(project_candidates, 1):
+                title = fm.get("source_title", "Untitled").replace(" (candidate)", "")
+                category = fm.get("category_guess", "other")
+                confidence = fm.get("confidence", 0.0)
+                evidence = fm.get("evidence", [])
+                evidence_str = f"from {evidence[0]}" if evidence else ""
+                lines.append(
+                    f"{i}. {title} — {category} — confidence {int(confidence * 100)}% ({evidence_str})"
+                )
 
         if code_candidates:
             start_idx = len(project_candidates) + 1
             lines.append(f"\nCode repos ({len(code_candidates)}):")
-            for i, f in enumerate(code_candidates, start_idx):
-                try:
-                    content = f.read_text(encoding="utf-8")
-                    parts = content.split("---", 2)
-                    if len(parts) >= 3:
-                        fm = yaml.safe_load(parts[1]) or {}
-                        title = fm.get("source_title", "Untitled").replace(" (candidate)", "")
-                        lines.append(f"{i}. {title} — awaiting confirmation")
-                except Exception:
-                    lines.append(f"{i}. (error reading candidate)")
+            for i, (f, fm) in enumerate(code_candidates, start_idx):
+                title = fm.get("source_title", "Untitled").replace(" (candidate)", "")
+                lines.append(f"{i}. {title} — awaiting confirmation")
 
         lines.append("\nUse /review N to see details, /confirm N [category] to confirm, /reject N to reject.")
         await update.message.reply_text("\n".join(lines))
