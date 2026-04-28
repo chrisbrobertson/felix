@@ -22,6 +22,12 @@ import yaml
 
 _EXEC_HISTORY_MARKER = "\n## Execution History"
 
+# Fields written exclusively by the skill optimizer — preserve them across upgrades
+# so regression tracking and optimizer gating don't restart from scratch.
+_OPTIMIZER_STATS_FIELDS = frozenset(
+    {"success_rate", "total_runs", "last_optimized", "prev_version_avg_score"}
+)
+
 
 def _parse_version(content: str) -> int:
     """Return the integer version: from YAML frontmatter, or 0 if absent/unparseable."""
@@ -41,6 +47,43 @@ def _split_at_exec_history(content: str) -> tuple[str, str]:
     if idx < 0:
         return content, ""
     return content[:idx], content[idx:]
+
+
+def _merge_frontmatter_stats(repo_prompt: str, deployed_content: str) -> str:
+    """Overlay optimizer-tracked stats from deployed frontmatter into repo_prompt.
+
+    Only patches fields present in both files; leaves structure and field order intact.
+    Returns repo_prompt unchanged if either file has no parseable frontmatter.
+    """
+    dep_fm_match = re.match(r"^---\n(.*?\n)---\n", deployed_content, re.DOTALL)
+    repo_fm_match = re.match(r"^---\n(.*?\n)---\n", repo_prompt, re.DOTALL)
+    if not dep_fm_match or not repo_fm_match:
+        return repo_prompt
+    try:
+        dep_fm = yaml.safe_load(dep_fm_match.group(1)) or {}
+    except Exception:
+        return repo_prompt
+
+    fm_block = repo_fm_match.group(0)
+    body_after = repo_prompt[repo_fm_match.end():]
+
+    for field in _OPTIMIZER_STATS_FIELDS:
+        if field not in dep_fm:
+            continue
+        val = dep_fm[field]
+        if val is None:
+            yaml_val = "null"
+        elif isinstance(val, bool):
+            yaml_val = "true" if val else "false"
+        else:
+            yaml_val = str(val)
+        fm_block = re.sub(
+            rf"(?m)^({re.escape(field)}:)\s*.*$",
+            rf"\1 {yaml_val}",
+            fm_block,
+        )
+
+    return fm_block + body_after
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -78,12 +121,14 @@ def merge_skill(repo_path: Path, dest_path: Path) -> str:
     repo_ver = _parse_version(repo_content)
     deployed_ver = _parse_version(deployed_content)
 
-    if repo_ver <= deployed_ver:
+    if repo_ver < deployed_ver:
         return "skipped"
 
-    # Splice: take repo prompt section, attach deployed execution history.
+    # Splice: take repo prompt section, preserve deployed execution history and
+    # optimizer-tracked stats so regression tracking doesn't restart from zero.
     repo_prompt, _ = _split_at_exec_history(repo_content)
     _, deployed_history = _split_at_exec_history(deployed_content)
+    repo_prompt = _merge_frontmatter_stats(repo_prompt, deployed_content)
     merged = repo_prompt + deployed_history
     _atomic_write(dest_path, merged)
     return "updated"
