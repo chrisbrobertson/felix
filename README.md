@@ -256,7 +256,7 @@ Items with low confidence (0.5–0.69) show a ⚠️ indicator. The default thre
 /todos dismiss 3         # dismiss todo #3
 ```
 
-Personal commitments (captured via `/todo`, when available) are shown without a type tag; extracted items from meetings and emails show their type in brackets (e.g. `[outbound]`).
+Personal commitments are shown without a type tag; extracted items from meetings and emails show their type in brackets (e.g. `[outbound]`).
 
 ### Tracking goals
 

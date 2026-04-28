@@ -1722,14 +1722,17 @@ class TelegramChatHandler:
         items = self._load_active_commitments(type_filter=None)
 
         if not items:
+            self._last_commitment_set = []
+            self._active_list = []
             return "No active todos."
 
-        self._last_commitment_set = [f for f, _ in items]
+        visible = items[:limit]
+        self._last_commitment_set = [f for f, _ in visible]
         self._active_list = self._last_commitment_set
         total = len(items)
         lines = [f"Todos ({total}):"]
 
-        for i, (_, fm) in enumerate(items[:limit], 1):
+        for i, (_, fm) in enumerate(visible, 1):
             desc = (fm.get("source_title") or fm.get("summary") or "")[:55]
             due = fm.get("due_date")
             due_str = f" — due {due}" if due else ""
