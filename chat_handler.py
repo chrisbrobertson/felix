@@ -4300,17 +4300,20 @@ class TelegramChatHandler:
     def _skill_for_depth(self, url: str, content: str, depth: str) -> tuple[str, str]:
         """Return (skill_name, content_type) for the requested depth level.
 
+        The skill name is chosen based on depth; content_type is always auto-detected
+        so frontmatter accurately reflects the page type regardless of capture depth.
+
         quick    → summarize-webpage-quick (concise 3-point capture)
-        standard → auto-detect via skill_router (default)
+        standard → auto-detect skill via skill_router (default)
         deep     → summarize-webpage-detailed (rich notes, same as /note)
         """
-        if depth == "quick":
-            return "summarize-webpage-quick", "quick"
-        if depth == "deep":
-            return "summarize-webpage-detailed", "detailed"
-        # standard: auto-detect content type and route
         from skill_router import detect_content_type, SKILL_REGISTRY
         content_type = detect_content_type(url=url, content=content[:3000])
+        if depth == "quick":
+            return "summarize-webpage-quick", content_type
+        if depth == "deep":
+            return "summarize-webpage-detailed", content_type
+        # standard: auto-detect skill too
         skill_name = SKILL_REGISTRY.get(content_type, "summarize-webpage")
         return skill_name, content_type
 
@@ -4360,7 +4363,7 @@ class TelegramChatHandler:
                 "browser": "telegram",
                 "content_type": content_type,
             }
-            filename = await MemoryWriter().write(entry, memory_body)
+            filename = await MemoryWriter().write(entry, memory_body, depth=depth)
             preview = memory_body[:300].replace("\n", " ")
             await self._send_reply(
                 update,
