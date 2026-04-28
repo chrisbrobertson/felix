@@ -6,6 +6,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- `summarize-webpage` skill updated to produce ~3x richer memory entries: summary expanded from 2-3 sentences to 4-6 sentences with specific details, key points increased from 3-7 to 5-10 with self-contained context, `max_tokens` raised from 1000 to 2000. Addresses chronic "only 300 bytes average" problem that made memories too sparse to be useful (#48).
 ### Added
 - **Skill-creator methodology in overnight optimizer**: `skill_optimizer` nightly rewrites now follow the Anthropic skill-creator process — critique extended with a `lean_issues` field that flags over-specified or non-contributing instructions (MUST/ALWAYS without WHY, rules present in both good and bad runs, overfitted examples). `skills/skill-optimizer.md` rewrite instructions updated to: explain the reasoning behind rules rather than issuing imperatives, remove non-contributing content when adding new guidance, generalize from failure patterns rather than special-casing examples, and avoid heavy MUST/ALWAYS/NEVER (#102).
 - **Few-shot examples in skill files**: `SkillExecutor.run()` now reads an optional `## Examples` section from skill `.md` files and injects each `**Input:**`/`**Output:**` pair as user/assistant message pairs before the actual request (multi-shot summarization pattern from Anthropic cookbook). Added one curated example to `summarize-webpage.md` showing a high-quality Transformer paper summary to guide memory quality. New `_parse_examples()` helper to parse the section format (#104).

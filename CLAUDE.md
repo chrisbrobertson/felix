@@ -211,7 +211,7 @@ Config lives at `~/.litellm/config.yaml`. API keys come from env vars (`GEMINI_A
 - **Relevance scoring:** Keyword intersection against cached first-500-chars of each memory file, not semantic search.
 - **Skill files are self-logging:** The executor appends each run's outcome to an `## Execution History` table inside the skill `.md` file itself.
 - **Watcher nodes log locally:** Watcher-role machines write execution logs to a local JSONL file (not iCloud) to avoid sync conflicts.
-- **Max memory file size:** ~2KB. Summarize harder if content is longer.
+- **Max memory file size:** ~6KB. Aim for richer summaries with specific details (numbers, names, dates) rather than brief stubs.
 - **Telegram 4096-char limit:** Chat handler must chunk responses.
 - **COMMAND_REGISTRY:** Module-level constant in `chat_handler.py` is the single source of truth for all Telegram commands. `/help` renders from it. A test asserts every `CommandHandler` registration has a matching entry — add both when adding a new command.
 - **Code repo namespace:** Code repo memories use `type: code` (was `type: code_project` before v1.1.0, then `type: project` + `category: code` before v1.2.0). `CodeScanner.__init__` migrates legacy files automatically. Filename prefix evolved from `project-{name}.md` → `project-{hostname}-{name}.md` → `code-{hostname}-{name}.md`. Module renamed from `project_scanner.py` → `code_scanner.py`. Telegram command renamed from `/projects` → `/code`.
