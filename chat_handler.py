@@ -105,6 +105,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("reading", self.cmd_reading))
         self.app.add_handler(CommandHandler("forget", self.cmd_forget))
         self.app.add_handler(CommandHandler("commitments", self.cmd_commitments))
+        self.app.add_handler(CommandHandler("todos", self.cmd_todos))
         self.app.add_handler(CommandHandler("complete", self.cmd_complete))
         self.app.add_handler(CommandHandler("dismiss", self.cmd_dismiss))
         self.app.add_handler(CommandHandler("wrong", self.cmd_wrong))
@@ -222,6 +223,8 @@ class TelegramChatHandler:
         self._active_list: list = []
         # Last /commitments result set — used by /complete <N> and /dismiss <N>.
         self._last_commitment_set: list = []
+        # Last /todos result set — used by /todos done|dismiss <N>.
+        self._last_todos_set: list = []
         # Last /contacts result set — used by /contact <N>.
         self._last_contact_set: list = []
         # Last /code result set — used by /code <N> detail view.
@@ -1714,6 +1717,85 @@ class TelegramChatHandler:
         else:
             text = self._list_commitments_text(limit=20)
             await update.message.reply_text(text)
+
+    def _list_todos_text(self) -> str:
+        """Format all active commitments as a checklist (todo-list style)."""
+        items = self._load_active_commitments(type_filter=None)
+
+        if not items:
+            self._last_todos_set = []
+            self._last_commitment_set = []
+            self._active_list = []
+            return "No active todos."
+
+        all_paths = [f for f, _ in items]
+        self._last_todos_set = all_paths
+        self._last_commitment_set = all_paths
+        self._active_list = all_paths
+        total = len(items)
+        lines = [f"Todos ({total}):"]
+
+        for i, (_, fm) in enumerate(items, 1):
+            desc = (fm.get("source_title") or fm.get("summary") or "")[:55]
+            due = fm.get("due_date")
+            due_str = f" — due {due}" if due else ""
+            ct = fm.get("commitment_type", "outbound")
+            type_hint = f" [{ct}]" if ct != "personal" else ""
+            needs_review = "needs-review" in (fm.get("tags") or [])
+            flag = " ⚠️" if needs_review else ""
+            lines.append(f"{i}. [ ] {desc}{due_str}{type_hint}{flag}")
+
+        lines.append("\n/todos done N  — complete  |  /todos dismiss N  — dismiss")
+        return "\n".join(lines)
+
+    async def cmd_todos(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List todos as a checklist, or complete/dismiss by index."""
+        if not self._check_auth(update):
+            return
+
+        args = list(context.args) if context.args else []
+
+        if not args:
+            await self._send_reply(update, self._list_todos_text())
+            return
+
+        verb = args[0].lower()
+        indices = args[1:]
+
+        if verb not in ("done", "dismiss") or not indices:
+            await update.message.reply_text(
+                "Usage: /todos | /todos done N [M…] | /todos dismiss N [M…]"
+            )
+            return
+
+        new_status = "completed" if verb == "done" else "dismissed"
+        from commitment_tracker import CommitmentTracker
+        lines = []
+        seen = set()
+        for arg in indices:
+            if arg in seen:
+                continue
+            seen.add(arg)
+            try:
+                idx = int(arg) - 1
+            except (ValueError, TypeError):
+                lines.append(f"✗ #{arg}: not found (run /todos to refresh)")
+                continue
+            if 0 <= idx < len(self._last_todos_set):
+                path = self._last_todos_set[idx]
+            else:
+                lines.append(f"✗ #{arg}: not found (run /todos to refresh)")
+                continue
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title") or "todo"
+            try:
+                CommitmentTracker().update_commitment_status(path, new_status)
+                mark = "✓" if new_status == "completed" else "✕"
+                lines.append(f"{mark} {title}")
+            except Exception as e:
+                lines.append(f"✗ {title}: {e}")
+
+        await update.message.reply_text("\n".join(lines))
 
     def _resolve_commitment_index(self, n: str):
         """Convert 1-based index string to a Path from _last_commitment_set, or None."""
