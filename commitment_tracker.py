@@ -423,6 +423,7 @@ class CommitmentTracker:
         due_date: Optional[str],
         source_note: str,
         force_unique: bool = False,
+        recipient: Optional[str] = None,
     ) -> Path:
         """Create a commitment file from manual /missed or /todo command.
 
@@ -451,7 +452,7 @@ class CommitmentTracker:
             "commitment_type": commitment_type,
             "owner": owner,
             "owner_email": None,
-            "recipient": None,
+            "recipient": recipient,
             "due_date": due_date if due_date and due_date != "unknown" else None,
             "due_date_confidence": "explicit" if due_date and due_date != "unknown" else "none",
             "confidence": 1.0,

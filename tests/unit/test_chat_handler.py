@@ -4377,6 +4377,38 @@ def test_classify_todo_waiting_on():
     assert ch.TelegramChatHandler._classify_todo("Check in with Alice about the release") == "waiting_on"
 
 
+def test_extract_todo_recipient_follow_up():
+    assert ch.TelegramChatHandler._extract_todo_recipient("Follow up with John on the design doc") == "John"
+    assert ch.TelegramChatHandler._extract_todo_recipient("Check in with Alice Smith about the release") == "Alice Smith"
+
+
+def test_extract_todo_recipient_outbound():
+    assert ch.TelegramChatHandler._extract_todo_recipient("Get the report to Jane Doe") == "Jane Doe"
+    assert ch.TelegramChatHandler._extract_todo_recipient("Send the deck to Bob") == "Bob"
+
+
+def test_extract_todo_recipient_personal_returns_none():
+    assert ch.TelegramChatHandler._extract_todo_recipient("Clean my desk") is None
+    assert ch.TelegramChatHandler._extract_todo_recipient("Read the book") is None
+
+
+def test_extract_todo_recipient_does_not_capture_pronouns():
+    assert ch.TelegramChatHandler._extract_todo_recipient("Send it to them") is None
+    assert ch.TelegramChatHandler._extract_todo_recipient("Get the report to me") is None
+
+
+@pytest.mark.asyncio
+async def test_cmd_todo_persists_recipient(handler, brain_dir):
+    """cmd_todo extracts and passes recipient to create_manual_commitment."""
+    with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
+        mock_create.return_value = brain_dir / "memories" / "commitment-test.md"
+        update, context = _make_update(12345, args=["Follow", "up", "with", "John"])
+        await handler.cmd_todo(update, context)
+
+    _, kwargs = mock_create.call_args
+    assert kwargs.get("recipient") == "John"
+
+
 @pytest.mark.asyncio
 async def test_cmd_todo_no_args_shows_usage(handler, brain_dir):
     update, context = _make_update(12345, args=[])

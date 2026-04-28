@@ -2147,6 +2147,23 @@ class TelegramChatHandler:
                 return "waiting_on"
         return "personal"
 
+    @staticmethod
+    def _extract_todo_recipient(text: str) -> Optional[str]:
+        """Extract a person name from patterns like 'follow up with John' or 'send to Jane Doe'."""
+        import re
+        # Match "with <Name>" or "to <Name>" where Name starts with a capital letter.
+        # Capture 1-3 capitalised words; stops naturally at lowercase continuation words.
+        m = re.search(
+            r"\b(?:with|to)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,2})\b",
+            text,
+        )
+        if m:
+            name = m.group(1).strip()
+            _NON_NAMES = {"Me", "Us", "Them", "Him", "Her", "You", "It", "The", "My", "Our"}
+            if name not in _NON_NAMES:
+                return name
+        return None
+
     async def cmd_todo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Create a personal todo item. /todo <desc> [due:YYYY-MM-DD] [type:personal|inbound|outbound]"""
         if not self._check_auth(update):
@@ -2199,6 +2216,7 @@ class TelegramChatHandler:
             return
 
         commitment_type = forced_type or self._classify_todo(description)
+        recipient = self._extract_todo_recipient(description)
 
         try:
             tracker = CommitmentTracker()
@@ -2209,6 +2227,7 @@ class TelegramChatHandler:
                 due_date=due_date,
                 source_note="Created via /todo command",
                 force_unique=True,
+                recipient=recipient,
             )
             due_str = f" — due {due_date}" if due_date else ""
             await update.message.reply_text(
