@@ -37,6 +37,16 @@ def _parse_frontmatter(text: str) -> dict:
         return {}
 
 
+def _safe_frontmatter(raw: str) -> dict:
+    """Parse a JSON frontmatter string from the memory cache. Returns {} on any failure
+    or if the parsed value is not a dict (guards against JSON null, arrays, strings)."""
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
 def _load_state() -> dict:
     """Load notification state from JSON file."""
     if STATE_FILE.exists():
@@ -338,7 +348,7 @@ class NotificationManager:
         entries = await self._cache.query_by_prefix("calendar-event-")
         for entry in entries:
             try:
-                fm = json.loads(entry["frontmatter"]) or {}
+                fm = _safe_frontmatter(entry["frontmatter"])
             except (json.JSONDecodeError, TypeError):
                 log.warning("briefing: malformed frontmatter in %s — skipping", entry["filename"])
                 continue
@@ -373,7 +383,7 @@ class NotificationManager:
         entries = await self._cache.query_by_type("commitment", status="active")
         for entry in entries:
             try:
-                fm = json.loads(entry["frontmatter"]) or {}
+                fm = _safe_frontmatter(entry["frontmatter"])
             except (json.JSONDecodeError, TypeError):
                 log.warning("briefing: malformed frontmatter in %s — skipping", entry["filename"])
                 continue
@@ -432,7 +442,7 @@ class NotificationManager:
         entries = await self._cache.query_by_type("commitment", status="active")
         for entry in entries:
             try:
-                fm = json.loads(entry["frontmatter"]) or {}
+                fm = _safe_frontmatter(entry["frontmatter"])
             except (json.JSONDecodeError, TypeError):
                 log.warning("briefing: malformed frontmatter in %s — skipping", entry["filename"])
                 continue
@@ -467,7 +477,7 @@ class NotificationManager:
         entries_sorted = sorted(entries, key=lambda e: e["mtime"], reverse=True)
         for entry in entries_sorted:
             try:
-                fm = json.loads(entry["frontmatter"]) or {}
+                fm = _safe_frontmatter(entry["frontmatter"])
                 proposed_at_str = fm.get("proposed_at", "")
                 if proposed_at_str:
                     proposed_at = datetime.fromisoformat(str(proposed_at_str))
@@ -527,7 +537,7 @@ class NotificationManager:
                 if "project-candidate-" in entry["filename"]:
                     continue
                 try:
-                    fm = json.loads(entry["frontmatter"]) or {}
+                    fm = _safe_frontmatter(entry["frontmatter"])
                     if fm.get("type") != "project":
                         continue
                     title = fm.get("source_title") or Path(entry["filename"]).stem
@@ -639,7 +649,7 @@ class NotificationManager:
         entries = await self._cache.query_by_type("commitment", status="active")
         for entry in entries:
             try:
-                fm = json.loads(entry["frontmatter"]) or {}
+                fm = _safe_frontmatter(entry["frontmatter"])
             except (json.JSONDecodeError, TypeError):
                 log.warning("commitment_alerts: malformed frontmatter in %s — skipping", entry["filename"])
                 continue
@@ -724,7 +734,7 @@ class NotificationManager:
         entries = await self._cache.query_by_type("goal", status="active")
         for entry in entries:
             try:
-                fm = json.loads(entry["frontmatter"]) or {}
+                fm = _safe_frontmatter(entry["frontmatter"])
 
                 due_raw = fm.get("due_date")
                 if not due_raw:
@@ -780,7 +790,7 @@ class NotificationManager:
                 continue
 
             try:
-                fm = json.loads(entry["frontmatter"]) or {}
+                fm = _safe_frontmatter(entry["frontmatter"])
 
                 # Status filter: active or on-hold
                 status = fm.get("status")
@@ -838,7 +848,7 @@ class NotificationManager:
         entries = await self._cache.query_by_prefix("calendar-event-")
         for entry in entries:
             try:
-                fm = json.loads(entry["frontmatter"]) or {}
+                fm = _safe_frontmatter(entry["frontmatter"])
             except (json.JSONDecodeError, TypeError):
                 log.warning("pre_meeting_alerts: malformed frontmatter in %s — skipping", entry["filename"])
                 continue
@@ -976,7 +986,7 @@ class NotificationManager:
                 contact_fm = None
                 for entry in contact_entries:
                     try:
-                        cfm = json.loads(entry["frontmatter"]) or {}
+                        cfm = _safe_frontmatter(entry["frontmatter"])
                     except (json.JSONDecodeError, TypeError):
                         continue
                     name = cfm.get("name", "")
@@ -997,7 +1007,7 @@ class NotificationManager:
         commitment_entries = await self._cache.query_by_type("commitment", status="active")
         for entry in commitment_entries:
             try:
-                fm = json.loads(entry["frontmatter"]) or {}
+                fm = _safe_frontmatter(entry["frontmatter"])
             except (json.JSONDecodeError, TypeError):
                 continue
 
@@ -1118,8 +1128,12 @@ class NotificationManager:
         from quota_scanner import detect_threshold_crossings, render_one
 
         sent_alerts = state.setdefault("sent_quota_alerts", {})
+        # Pass a snapshot so detect_threshold_crossings' pre-send mutation of
+        # sent_alerts doesn't persist if send_message raises — only commit
+        # each timestamp after successful delivery.
+        sent_alerts_staging = dict(sent_alerts)
         crossings = detect_threshold_crossings(
-            quota_state, sent_alerts,
+            quota_state, sent_alerts_staging,
             warn=warn,
             crit=crit,
             cooldown_min=60,
@@ -1129,6 +1143,9 @@ class NotificationManager:
             emoji = "⚠️" if level == "warning" else "🔴"
             msg = f"{emoji} {platform} quota {level} — {render_one(platform, quota_state)}"
             await self.send_message(msg)
+            # Commit the sent timestamp only after successful delivery
+            key = f"{platform}:{level}"
+            sent_alerts[key] = sent_alerts_staging[key]
 
     async def _check_and_send(self):
         """Main check-and-send logic run every 60 seconds."""

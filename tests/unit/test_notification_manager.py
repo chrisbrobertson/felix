@@ -2631,3 +2631,172 @@ async def test_check_and_send_check_isolation(tmp_path):
     # boom ran and raised, but all subsequent ok checks also ran
     assert "boom" in ran_checks
     assert ran_checks.count("ok") == 7
+
+
+# ── Truthy non-dict frontmatter resilience ────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_briefing_skips_truthy_non_dict_calendar_entry(tmp_path):
+    """A calendar-event file with a truthy non-dict frontmatter (e.g. a JSON
+    array like '[1,2]') must not crash _assemble_briefing with AttributeError.
+
+    This exercises the isinstance(parsed, dict) guard in _safe_frontmatter —
+    the previous 'or {}' pattern would not catch truthy non-dict values.
+    """
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    now = datetime(2026, 4, 27, 10, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+
+    make_calendar_event(
+        memories_dir,
+        "good-abc123",
+        "Team Standup",
+        now.replace(hour=9).isoformat(),
+    )
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    # A JSON string is truthy — the old 'or {}' would return it unchanged,
+    # causing .get() to raise AttributeError.
+    _bad_entry = {
+        "filename": "calendar-event-bad-frontmatter.md",
+        "mtime": 0.0,
+        "type": None,
+        "status": None,
+        "prefix": "calendar-event",
+        "frontmatter": '"oops"',  # valid JSON, truthy, but not a dict
+        "header500": "",
+        "body": "",
+    }
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "MEMORIES_DIR", memories_dir):
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
+            _real_qbp = mgr._cache.query_by_prefix
+
+            async def _inject_bad_calendar(prefix):
+                rows = await _real_qbp(prefix)
+                rows.append(_bad_entry)
+                return rows
+
+            with patch.object(mgr._cache, "query_by_prefix", side_effect=_inject_bad_calendar):
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    briefing = await mgr._assemble_briefing()
+
+    assert "Good morning" in briefing
+    assert "Team Standup" in briefing
+
+
+# ── Quota alert persistence on send failure ───────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_quota_alert_not_persisted_on_send_failure(tmp_path):
+    """If send_message raises for a quota alert, the sent timestamp must NOT be
+    persisted in state — so the alert is retried on the next cycle.
+
+    Regression guard for the pre-send mutation bug: detect_threshold_crossings
+    mutates sent_alerts before the send; if we passed the real dict and the send
+    failed, _save_state would have written a 'delivered' timestamp for an alert
+    that was never delivered.
+    """
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False}))
+
+    quota_state_file = tmp_path / "quota-scanner-state.json"
+    quota_state_file.write_text(json.dumps({
+        "claude": {
+            "messages_used": 38,
+            "messages_cap": 40,
+            "source": "self_report",
+            "window_resets_at": (datetime.now() + timedelta(hours=3)).isoformat(),
+        }
+    }))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\n"
+        "notifications:\n  enabled: true\n  briefing_time: '07:30'\n"
+        "quota:\n  warning_threshold: 0.75\n  critical_threshold: 0.90\n"
+        "  briefing_enabled: false\n"
+    )
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "QUOTA_STATE_FILE", quota_state_file):
+            with patch.object(nm, "CONFIG_PATH", config_file):
+                with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                    mgr = NotificationManager(cache=_make_cache(memories_dir))
+                    # send_message always raises — simulates network/Telegram failure
+                    mgr.send_message = AsyncMock(side_effect=RuntimeError("send failed"))
+
+                    state = {"chat_id": 123456789, "muted": False, "sent_quota_alerts": {}}
+                    try:
+                        await mgr._check_quota_thresholds(state)
+                    except RuntimeError:
+                        pass  # expected — send_message always raises
+
+    # The alert was not delivered — sent_quota_alerts must remain empty
+    assert state["sent_quota_alerts"] == {}
+
+
+@pytest.mark.asyncio
+async def test_quota_alert_persisted_only_for_successful_sends(tmp_path):
+    """When two platforms cross a threshold and only the first send succeeds,
+    only the first platform's timestamp is committed to sent_quota_alerts.
+    """
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    quota_state_file = tmp_path / "quota-scanner-state.json"
+    quota_state_file.write_text(json.dumps({
+        "claude": {
+            "messages_used": 38,
+            "messages_cap": 40,
+            "source": "self_report",
+            "window_resets_at": (datetime.now() + timedelta(hours=3)).isoformat(),
+        },
+        "chatgpt": {
+            "messages_used": 38,
+            "messages_cap": 40,
+            "source": "self_report",
+            "window_resets_at": (datetime.now() + timedelta(hours=3)).isoformat(),
+        },
+    }))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\n"
+        "quota:\n  warning_threshold: 0.75\n  critical_threshold: 0.90\n"
+    )
+
+    call_count = 0
+
+    async def send_first_ok_second_fails(msg, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 2:
+            raise RuntimeError("second send failed")
+
+    with patch.object(nm, "QUOTA_STATE_FILE", quota_state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(cache=_make_cache(memories_dir))
+                mgr.send_message = send_first_ok_second_fails
+
+                state = {"chat_id": 123456789, "muted": False, "sent_quota_alerts": {}}
+                try:
+                    await mgr._check_quota_thresholds(state)
+                except RuntimeError:
+                    pass  # expected — second send raised
+
+    # Exactly one platform's key committed (the successful send)
+    assert len(state["sent_quota_alerts"]) == 1
