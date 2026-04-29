@@ -2472,3 +2472,118 @@ async def test_llm_chat_nudge_when_no_chats_ever_imported(tmp_path):
     # Should mention both platforms (order may vary)
     assert "claude" in call_args or "chatgpt" in call_args
     assert "/import_chats" in call_args
+
+
+# ── Malformed Frontmatter Resilience (issue #52) ──────────────────────────────
+
+@pytest.mark.asyncio
+async def test_briefing_skips_malformed_calendar_entry(tmp_path):
+    """A calendar-event file with null frontmatter doesn't crash _assemble_briefing."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    now = datetime(2026, 4, 27, 10, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+
+    make_calendar_event(
+        memories_dir,
+        "good-abc123",
+        "Team Standup",
+        now.replace(hour=9).isoformat(),
+    )
+    # Write a malformed event (null frontmatter value)
+    bad_file = memories_dir / "calendar-event-bad-xyz999.md"
+    bad_file.write_text("---\nnull\n---\n\nBad file.\n")
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "MEMORIES_DIR", memories_dir):
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
+            with patch.object(mgr, "_get_local_now", return_value=now):
+                briefing = await mgr._assemble_briefing()
+
+    assert "Good morning" in briefing
+    assert "Team Standup" in briefing
+
+
+@pytest.mark.asyncio
+async def test_briefing_skips_malformed_commitment_entry(tmp_path):
+    """A commitment file with invalid frontmatter doesn't crash _assemble_briefing."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    now = datetime(2026, 4, 27, 10, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    today_str = now.date().isoformat()
+
+    make_commitment(
+        memories_dir,
+        "aabbcc112233",
+        "Send report",
+        status="active",
+        commitment_type="outbound",
+        due_date=today_str,
+    )
+    # Malformed commitment (null YAML produces None, not a dict)
+    bad_file = memories_dir / "commitment-bad-xxyyzz998877.md"
+    bad_file.write_text("---\nnull\n---\n\nCorrupt.\n")
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "MEMORIES_DIR", memories_dir):
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
+            with patch.object(mgr, "_get_local_now", return_value=now):
+                briefing = await mgr._assemble_briefing()
+
+    assert "Good morning" in briefing
+    assert "Send report" in briefing
+
+
+@pytest.mark.asyncio
+async def test_check_and_send_check_isolation(tmp_path):
+    """A failing check in _check_and_send does not prevent subsequent checks from running."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False}))
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\n"
+        "notifications:\n  enabled: true\n  briefing_time: '07:30'\n"
+    )
+
+    ran_checks = []
+
+    async def boom(state):
+        ran_checks.append("boom")
+        raise RuntimeError("simulated check failure")
+
+    async def ok(state):
+        ran_checks.append("ok")
+
+    with patch.object(nm, "STATE_FILE", state_file):
+        with patch.object(nm, "CONFIG_PATH", config_file):
+            with patch.object(nm, "MEMORIES_DIR", memories_dir):
+                mgr = NotificationManager(cache=_make_cache(memories_dir))
+                mgr._check_daily_briefing = boom
+                mgr._check_llm_chat_refresh = ok
+                mgr._check_commitment_alerts = ok
+                mgr._check_goal_alerts = ok
+                mgr._check_project_alerts = ok
+                mgr._check_quota_thresholds = ok
+                mgr._check_pre_meeting_alerts = ok
+                mgr._check_calendar_staleness = ok
+                await mgr._check_and_send()
+
+    # boom ran and raised, but all subsequent ok checks also ran
+    assert "boom" in ran_checks
+    assert ran_checks.count("ok") == 7

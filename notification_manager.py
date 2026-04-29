@@ -337,7 +337,11 @@ class NotificationManager:
         calendar_events = []
         entries = await self._cache.query_by_prefix("calendar-event-")
         for entry in entries:
-            fm = json.loads(entry["frontmatter"])
+            try:
+                fm = json.loads(entry["frontmatter"])
+            except (json.JSONDecodeError, TypeError):
+                log.warning("briefing: malformed frontmatter in %s — skipping", entry["filename"])
+                continue
             if fm.get("type") != "calendar_event":
                 continue
             start_time_str = fm.get("start_time")
@@ -368,7 +372,11 @@ class NotificationManager:
         overdue = []
         entries = await self._cache.query_by_type("commitment", status="active")
         for entry in entries:
-            fm = json.loads(entry["frontmatter"])
+            try:
+                fm = json.loads(entry["frontmatter"])
+            except (json.JSONDecodeError, TypeError):
+                log.warning("briefing: malformed frontmatter in %s — skipping", entry["filename"])
+                continue
             due_date_str = fm.get("due_date")
             if not due_date_str:
                 continue
@@ -423,7 +431,11 @@ class NotificationManager:
         stale_waiting = []
         entries = await self._cache.query_by_type("commitment", status="active")
         for entry in entries:
-            fm = json.loads(entry["frontmatter"])
+            try:
+                fm = json.loads(entry["frontmatter"])
+            except (json.JSONDecodeError, TypeError):
+                log.warning("briefing: malformed frontmatter in %s — skipping", entry["filename"])
+                continue
             if fm.get("commitment_type") != "waiting_on":
                 continue
             last_scanned_str = fm.get("last_scanned")
@@ -626,7 +638,11 @@ class NotificationManager:
 
         entries = await self._cache.query_by_type("commitment", status="active")
         for entry in entries:
-            fm = json.loads(entry["frontmatter"])
+            try:
+                fm = json.loads(entry["frontmatter"])
+            except (json.JSONDecodeError, TypeError):
+                log.warning("commitment_alerts: malformed frontmatter in %s — skipping", entry["filename"])
+                continue
 
             due_date_str = fm.get("due_date")
             if not due_date_str:
@@ -821,7 +837,11 @@ class NotificationManager:
 
         entries = await self._cache.query_by_prefix("calendar-event-")
         for entry in entries:
-            fm = json.loads(entry["frontmatter"])
+            try:
+                fm = json.loads(entry["frontmatter"])
+            except (json.JSONDecodeError, TypeError):
+                log.warning("pre_meeting_alerts: malformed frontmatter in %s — skipping", entry["filename"])
+                continue
             if fm.get("type") != "calendar_event":
                 continue
 
@@ -955,7 +975,10 @@ class NotificationManager:
                 contact_entries = await self._cache.query_by_prefix("contact-")
                 contact_fm = None
                 for entry in contact_entries:
-                    cfm = json.loads(entry["frontmatter"])
+                    try:
+                        cfm = json.loads(entry["frontmatter"])
+                    except (json.JSONDecodeError, TypeError):
+                        continue
                     name = cfm.get("name", "")
                     email = cfm.get("email", "")
                     if participant.lower() in name.lower() or participant.lower() in email.lower():
@@ -973,7 +996,10 @@ class NotificationManager:
         open_commitments = []
         commitment_entries = await self._cache.query_by_type("commitment", status="active")
         for entry in commitment_entries:
-            fm = json.loads(entry["frontmatter"])
+            try:
+                fm = json.loads(entry["frontmatter"])
+            except (json.JSONDecodeError, TypeError):
+                continue
 
             owner = fm.get("owner", "").lower()
             recipient = fm.get("recipient", "").lower()
@@ -1119,16 +1145,28 @@ class NotificationManager:
         # Prune stale entries
         await self._prune_sent_alerts(state)
 
-        # Run checks
-        await self._check_daily_briefing(state)
-        await self._check_llm_chat_refresh(state)
-        await self._check_commitment_alerts(state)
-        await self._check_goal_alerts(state)
-        await self._check_project_alerts(state)
-        await self._check_quota_thresholds(state)
+        # Run checks — each isolated so one failure doesn't block the rest
+        for check_name, coro in [
+            ("daily_briefing", self._check_daily_briefing(state)),
+            ("llm_chat_refresh", self._check_llm_chat_refresh(state)),
+            ("commitment_alerts", self._check_commitment_alerts(state)),
+            ("goal_alerts", self._check_goal_alerts(state)),
+            ("project_alerts", self._check_project_alerts(state)),
+            ("quota_thresholds", self._check_quota_thresholds(state)),
+        ]:
+            try:
+                await coro
+            except Exception:
+                log.exception("_check_and_send: %s raised — continuing", check_name)
         _save_state(state)
-        await self._check_pre_meeting_alerts(state)
-        await self._check_calendar_staleness(state)
+        for check_name, coro in [
+            ("pre_meeting_alerts", self._check_pre_meeting_alerts(state)),
+            ("calendar_staleness", self._check_calendar_staleness(state)),
+        ]:
+            try:
+                await coro
+            except Exception:
+                log.exception("_check_and_send: %s raised — continuing", check_name)
 
     async def run_loop(self, stop_event: asyncio.Event):
         """Main notification scheduling loop."""
