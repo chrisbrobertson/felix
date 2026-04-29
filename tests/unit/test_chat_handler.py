@@ -3107,6 +3107,66 @@ async def test_load_context_includes_goal_project_context(handler, brain_dir):
     # Goal should still appear in context
     assert "## Active Goals" in context
     assert "Run a 5K" in context
+# --- /pending unified inbox ---
+
+@pytest.mark.asyncio
+async def test_cmd_pending_all_empty(handler, brain_dir):
+    """/pending with nothing queued returns 'Nothing pending review.'"""
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_pending(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Nothing pending review" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_pending_shows_candidates_and_actions(handler, brain_dir):
+    """/pending aggregates project candidates and agent actions into one summary."""
+    mem_dir = brain_dir / "memories"
+
+    # Write two pending candidates
+    for slug, ctype in [("rollout-abc123", "project"), ("repo-def456", "code_repo")]:
+        (mem_dir / f"project-candidate-{slug}.md").write_text(
+            f"---\ntype: project_candidate\ncandidate_type: {ctype}\n"
+            "status: pending_confirmation\ncreated: '2026-04-15T09:00:00'\n---\n"
+        )
+
+    # Write one pending action
+    write_action(mem_dir, "aaa111", "add_note", "project-test.md", status="pending")
+    # Write one already-executed action (should not be counted)
+    write_action(mem_dir, "bbb222", "add_note", "project-test.md", status="executed")
+
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_pending(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+
+    assert "Pending review (3 total)" in reply
+    assert "2 project candidates" in reply
+    assert "/review" in reply
+    assert "1 agent action" in reply
+    assert "/actions" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_pending_skips_confirmed_candidates(handler, brain_dir):
+    """/pending only counts status: pending_confirmation candidates, not confirmed ones."""
+    mem_dir = brain_dir / "memories"
+    (mem_dir / "project-candidate-done-abc123.md").write_text(
+        "---\ntype: project_candidate\ncandidate_type: project\n"
+        "status: confirmed\ncreated: '2026-04-15T09:00:00'\n---\n"
+    )
+    (mem_dir / "project-candidate-pending-def456.md").write_text(
+        "---\ntype: project_candidate\ncandidate_type: project\n"
+        "status: pending_confirmation\ncreated: '2026-04-15T10:00:00'\n---\n"
+    )
+
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_pending(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+
+    assert "Pending review (1 total)" in reply
+    assert "1 project candidate" in reply
+
+
 # --- Review commands ---
 
 @pytest.mark.asyncio

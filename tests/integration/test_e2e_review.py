@@ -4,6 +4,12 @@ import pytest
 pytestmark = pytest.mark.asyncio
 
 
+async def test_pending_smoke(handler, mk_update, brain_dir):
+    update, ctx = mk_update("/pending")
+    await handler.cmd_pending(update, ctx)
+    update.message.reply_text.assert_called()
+
+
 async def test_review_smoke(handler, mk_update, brain_dir):
     from tests.integration import seed
     seed.candidate(brain_dir)
