@@ -963,3 +963,101 @@ async def test_commitment_tracker_skips_marketing_emails(tmp_path):
     # No commitment files should be written
     commitment_files = list(memories_dir.glob("commitment-*.md"))
     assert len(commitment_files) == 0
+
+
+@pytest.mark.asyncio
+async def test_commitment_tracker_skips_transactional_emails(tmp_path):
+    """Email threads with transactional classification should not reach extraction LLM.
+
+    Root cause of #98: forwarded REMINDER emails from colleagues were misclassified as
+    'transactional', causing commitment_tracker to silently skip them.
+    """
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+
+    transactional_email = memories_dir / "email-transactional.md"
+    transactional_email.write_text(
+        "---\nsource_title: 'Fw: REMINDER: Centroid OCI Extension Order Document'\n"
+        "summary: Reminder about an order document requiring follow-up.\n"
+        "tags: [centroid, oci]\nlast_scanned: '2026-04-27T16:28:39'\n"
+        "source_url: mailto:conversation-54252111347321\ntype: email_thread\n"
+        "classification: transactional\n"
+        "participants: [{name: Kurt Binder, email: kbinder@arlo.com}]\n"
+        "last_message: '2026-04-27T16:21:46'\nmessage_count: 1\n---\n\n"
+        "## Messages\n"
+        "- 2026-04-27 Kurt Binder: Please review the OCI Extension Order Document.\n"
+    )
+
+    with patch.object(ct, "MEMORIES_DIR", memories_dir), \
+         patch.object(ct, "STATE_FILE", state_file), \
+         patch.object(ct, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch("litellm.acompletion", new_callable=AsyncMock) as mock_llm:
+
+        (tmp_path / "config.yaml").write_text("commitment_tracker:\n  min_confidence: 0.5\n")
+        tracker = CommitmentTracker()
+        await tracker._run_scan()
+
+    mock_llm.assert_not_called()
+    assert len(list(memories_dir.glob("commitment-*.md"))) == 0
+
+
+@pytest.mark.asyncio
+async def test_commitment_tracker_processes_human_forwarded_reminder(tmp_path):
+    """Forwarded reminder email classified as 'human' IS sent to extraction LLM.
+
+    The fix for #98: once the email scanner correctly classifies this as 'human',
+    commitment_tracker must process it (not skip it).
+    """
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+
+    human_reminder = memories_dir / "email-human-reminder.md"
+    human_reminder.write_text(
+        "---\nsource_title: 'Fw: REMINDER: Centroid OCI Extension Order Document'\n"
+        "summary: Reminder about an order document requiring follow-up action.\n"
+        "tags: [centroid, oci]\nlast_scanned: '2026-04-27T16:28:39'\n"
+        "source_url: mailto:conversation-54252111347321\ntype: email_thread\n"
+        "classification: human\n"
+        "participants: [{name: Kurt Binder, email: kbinder@arlo.com}]\n"
+        "last_message: '2026-04-27T16:21:46'\nmessage_count: 1\n---\n\n"
+        "## Messages\n"
+        "- 2026-04-27 Kurt Binder: Please review the OCI Extension Order Document.\n"
+    )
+
+    llm_response = json.dumps({
+        "commitments": [{
+            "type": "outbound",
+            "description": "Review and follow up on Centroid OCI Extension Order Document",
+            "owner": "Chris Robertson",
+            "owner_email": "chris@example.com",
+            "recipient": "Kurt Binder",
+            "due_date": None,
+            "due_date_confidence": "none",
+            "confidence": 0.8,
+            "extracted_text": "Please review the OCI Extension Order Document.",
+        }]
+    })
+
+    with patch.object(ct, "MEMORIES_DIR", memories_dir), \
+         patch.object(ct, "STATE_FILE", state_file), \
+         patch.object(ct, "ACCURACY_FILE", tmp_path / "accuracy.json"), \
+         patch.object(ct, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch("litellm.acompletion", new_callable=AsyncMock) as mock_llm:
+
+        mock_llm.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content=llm_response))],
+            usage=None,
+        )
+        (tmp_path / "config.yaml").write_text("commitment_tracker:\n  min_confidence: 0.5\n")
+        tracker = CommitmentTracker()
+        await tracker._run_scan()
+
+    # LLM was called because the 'human' classified email was not skipped
+    mock_llm.assert_called_once()
+    commitment_files = list(memories_dir.glob("commitment-*.md"))
+    assert len(commitment_files) == 1
+    fm = _parse_frontmatter(commitment_files[0].read_text())
+    assert fm["commitment_type"] == "outbound"
+    assert fm["confidence"] == 0.8

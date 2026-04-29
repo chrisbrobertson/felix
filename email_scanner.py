@@ -694,10 +694,13 @@ class EmailScanner:
                 "CLASSIFICATION: <one of: human | transactional | marketing | automated>\n"
                 "\n"
                 "Classification guide:\n"
-                "  human = real person-to-person correspondence (colleagues, vendors, family)\n"
-                "  transactional = receipts, order/shipping, account alerts, calendar invites\n"
+                "  human = real person-to-person correspondence (colleagues, vendors, family);\n"
+                "    includes forwarded emails and business contract/document discussions from real people\n"
+                "  transactional = automated system-generated emails: order confirmations, shipping\n"
+                "    updates, payment receipts, bank alerts (NOT human-forwarded business documents)\n"
                 "  marketing = newsletters, promotions, sales pitches, product announcements\n"
-                "  automated = CI/CD, monitoring, build reports, OTP codes, password resets"
+                "  automated = CI/CD, monitoring, build reports, OTP codes, password resets,\n"
+                "    system-generated reminders (not reminders forwarded by a real person)"
             )
 
         try:
