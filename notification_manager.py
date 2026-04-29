@@ -338,7 +338,7 @@ class NotificationManager:
         entries = await self._cache.query_by_prefix("calendar-event-")
         for entry in entries:
             try:
-                fm = json.loads(entry["frontmatter"])
+                fm = json.loads(entry["frontmatter"]) or {}
             except (json.JSONDecodeError, TypeError):
                 log.warning("briefing: malformed frontmatter in %s — skipping", entry["filename"])
                 continue
@@ -373,7 +373,7 @@ class NotificationManager:
         entries = await self._cache.query_by_type("commitment", status="active")
         for entry in entries:
             try:
-                fm = json.loads(entry["frontmatter"])
+                fm = json.loads(entry["frontmatter"]) or {}
             except (json.JSONDecodeError, TypeError):
                 log.warning("briefing: malformed frontmatter in %s — skipping", entry["filename"])
                 continue
@@ -432,7 +432,7 @@ class NotificationManager:
         entries = await self._cache.query_by_type("commitment", status="active")
         for entry in entries:
             try:
-                fm = json.loads(entry["frontmatter"])
+                fm = json.loads(entry["frontmatter"]) or {}
             except (json.JSONDecodeError, TypeError):
                 log.warning("briefing: malformed frontmatter in %s — skipping", entry["filename"])
                 continue
@@ -467,7 +467,7 @@ class NotificationManager:
         entries_sorted = sorted(entries, key=lambda e: e["mtime"], reverse=True)
         for entry in entries_sorted:
             try:
-                fm = json.loads(entry["frontmatter"])
+                fm = json.loads(entry["frontmatter"]) or {}
                 proposed_at_str = fm.get("proposed_at", "")
                 if proposed_at_str:
                     proposed_at = datetime.fromisoformat(str(proposed_at_str))
@@ -527,7 +527,7 @@ class NotificationManager:
                 if "project-candidate-" in entry["filename"]:
                     continue
                 try:
-                    fm = json.loads(entry["frontmatter"])
+                    fm = json.loads(entry["frontmatter"]) or {}
                     if fm.get("type") != "project":
                         continue
                     title = fm.get("source_title") or Path(entry["filename"]).stem
@@ -639,7 +639,7 @@ class NotificationManager:
         entries = await self._cache.query_by_type("commitment", status="active")
         for entry in entries:
             try:
-                fm = json.loads(entry["frontmatter"])
+                fm = json.loads(entry["frontmatter"]) or {}
             except (json.JSONDecodeError, TypeError):
                 log.warning("commitment_alerts: malformed frontmatter in %s — skipping", entry["filename"])
                 continue
@@ -724,7 +724,7 @@ class NotificationManager:
         entries = await self._cache.query_by_type("goal", status="active")
         for entry in entries:
             try:
-                fm = json.loads(entry["frontmatter"])
+                fm = json.loads(entry["frontmatter"]) or {}
 
                 due_raw = fm.get("due_date")
                 if not due_raw:
@@ -780,7 +780,7 @@ class NotificationManager:
                 continue
 
             try:
-                fm = json.loads(entry["frontmatter"])
+                fm = json.loads(entry["frontmatter"]) or {}
 
                 # Status filter: active or on-hold
                 status = fm.get("status")
@@ -838,7 +838,7 @@ class NotificationManager:
         entries = await self._cache.query_by_prefix("calendar-event-")
         for entry in entries:
             try:
-                fm = json.loads(entry["frontmatter"])
+                fm = json.loads(entry["frontmatter"]) or {}
             except (json.JSONDecodeError, TypeError):
                 log.warning("pre_meeting_alerts: malformed frontmatter in %s — skipping", entry["filename"])
                 continue
@@ -976,7 +976,7 @@ class NotificationManager:
                 contact_fm = None
                 for entry in contact_entries:
                     try:
-                        cfm = json.loads(entry["frontmatter"])
+                        cfm = json.loads(entry["frontmatter"]) or {}
                     except (json.JSONDecodeError, TypeError):
                         continue
                     name = cfm.get("name", "")
@@ -997,7 +997,7 @@ class NotificationManager:
         commitment_entries = await self._cache.query_by_type("commitment", status="active")
         for entry in commitment_entries:
             try:
-                fm = json.loads(entry["frontmatter"])
+                fm = json.loads(entry["frontmatter"]) or {}
             except (json.JSONDecodeError, TypeError):
                 continue
 

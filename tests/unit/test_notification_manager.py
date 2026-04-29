@@ -2478,7 +2478,13 @@ async def test_llm_chat_nudge_when_no_chats_ever_imported(tmp_path):
 
 @pytest.mark.asyncio
 async def test_briefing_skips_malformed_calendar_entry(tmp_path):
-    """A calendar-event file with null frontmatter doesn't crash _assemble_briefing."""
+    """A calendar-event file with null frontmatter doesn't crash _assemble_briefing.
+
+    The cache can hold rows with frontmatter='null' (JSON null) when the
+    underlying YAML was 'null'.  MemoryCache pass-through mode normalises this
+    to '{}' via _parse_frontmatter, so the test must inject the raw JSON null
+    string directly to exercise the notification_manager resilience path.
+    """
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
@@ -2490,20 +2496,36 @@ async def test_briefing_skips_malformed_calendar_entry(tmp_path):
         "Team Standup",
         now.replace(hour=9).isoformat(),
     )
-    # Write a malformed event (null frontmatter value)
-    bad_file = memories_dir / "calendar-event-bad-xyz999.md"
-    bad_file.write_text("---\nnull\n---\n\nBad file.\n")
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     config_file = config_dir / "config.yaml"
     config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
 
+    _null_entry = {
+        "filename": "calendar-event-null-frontmatter.md",
+        "mtime": 0.0,
+        "type": None,
+        "status": None,
+        "prefix": "calendar-event",
+        "frontmatter": "null",  # JSON null — the path _parse_frontmatter never produces
+        "header500": "",
+        "body": "",
+    }
+
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
             mgr = NotificationManager(cache=_make_cache(memories_dir))
-            with patch.object(mgr, "_get_local_now", return_value=now):
-                briefing = await mgr._assemble_briefing()
+            _real_qbp = mgr._cache.query_by_prefix
+
+            async def _inject_null_calendar(prefix):
+                rows = await _real_qbp(prefix)
+                rows.append(_null_entry)
+                return rows
+
+            with patch.object(mgr._cache, "query_by_prefix", side_effect=_inject_null_calendar):
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    briefing = await mgr._assemble_briefing()
 
     assert "Good morning" in briefing
     assert "Team Standup" in briefing
@@ -2511,7 +2533,12 @@ async def test_briefing_skips_malformed_calendar_entry(tmp_path):
 
 @pytest.mark.asyncio
 async def test_briefing_skips_malformed_commitment_entry(tmp_path):
-    """A commitment file with invalid frontmatter doesn't crash _assemble_briefing."""
+    """A commitment file with invalid frontmatter doesn't crash _assemble_briefing.
+
+    MemoryCache pass-through mode normalises YAML null to '{}', so a row with
+    frontmatter='null' (JSON null) is injected directly into query_by_type to
+    exercise the real resilience path in notification_manager.
+    """
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
@@ -2526,20 +2553,37 @@ async def test_briefing_skips_malformed_commitment_entry(tmp_path):
         commitment_type="outbound",
         due_date=today_str,
     )
-    # Malformed commitment (null YAML produces None, not a dict)
-    bad_file = memories_dir / "commitment-bad-xxyyzz998877.md"
-    bad_file.write_text("---\nnull\n---\n\nCorrupt.\n")
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     config_file = config_dir / "config.yaml"
     config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
 
+    _null_entry = {
+        "filename": "commitment-null-frontmatter.md",
+        "mtime": 0.0,
+        "type": "commitment",
+        "status": "active",
+        "prefix": "commitment",
+        "frontmatter": "null",  # JSON null — the path _parse_frontmatter never produces
+        "header500": "",
+        "body": "",
+    }
+
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
             mgr = NotificationManager(cache=_make_cache(memories_dir))
-            with patch.object(mgr, "_get_local_now", return_value=now):
-                briefing = await mgr._assemble_briefing()
+            _real_qbt = mgr._cache.query_by_type
+
+            async def _inject_null_commitment(type_, *, status=None):
+                rows = await _real_qbt(type_, status=status)
+                if type_ == "commitment":
+                    rows.append(_null_entry)
+                return rows
+
+            with patch.object(mgr._cache, "query_by_type", side_effect=_inject_null_commitment):
+                with patch.object(mgr, "_get_local_now", return_value=now):
+                    briefing = await mgr._assemble_briefing()
 
     assert "Good morning" in briefing
     assert "Send report" in briefing
