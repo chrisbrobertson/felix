@@ -3107,6 +3107,66 @@ async def test_load_context_includes_goal_project_context(handler, brain_dir):
     # Goal should still appear in context
     assert "## Active Goals" in context
     assert "Run a 5K" in context
+# --- /pending unified inbox ---
+
+@pytest.mark.asyncio
+async def test_cmd_pending_all_empty(handler, brain_dir):
+    """/pending with nothing queued returns 'Nothing pending review.'"""
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_pending(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Nothing pending review" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_pending_shows_candidates_and_actions(handler, brain_dir):
+    """/pending aggregates project candidates and agent actions into one summary."""
+    mem_dir = brain_dir / "memories"
+
+    # Write two pending candidates
+    for slug, ctype in [("rollout-abc123", "project"), ("repo-def456", "code_repo")]:
+        (mem_dir / f"project-candidate-{slug}.md").write_text(
+            f"---\ntype: project_candidate\ncandidate_type: {ctype}\n"
+            "status: pending_confirmation\ncreated: '2026-04-15T09:00:00'\n---\n"
+        )
+
+    # Write one pending action
+    write_action(mem_dir, "aaa111", "add_note", "project-test.md", status="pending")
+    # Write one already-executed action (should not be counted)
+    write_action(mem_dir, "bbb222", "add_note", "project-test.md", status="executed")
+
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_pending(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+
+    assert "Pending review (3 total)" in reply
+    assert "2 project candidates" in reply
+    assert "/review" in reply
+    assert "1 agent action" in reply
+    assert "/actions" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_pending_skips_confirmed_candidates(handler, brain_dir):
+    """/pending only counts status: pending_confirmation candidates, not confirmed ones."""
+    mem_dir = brain_dir / "memories"
+    (mem_dir / "project-candidate-done-abc123.md").write_text(
+        "---\ntype: project_candidate\ncandidate_type: project\n"
+        "status: confirmed\ncreated: '2026-04-15T09:00:00'\n---\n"
+    )
+    (mem_dir / "project-candidate-pending-def456.md").write_text(
+        "---\ntype: project_candidate\ncandidate_type: project\n"
+        "status: pending_confirmation\ncreated: '2026-04-15T10:00:00'\n---\n"
+    )
+
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_pending(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+
+    assert "Pending review (1 total)" in reply
+    assert "1 project candidate" in reply
+
+
 # --- Review commands ---
 
 @pytest.mark.asyncio
@@ -4198,6 +4258,43 @@ async def test_cmd_defer_sets_defer_until_and_hides_from_default_list(handler, b
     await handler.cmd_actions(update2, context2)
     reply2 = update2.message.reply_text.call_args[0][0]
     assert "No pending agent actions" in reply2 or "0" in reply2
+
+
+# ── /pending must not clobber _last_action_set ───────────────────────────────
+
+@pytest.mark.asyncio
+async def test_pending_does_not_clobber_last_action_set(handler, brain_dir):
+    """/pending count check must not overwrite _last_action_set.
+
+    If a user loads /actions then calls /pending (a summary-only inbox count),
+    the subsequent /action N / /run N commands must still target the set that
+    /actions loaded — not the smaller 'pending only' set that /pending counts.
+    """
+    m = brain_dir / "memories"
+    # Write two pending actions plus one approved action
+    write_action(m, "aaa111", "add_milestone", "goal-test.md", status="pending")
+    write_action(m, "bbb222", "update_status", "goal-test.md", status="pending")
+    write_action(m, "ccc333", "add_note",      "goal-test.md", status="approved")
+
+    # 1. User loads all actions (/actions all → 3 items in _last_action_set)
+    u1, c1 = _make_update(12345, args=["all"])
+    await handler.cmd_actions(u1, c1)
+    all_set_before = list(handler._last_action_set)
+    assert len(all_set_before) == 3
+
+    # 2. User calls /pending (count-only, must NOT replace _last_action_set)
+    u2, c2 = _make_update(12345)
+    from unittest.mock import AsyncMock, MagicMock, patch
+    mock_cache = MagicMock()
+    mock_cache.query_by_prefix = AsyncMock(return_value=[])
+    with patch.object(handler, "_cache", mock_cache):
+        await handler.cmd_pending(u2, c2)
+
+    # _last_action_set must still be the 3-item "all" set
+    assert handler._last_action_set == all_set_before, (
+        "/pending must not overwrite _last_action_set; got "
+        f"{len(handler._last_action_set)} items instead of 3"
+    )
 
 
 # ── _resolve_feature_index hash fallback (fix fcfc1f) ─────────────────────────

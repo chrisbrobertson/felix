@@ -192,6 +192,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("report_resume", self.cmd_report_resume))
         self.app.add_handler(CommandHandler("report_run", self.cmd_report_run))
         # Review
+        self.app.add_handler(CommandHandler("pending", self.cmd_pending))
         self.app.add_handler(CommandHandler("review", self.cmd_review))
         self.app.add_handler(CommandHandler("confirm", self.cmd_confirm))
         self.app.add_handler(CommandHandler("reject", self.cmd_reject))
@@ -2146,7 +2147,7 @@ class TelegramChatHandler:
 
     # ── Agent actions commands ────────────────────────────────────────────────
 
-    def _load_action_set(self, filter_status: Optional[str] = None) -> list:
+    def _load_action_set(self, filter_status: Optional[str] = None, update_last_set: bool = True) -> list:
         """Load action-*.md files and filter by status. Returns list of (path, fm) tuples."""
         actions = []
         now = datetime.now()
@@ -2187,7 +2188,8 @@ class TelegramChatHandler:
 
         # Sort by proposed_at descending
         actions.sort(key=lambda x: x[1].get("proposed_at", ""), reverse=True)
-        self._last_action_set = actions
+        if update_last_set:
+            self._last_action_set = actions
         return actions
 
     async def cmd_actions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3521,6 +3523,52 @@ class TelegramChatHandler:
 
         else:
             return f"Unknown candidate type: {candidate_type}"
+
+    async def cmd_pending(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Unified inbox: count all pending review items across candidates, actions, and skill drafts."""
+        if not self._check_auth(update):
+            return
+
+        # Project candidates
+        rows = await self._cache.query_by_prefix("project-candidate")
+        candidate_count = 0
+        for row in rows:
+            try:
+                fm = json.loads(row["frontmatter"]) if isinstance(row["frontmatter"], str) else row["frontmatter"]
+            except Exception:
+                continue
+            if fm.get("type") == "project_candidate" and fm.get("status") == "pending_confirmation":
+                candidate_count += 1
+
+        # Agent actions — count only; must not clobber _last_action_set
+        actions = self._load_action_set(update_last_set=False)
+        action_count = len(actions)
+
+        # Skill drafts
+        draft_count = 0
+        if self.skill_creator is not None:
+            try:
+                draft_count = len(self.skill_creator.list_pending_drafts())
+            except Exception:
+                pass
+
+        total = candidate_count + action_count + draft_count
+
+        if total == 0:
+            await update.message.reply_text("Nothing pending review.")
+            return
+
+        lines = [f"Pending review ({total} total):", ""]
+        if candidate_count:
+            noun = "candidate" if candidate_count == 1 else "candidates"
+            lines.append(f"• {candidate_count} project {noun} — /review")
+        if action_count:
+            noun = "action" if action_count == 1 else "actions"
+            lines.append(f"• {action_count} agent {noun} — /actions")
+        if draft_count:
+            noun = "draft" if draft_count == 1 else "drafts"
+            lines.append(f"• {draft_count} skill {noun} — /skill_drafts")
+        await update.message.reply_text("\n".join(lines))
 
     async def cmd_review(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """List pending project/repo candidates, or show detail of candidate N."""

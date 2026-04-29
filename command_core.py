@@ -75,6 +75,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("changes",         "Project/goal activity digest for the last N hours. /changes [hours] (default 24)"),
     ],
     "Review": [
+        ("pending",  "Unified inbox — count of all pending review items (candidates, actions, skill drafts)"),
         ("review",   "List pending project/repo candidates (/review N for detail)"),
         ("confirm",  "Confirm candidate N (/confirm N [category])"),
         ("reject",   "Reject candidate N"),
