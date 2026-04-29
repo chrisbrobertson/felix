@@ -1212,3 +1212,154 @@ def test_reclassification_preserves_messages_section(tmp_path):
     fm = _parse_frontmatter(rewritten)
     assert fm.get("classifier_version") == CLASSIFIER_VERSION
     assert fm.get("classification") == "human"
+
+
+# ── Stale-queue incremental reclassification (RECOMMENDED fix) ────────────────
+
+def test_stale_queue_populated_on_first_cycle(tmp_path):
+    """First call with no reclassify_classifier_version in state must do a glob
+    scan and store the discovered paths in state["stale_queue"]."""
+    import asyncio as _asyncio
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({"high_water_rowid": 10}))
+
+    stale_path = memories_dir / "email-thread-stale-11111.md"
+    stale_path.write_text(
+        "---\n"
+        "source_title: 'Stale Thread'\n"
+        "summary: Old summary.\n"
+        "classification: unknown\n"
+        "message_count: 1\n"
+        "last_message: '2026-04-10T10:00:00'\n"
+        "first_message: '2026-04-10T10:00:00'\n"
+        "conversation_id: 11111\n"
+        "---\n\n## Messages\n- 2026-04-10 Alice: Hello\n\n## Context\nOld summary.\n"
+    )
+
+    scanner = EmailScanner()
+    mock_source = MagicMock()
+    mock_source.get_threads_updated_since.return_value = ([], 10)
+
+    with patch.object(es, "MEMORIES_DIR", memories_dir), \
+         patch.object(es, "STATE_FILE", state_file), \
+         patch.object(es, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch.object(scanner, "_get_data_source", return_value=mock_source), \
+         patch("litellm.acompletion", new_callable=AsyncMock) as mock_llm:
+
+        (tmp_path / "config.yaml").write_text(
+            "email_scanner:\n  archive_after_days: 90\n  initial_lookback_days: 30\n"
+            "  skip_mailboxes: []\n"
+        )
+        mock_llm.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content=(
+                "SUMMARY: Updated.\nTAGS: test\nCLASSIFICATION: human"
+            )))],
+            usage=None,
+        )
+        _asyncio.run(scanner._run_scan())
+
+    saved = json.loads(state_file.read_text())
+    # Queue should be exhausted (file was processed) but version should be recorded
+    assert saved.get("reclassify_classifier_version") == CLASSIFIER_VERSION
+    assert saved.get("stale_queue") == []
+
+
+def test_stale_queue_drained_across_cycles(tmp_path):
+    """When state already has reclassify_classifier_version == CLASSIFIER_VERSION
+    and a pre-populated stale_queue, the second cycle drains from the queue
+    without re-globbing (verified indirectly: the file is reclassified and the
+    queue is empty afterwards, even though the file's classifier_version does
+    not match so a glob-rescan would have found it)."""
+    import asyncio as _asyncio
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    stale_path = memories_dir / "email-thread-queued-22222.md"
+    stale_path.write_text(
+        "---\n"
+        "source_title: 'Queued Thread'\n"
+        "summary: Summary.\n"
+        "classification: unknown\n"
+        "message_count: 1\n"
+        "last_message: '2026-04-10T10:00:00'\n"
+        "first_message: '2026-04-10T10:00:00'\n"
+        "conversation_id: 22222\n"
+        "---\n\n## Messages\n- 2026-04-10 Bob: Test\n\n## Context\nSummary.\n"
+    )
+
+    # State from the previous cycle: version matches but queue still has one entry.
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({
+        "high_water_rowid": 10,
+        "reclassify_classifier_version": CLASSIFIER_VERSION,
+        "stale_queue": [str(stale_path)],
+    }))
+
+    scanner = EmailScanner()
+    mock_source = MagicMock()
+    mock_source.get_threads_updated_since.return_value = ([], 10)
+
+    with patch.object(es, "MEMORIES_DIR", memories_dir), \
+         patch.object(es, "STATE_FILE", state_file), \
+         patch.object(es, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch.object(scanner, "_get_data_source", return_value=mock_source), \
+         patch("litellm.acompletion", new_callable=AsyncMock) as mock_llm:
+
+        (tmp_path / "config.yaml").write_text(
+            "email_scanner:\n  archive_after_days: 90\n  initial_lookback_days: 30\n"
+            "  skip_mailboxes: []\n"
+        )
+        mock_llm.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content=(
+                "SUMMARY: Done.\nTAGS: done\nCLASSIFICATION: human"
+            )))],
+            usage=None,
+        )
+        _asyncio.run(scanner._run_scan())
+
+    # File was reclassified from queue
+    mock_llm.assert_called_once()
+    fm = _parse_frontmatter(stale_path.read_text())
+    assert fm.get("classifier_version") == CLASSIFIER_VERSION
+
+    # Queue is now exhausted
+    saved = json.loads(state_file.read_text())
+    assert saved.get("stale_queue") == []
+
+
+def test_stale_queue_no_glob_when_version_current_and_queue_empty(tmp_path):
+    """When reclassify_classifier_version matches and queue is empty, no work is done."""
+    import asyncio as _asyncio
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({
+        "high_water_rowid": 10,
+        "reclassify_classifier_version": CLASSIFIER_VERSION,
+        "stale_queue": [],
+    }))
+
+    scanner = EmailScanner()
+    mock_source = MagicMock()
+    mock_source.get_threads_updated_since.return_value = ([], 10)
+
+    with patch.object(es, "MEMORIES_DIR", memories_dir), \
+         patch.object(es, "STATE_FILE", state_file), \
+         patch.object(es, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch.object(scanner, "_get_data_source", return_value=mock_source), \
+         patch("litellm.acompletion", new_callable=AsyncMock) as mock_llm:
+
+        (tmp_path / "config.yaml").write_text(
+            "email_scanner:\n  archive_after_days: 90\n  initial_lookback_days: 30\n"
+            "  skip_mailboxes: []\n"
+        )
+        _asyncio.run(scanner._run_scan())
+
+    # No LLM calls: queue was empty and version was current
+    mock_llm.assert_not_called()

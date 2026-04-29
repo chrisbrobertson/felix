@@ -647,8 +647,9 @@ class EmailScanner:
         # Threads with no new mail rows are absent from the list above but may
         # still have a stale classifier_version. Run a separate reclassification
         # pass over all memory files that were missed, sharing the per-cycle budget.
+        # state is mutated in-place to persist the stale_queue across cycles.
         await self._reclassify_stale_memories(
-            archive_cutoff, budget=MAX_THREADS_PER_CYCLE - processed
+            archive_cutoff, budget=MAX_THREADS_PER_CYCLE - processed, state=state
         )
 
         # Update state
@@ -797,36 +798,69 @@ class EmailScanner:
         s = s.strip('-')
         return s[:40].rstrip('-')
 
-    async def _reclassify_stale_memories(self, archive_cutoff: datetime, budget: int) -> int:
+    async def _reclassify_stale_memories(
+        self, archive_cutoff: datetime, budget: int, state: dict
+    ) -> int:
         """Reclassify email memory files whose classifier_version is outdated.
 
         In incremental scans, threads with no new mail rows are not returned by
         get_threads_updated_since, so they never reach the main processing loop.
         This method finds those stale files and reclassifies them directly.
+
+        The glob scan that discovers stale files is expensive on large archives.
+        To avoid repeating it every cycle while the backlog drains, discovered
+        paths are persisted in state["stale_queue"]. A full glob is only issued
+        when the stored reclassify_classifier_version doesn't match the current
+        CLASSIFIER_VERSION (i.e. once per version bump, not once per cycle).
         """
         if budget <= 0:
             return 0
-        stale = []
-        try:
-            for path in MEMORIES_DIR.glob("email-thread-*.md"):
-                try:
-                    fm = _parse_frontmatter(path.read_text())
-                    if int(fm.get("classifier_version", 1)) != CLASSIFIER_VERSION:
-                        stale.append((path, fm))
-                except Exception:
-                    continue
-        except Exception:
-            log.exception("Error scanning for stale email memories")
+
+        state_version = state.get("reclassify_classifier_version")
+        stale_queue = state.get("stale_queue")
+
+        if state_version != CLASSIFIER_VERSION:
+            # Version was bumped (or this is the first run): discover stale files.
+            stale_queue = []
+            try:
+                for path in MEMORIES_DIR.glob("email-thread-*.md"):
+                    try:
+                        fm = _parse_frontmatter(path.read_text())
+                        if int(fm.get("classifier_version", 1)) != CLASSIFIER_VERSION:
+                            stale_queue.append(str(path))
+                    except Exception:
+                        continue
+            except Exception:
+                log.exception("Error scanning for stale email memories")
+                return 0
+            state["stale_queue"] = stale_queue
+            state["reclassify_classifier_version"] = CLASSIFIER_VERSION
+            if stale_queue:
+                log.info(
+                    "Found %d stale email memory file(s) to reclassify", len(stale_queue)
+                )
+
+        if not stale_queue:
             return 0
 
-        if not stale:
-            return 0
-
-        log.info("Reclassifying %d stale email memory file(s)", len(stale))
+        to_process = stale_queue[:budget]
+        state["stale_queue"] = stale_queue[budget:]
         reclassified = 0
 
-        for path, fm in stale[:budget]:
+        for path_str in to_process:
+            path = Path(path_str)
             try:
+                if not path.exists():
+                    continue
+
+                text = path.read_text()
+                fm = _parse_frontmatter(text)
+
+                # File may have been updated by the normal incremental path since
+                # the queue was built; skip it rather than reclassifying twice.
+                if int(fm.get("classifier_version", 1)) == CLASSIFIER_VERSION:
+                    continue
+
                 try:
                     last_dt = datetime.fromisoformat(str(fm.get("last_message", "")))
                     if last_dt < archive_cutoff:
@@ -835,7 +869,6 @@ class EmailScanner:
                 except ValueError:
                     pass
 
-                text = path.read_text()
                 stored_messages = _parse_messages_section(text)
                 participants = fm.get("participants", [])
                 thread = {
