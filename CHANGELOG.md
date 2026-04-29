@@ -18,6 +18,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `/changes [hours]` Telegram command: scans all active goals and projects, finds related memory files updated in the last N hours (default 24, max 168), and sends a concise LLM-generated activity digest per item — one paragraph per project/goal with recent activity. Implemented in `GoalProjectAgent.generate_change_digest()` (#74).
 
 ### Fixed
+- `notification_manager`: malformed or null frontmatter in any memory-cache entry no longer aborts `_assemble_briefing`, `_check_commitment_alerts`, or `_check_pre_meeting_alerts` — each `json.loads` call is now individually guarded by `try/except (JSONDecodeError, TypeError)`. Additionally, `_check_and_send` now runs each check (`_check_daily_briefing`, `_check_commitment_alerts`, etc.) in its own `try/except` so a single failing check cannot silence subsequent ones (#52).
 - `usage_tracker.record_usage`: read-modify-write on the state JSON is now protected by a module-level `threading.Lock`, preventing lost increments when multiple async loops call it concurrently (#13).
 - `skill_optimizer`: all four `acompletion` call sites now record token usage via `record_usage`, so `/usage` totals include judge and optimizer traffic (#13).
 - `/usage` command now uses `_send_reply` instead of `reply_text` so long summaries are chunked and retried on transient network errors (#13).
