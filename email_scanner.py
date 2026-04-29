@@ -47,6 +47,10 @@ _RE_FW_PATTERN = re.compile(
 # Max threads per scan cycle (rate limiting)
 MAX_THREADS_PER_CYCLE = 50
 
+# Bump this whenever the classification prompt logic changes so existing files are reclassified.
+# v1 = original; v2 = PR #98 forwarded-email guidance added to prompt.
+CLASSIFIER_VERSION = 2
+
 # Default excluded mailbox names
 DEFAULT_SKIP_MAILBOXES = {
     "trash", "junk", "spam", "archive", "deleted messages",
@@ -643,7 +647,10 @@ class EmailScanner:
             stored_last = str(fm.get("last_message", ""))
             current_count = thread.get("message_count", 0)
             current_last = thread.get("last_message", "")
-            return stored_count != current_count or stored_last != current_last
+            if stored_count != current_count or stored_last != current_last:
+                return True
+            # Force reclassification when the classification prompt has been updated
+            return int(fm.get("classifier_version", 1)) != CLASSIFIER_VERSION
         except Exception:
             return True
 
@@ -656,6 +663,8 @@ class EmailScanner:
             current_count = thread.get("message_count", 0)
             if stored_count != current_count:
                 return None, None, None  # New messages — regenerate
+            if int(fm.get("classifier_version", 1)) != CLASSIFIER_VERSION:
+                return None, None, None  # Prompt changed — reclassify
             summary = fm.get("summary", "")
             tags = fm.get("tags", [])
             if isinstance(tags, str):
@@ -764,6 +773,7 @@ class EmailScanner:
             "summary": summary,
             "tags": tags,
             "classification": classification,
+            "classifier_version": CLASSIFIER_VERSION,
             "last_scanned": now,
             "source_url": f"mailto:conversation-{conv_id}",
             "type": "email_thread",
