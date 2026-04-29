@@ -70,6 +70,35 @@ def _parse_frontmatter(text: str) -> dict:
         return {}
 
 
+def _parse_messages_section(text: str) -> list:
+    """Return message strings from the ## Messages section of a memory file.
+
+    Each bullet (`- <msg>`) becomes one entry. Continuation lines (no `- ` prefix)
+    are joined to the previous entry with a newline, preserving messages that were
+    written with embedded newlines (AppleScript path does not sanitise snippets).
+    Returns an empty list when the section is absent.
+    """
+    messages = []
+    current = None
+    in_section = False
+    for line in text.splitlines():
+        if line.strip() == "## Messages":
+            in_section = True
+            continue
+        if in_section:
+            if line.startswith("## "):
+                break
+            if line.startswith("- "):
+                if current is not None:
+                    messages.append(current)
+                current = line[2:]
+            elif current is not None and line.strip():
+                current = current + "\n" + line
+    if current is not None:
+        messages.append(current)
+    return messages
+
+
 def _normalize_subject(subject: str) -> str:
     """Strip RE:/FW: prefixes until clean."""
     s = subject.strip()
@@ -806,6 +835,8 @@ class EmailScanner:
                 except ValueError:
                     pass
 
+                text = path.read_text()
+                stored_messages = _parse_messages_section(text)
                 participants = fm.get("participants", [])
                 thread = {
                     "conversation_id": fm.get("conversation_id", 0),
@@ -815,9 +846,10 @@ class EmailScanner:
                     "last_message": str(fm.get("last_message", "")),
                     "first_message": str(fm.get("first_message", "")),
                     "participants": participants if isinstance(participants, list) else [],
-                    # Use the stored summary as message proxy so the LLM has
-                    # enough signal to produce the correct classification.
-                    "messages": [fm.get("summary", "")],
+                    # Preserve original messages so downstream consumers keep full history;
+                    # fall back to stored summary only for pre-existing files that predate
+                    # the ## Messages section.
+                    "messages": stored_messages if stored_messages else [fm.get("summary", "")],
                 }
 
                 summary, tags, classification = await self._generate_summary_and_tags(thread)

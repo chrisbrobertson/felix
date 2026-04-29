@@ -22,6 +22,7 @@ from email_scanner import (
     _subject_to_conv_id,
     _mailbox_name_from_url,
     _parse_frontmatter,
+    _parse_messages_section,
     CORE_DATA_EPOCH_OFFSET,
     CLASSIFIER_VERSION,
 )
@@ -1098,5 +1099,116 @@ def test_reclassification_incremental_path(tmp_path):
 
     # The rewritten file must be updated in place with the current version
     fm = _parse_frontmatter(stale_path.read_text())
+    assert fm.get("classifier_version") == CLASSIFIER_VERSION
+    assert fm.get("classification") == "human"
+
+
+# ── _parse_messages_section ───────────────────────────────────────────────────
+
+def test_parse_messages_section_returns_messages():
+    text = (
+        "---\nsummary: S\n---\n\n"
+        "## Messages\n"
+        "- 2026-01-01 Alice: Hello\n"
+        "- 2026-01-02 Bob: World\n\n"
+        "## Context\nSummary here.\n"
+    )
+    assert _parse_messages_section(text) == [
+        "2026-01-01 Alice: Hello",
+        "2026-01-02 Bob: World",
+    ]
+
+
+def test_parse_messages_section_empty_when_absent():
+    text = "---\nsummary: S\n---\n\nOld content.\n"
+    assert _parse_messages_section(text) == []
+
+
+def test_parse_messages_section_handles_continuation_lines():
+    """Lines without '- ' prefix inside ## Messages are joined to the previous entry."""
+    text = (
+        "---\nsummary: S\n---\n\n"
+        "## Messages\n"
+        "- 2026-01-01 Alice: First line\n"
+        "  continuation\n"
+        "- 2026-01-02 Bob: Next\n"
+    )
+    msgs = _parse_messages_section(text)
+    assert msgs[0] == "2026-01-01 Alice: First line\n  continuation"
+    assert msgs[1] == "2026-01-02 Bob: Next"
+
+
+# ── Reclassification preserves ## Messages section ───────────────────────────
+
+def test_reclassification_preserves_messages_section(tmp_path):
+    """Reclassifying a stale file must keep its original ## Messages content intact.
+
+    Before this fix, `_reclassify_stale_memories` passed `[summary]` as the
+    messages list, causing _write_memory to overwrite the ## Messages section with
+    a single summary string and losing the full message history.
+    """
+    import asyncio as _asyncio
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({"high_water_rowid": 50}))
+
+    scanner = EmailScanner()
+
+    original_messages = [
+        "2026-04-01 Alice Sender: Please review the attached proposal.",
+        "2026-04-02 Bob Reply: Looks good, I approve.",
+    ]
+    msg_block = "\n".join(f"- {m}" for m in original_messages)
+
+    stale_path = memories_dir / "email-thread-proposal-review-77777.md"
+    stale_path.write_text(
+        "---\n"
+        "source_title: 'Proposal Review'\n"
+        "summary: Old summary about proposal.\n"
+        "classification: transactional\n"
+        "message_count: 2\n"
+        "last_message: '2026-04-02T10:00:00'\n"
+        "first_message: '2026-04-01T09:00:00'\n"
+        "conversation_id: 77777\n"
+        "participants:\n"
+        "  - {name: Alice Sender, email: alice@example.com}\n"
+        "---\n\n"
+        f"## Messages\n{msg_block}\n\n"
+        "## Context\nOld summary about proposal.\n"
+    )
+
+    mock_source = MagicMock()
+    mock_source.get_threads_updated_since.return_value = ([], 50)
+
+    with patch.object(es, "MEMORIES_DIR", memories_dir), \
+         patch.object(es, "STATE_FILE", state_file), \
+         patch.object(es, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch.object(scanner, "_get_data_source", return_value=mock_source), \
+         patch("litellm.acompletion", new_callable=AsyncMock) as mock_llm:
+
+        (tmp_path / "config.yaml").write_text(
+            "email_scanner:\n  archive_after_days: 90\n  initial_lookback_days: 30\n"
+            "  skip_mailboxes: []\n"
+        )
+        mock_llm.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content=(
+                "SUMMARY: Updated proposal review summary.\n"
+                "TAGS: proposal, review\n"
+                "CLASSIFICATION: human"
+            )))],
+            usage=None,
+        )
+        _asyncio.run(scanner._run_scan())
+
+    rewritten = stale_path.read_text()
+    # Both original message lines must survive in the ## Messages section
+    assert "2026-04-01 Alice Sender: Please review the attached proposal." in rewritten
+    assert "2026-04-02 Bob Reply: Looks good, I approve." in rewritten
+
+    # Classification must be updated
+    fm = _parse_frontmatter(rewritten)
     assert fm.get("classifier_version") == CLASSIFIER_VERSION
     assert fm.get("classification") == "human"
