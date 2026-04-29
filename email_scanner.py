@@ -615,6 +615,13 @@ class EmailScanner:
             except Exception:
                 log.exception("Error processing thread: %s", thread.get("subject"))
 
+        # Threads with no new mail rows are absent from the list above but may
+        # still have a stale classifier_version. Run a separate reclassification
+        # pass over all memory files that were missed, sharing the per-cycle budget.
+        await self._reclassify_stale_memories(
+            archive_cutoff, budget=MAX_THREADS_PER_CYCLE - processed
+        )
+
         # Update state
         if new_max_rowid > high_water:
             state["high_water_rowid"] = new_max_rowid
@@ -761,10 +768,85 @@ class EmailScanner:
         s = s.strip('-')
         return s[:40].rstrip('-')
 
-    def _write_memory(self, thread: dict, summary: str, tags: list, classification: str = "unknown"):
+    async def _reclassify_stale_memories(self, archive_cutoff: datetime, budget: int) -> int:
+        """Reclassify email memory files whose classifier_version is outdated.
+
+        In incremental scans, threads with no new mail rows are not returned by
+        get_threads_updated_since, so they never reach the main processing loop.
+        This method finds those stale files and reclassifies them directly.
+        """
+        if budget <= 0:
+            return 0
+        stale = []
+        try:
+            for path in MEMORIES_DIR.glob("email-thread-*.md"):
+                try:
+                    fm = _parse_frontmatter(path.read_text())
+                    if int(fm.get("classifier_version", 1)) != CLASSIFIER_VERSION:
+                        stale.append((path, fm))
+                except Exception:
+                    continue
+        except Exception:
+            log.exception("Error scanning for stale email memories")
+            return 0
+
+        if not stale:
+            return 0
+
+        log.info("Reclassifying %d stale email memory file(s)", len(stale))
+        reclassified = 0
+
+        for path, fm in stale[:budget]:
+            try:
+                try:
+                    last_dt = datetime.fromisoformat(str(fm.get("last_message", "")))
+                    if last_dt < archive_cutoff:
+                        log.debug("Skipping archived stale thread: %s", path.name)
+                        continue
+                except ValueError:
+                    pass
+
+                participants = fm.get("participants", [])
+                thread = {
+                    "conversation_id": fm.get("conversation_id", 0),
+                    "subject": fm.get("source_title", ""),
+                    "raw_subject": fm.get("source_title", ""),
+                    "message_count": fm.get("message_count", 0),
+                    "last_message": str(fm.get("last_message", "")),
+                    "first_message": str(fm.get("first_message", "")),
+                    "participants": participants if isinstance(participants, list) else [],
+                    # Use the stored summary as message proxy so the LLM has
+                    # enough signal to produce the correct classification.
+                    "messages": [fm.get("summary", "")],
+                }
+
+                summary, tags, classification = await self._generate_summary_and_tags(thread)
+                if not summary:
+                    summary = str(fm.get("summary", thread["subject"]))
+                if not tags:
+                    raw_tags = fm.get("tags", [])
+                    tags = raw_tags if isinstance(raw_tags, list) else [
+                        t.strip() for t in str(raw_tags).split(",") if t.strip()
+                    ]
+                if not classification:
+                    classification = "unknown"
+
+                # Pass path explicitly: the stored source_title may be the raw
+                # (un-normalized) subject, which would produce a different slug
+                # than the original file name. Always write back to the same path.
+                self._write_memory(thread, summary, tags, classification, path=path)
+                reclassified += 1
+            except Exception:
+                log.exception("Error reclassifying stale thread: %s", path)
+
+        if reclassified:
+            log.info("Reclassified %d stale email memory file(s)", reclassified)
+        return reclassified
+
+    def _write_memory(self, thread: dict, summary: str, tags: list, classification: str = "unknown", path: Path = None):
         if not isinstance(tags, list):
             tags = [tags]
-        memory_path = self._memory_path(thread)
+        memory_path = path if path is not None else self._memory_path(thread)
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         conv_id = thread.get("conversation_id", 0)
 

@@ -1028,3 +1028,75 @@ def test_reclassification_writes_classifier_version(tmp_path):
     fm = _parse_frontmatter(memory_file.read_text())
     assert fm.get("classifier_version") == CLASSIFIER_VERSION
     assert fm.get("classification") == "human"
+
+
+def test_reclassification_incremental_path(tmp_path):
+    """Stale memories must be reclassified even when get_threads_updated_since
+    returns no new rows for those threads (the normal incremental-scan case).
+
+    Before this fix, the reclassification pass only ran inside the main thread
+    loop, which is never entered for threads absent from the incremental result
+    set — leaving misclassified files untouched indefinitely.
+    """
+    import asyncio as _asyncio
+
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    state_file = tmp_path / "state.json"
+    # Nonzero high-water → scanner uses get_threads_updated_since (incremental path)
+    state_file.write_text(json.dumps({"high_water_rowid": 50}))
+
+    scanner = EmailScanner()
+
+    # A stale memory file with no classifier_version (pre-PR-#98 format)
+    stale_path = memories_dir / "email-thread-fw-reminder-oci-54321.md"
+    stale_path.write_text(
+        "---\n"
+        "source_title: 'Fw: REMINDER: OCI'\n"
+        "summary: Old summary from OCI reminder.\n"
+        "classification: transactional\n"
+        "message_count: 1\n"
+        "last_message: '2026-04-27T16:21:46'\n"
+        "first_message: '2026-04-27T16:21:46'\n"
+        "conversation_id: 54321\n"
+        "participants:\n"
+        "  - {name: Kurt Binder, email: kbinder@arlo.com}\n"
+        "---\n\nOld content.\n"
+    )
+
+    mock_source = MagicMock()
+    # Incremental scan returns no new threads for this stale file's conversation
+    mock_source.get_threads_updated_since.return_value = ([], 50)
+
+    with patch.object(es, "MEMORIES_DIR", memories_dir), \
+         patch.object(es, "STATE_FILE", state_file), \
+         patch.object(es, "CONFIG_PATH", tmp_path / "config.yaml"), \
+         patch.object(scanner, "_get_data_source", return_value=mock_source), \
+         patch("litellm.acompletion", new_callable=AsyncMock) as mock_llm:
+
+        (tmp_path / "config.yaml").write_text(
+            "email_scanner:\n  archive_after_days: 90\n  initial_lookback_days: 30\n"
+            "  skip_mailboxes: []\n"
+        )
+        mock_llm.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content=(
+                "SUMMARY: Forwarded OCI reminder.\n"
+                "TAGS: oci, centroid\n"
+                "CLASSIFICATION: human"
+            )))],
+            usage=None,
+        )
+        _asyncio.run(scanner._run_scan())
+
+    # Confirm we took the incremental path (not the full-scan path)
+    mock_source.get_threads_updated_since.assert_called_once()
+    mock_source.get_threads_since.assert_not_called()
+
+    # LLM must have been called by the stale-memories reclassification pass
+    mock_llm.assert_called_once()
+
+    # The rewritten file must be updated in place with the current version
+    fm = _parse_frontmatter(stale_path.read_text())
+    assert fm.get("classifier_version") == CLASSIFIER_VERSION
+    assert fm.get("classification") == "human"
