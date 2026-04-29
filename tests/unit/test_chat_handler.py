@@ -4260,6 +4260,43 @@ async def test_cmd_defer_sets_defer_until_and_hides_from_default_list(handler, b
     assert "No pending agent actions" in reply2 or "0" in reply2
 
 
+# ── /pending must not clobber _last_action_set ───────────────────────────────
+
+@pytest.mark.asyncio
+async def test_pending_does_not_clobber_last_action_set(handler, brain_dir):
+    """/pending count check must not overwrite _last_action_set.
+
+    If a user loads /actions then calls /pending (a summary-only inbox count),
+    the subsequent /action N / /run N commands must still target the set that
+    /actions loaded — not the smaller 'pending only' set that /pending counts.
+    """
+    m = brain_dir / "memories"
+    # Write two pending actions plus one approved action
+    write_action(m, "aaa111", "add_milestone", "goal-test.md", status="pending")
+    write_action(m, "bbb222", "update_status", "goal-test.md", status="pending")
+    write_action(m, "ccc333", "add_note",      "goal-test.md", status="approved")
+
+    # 1. User loads all actions (/actions all → 3 items in _last_action_set)
+    u1, c1 = _make_update(12345, args=["all"])
+    await handler.cmd_actions(u1, c1)
+    all_set_before = list(handler._last_action_set)
+    assert len(all_set_before) == 3
+
+    # 2. User calls /pending (count-only, must NOT replace _last_action_set)
+    u2, c2 = _make_update(12345)
+    from unittest.mock import AsyncMock, MagicMock, patch
+    mock_cache = MagicMock()
+    mock_cache.query_by_prefix = AsyncMock(return_value=[])
+    with patch.object(handler, "_cache", mock_cache):
+        await handler.cmd_pending(u2, c2)
+
+    # _last_action_set must still be the 3-item "all" set
+    assert handler._last_action_set == all_set_before, (
+        "/pending must not overwrite _last_action_set; got "
+        f"{len(handler._last_action_set)} items instead of 3"
+    )
+
+
 # ── _resolve_feature_index hash fallback (fix fcfc1f) ─────────────────────────
 
 def test_resolve_feature_by_hash(handler, brain_dir):

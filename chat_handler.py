@@ -2147,7 +2147,7 @@ class TelegramChatHandler:
 
     # ── Agent actions commands ────────────────────────────────────────────────
 
-    def _load_action_set(self, filter_status: Optional[str] = None) -> list:
+    def _load_action_set(self, filter_status: Optional[str] = None, update_last_set: bool = True) -> list:
         """Load action-*.md files and filter by status. Returns list of (path, fm) tuples."""
         actions = []
         now = datetime.now()
@@ -2188,7 +2188,8 @@ class TelegramChatHandler:
 
         # Sort by proposed_at descending
         actions.sort(key=lambda x: x[1].get("proposed_at", ""), reverse=True)
-        self._last_action_set = actions
+        if update_last_set:
+            self._last_action_set = actions
         return actions
 
     async def cmd_actions(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3539,8 +3540,8 @@ class TelegramChatHandler:
             if fm.get("type") == "project_candidate" and fm.get("status") == "pending_confirmation":
                 candidate_count += 1
 
-        # Agent actions
-        actions = self._load_action_set()
+        # Agent actions — count only; must not clobber _last_action_set
+        actions = self._load_action_set(update_last_set=False)
         action_count = len(actions)
 
         # Skill drafts
