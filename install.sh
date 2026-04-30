@@ -564,6 +564,7 @@ DAEMON_FILES=(
     memory_cache.py
     quota_scanner.py
     quota_scrapers.py
+    usage_tracker.py
     VERSION
 )
 
