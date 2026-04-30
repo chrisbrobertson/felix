@@ -499,7 +499,7 @@ echo "Checking Python dependencies..."
 REQS_HASH_FILE="$DEPLOY_DIR/.requirements-hash"
 if [ "$ROLE" = "watcher" ]; then
     # Fixed set for watcher — hash the package names directly
-    REQS_HASH="$(echo 'litellm httpx beautifulsoup4 lxml pyyaml pyobjc-framework-EventKit' | shasum -a 256 | cut -d' ' -f1)"
+    REQS_HASH="$(echo 'litellm httpx beautifulsoup4 lxml pyyaml pyobjc-framework-EventKit pdfminer.six' | shasum -a 256 | cut -d' ' -f1)"
 else
     REQS_HASH="$(shasum -a 256 "$REPO_DIR/requirements.txt" | cut -d' ' -f1)"
 fi
@@ -510,7 +510,7 @@ else
     info "Installing dependencies..."
     "$VENV/bin/pip" install -q --upgrade pip
     if [ "$ROLE" = "watcher" ]; then
-        "$VENV/bin/pip" install -q litellm httpx beautifulsoup4 lxml pyyaml pyobjc-framework-EventKit
+        "$VENV/bin/pip" install -q litellm httpx beautifulsoup4 lxml pyyaml pyobjc-framework-EventKit pdfminer.six
     else
         "$VENV/bin/pip" install -q -r "$REPO_DIR/requirements.txt"
     fi
@@ -586,7 +586,27 @@ for FILE in "${DAEMON_FILES[@]}"; do
 done
 [ "$deployed" -eq 0 ] && info "All source files already up to date" || ok "$deployed file(s) deployed"
 
-# ── 10. iCloud directory structure ────────────────────────────────────────────
+# ── 9. Smoke import: verify deployed daemon imports cleanly ──────────────────
+echo ""
+echo "Verifying daemon imports cleanly..."
+SMOKE_SCRIPT='import daemon'
+if [ "$ROLE" = "full" ]; then
+    SMOKE_SCRIPT="$SMOKE_SCRIPT
+from chat_handler import TelegramChatHandler"
+fi
+if SMOKE_OUTPUT="$(cd "$DEPLOY_DIR" && "$VENV/bin/python3" -c "$SMOKE_SCRIPT" 2>&1)"; then
+    ok "Import check passed"
+else
+    die "Import check failed — refusing to reload daemon
+
+$SMOKE_OUTPUT
+
+  The deployed daemon would crash at startup. Fix the import
+  error and re-run ./install.sh. The previous daemon (if any)
+  is still running and has NOT been touched."
+fi
+
+# ── 11. iCloud directory structure ────────────────────────────────────────────
 echo ""
 echo "Setting up iCloud directories..."
 for DIR in memories skills inbox; do
@@ -599,7 +619,7 @@ for DIR in memories skills inbox; do
     fi
 done
 
-# ── 11. config.yaml ───────────────────────────────────────────────────────────
+# ── 12. config.yaml ───────────────────────────────────────────────────────────
 echo ""
 echo "Writing config.yaml..."
 if [ -f "$CONFIG_DEST" ]; then
@@ -624,7 +644,7 @@ PYEOF
     ok "Created $CONFIG_DEST"
 fi
 
-# ── 12. Skill files ───────────────────────────────────────────────────────────
+# ── 13. Skill files ───────────────────────────────────────────────────────────
 echo ""
 echo "Installing skill files..."
 for SKILL in "$REPO_DIR/skills/"*.md; do
@@ -637,13 +657,13 @@ for SKILL in "$REPO_DIR/skills/"*.md; do
     fi
 done
 
-# ── 12b. Apply LLM provider preference to deployed skills ─────────────────────
+# ── 13b. Apply LLM provider preference to deployed skills ─────────────────────
 echo ""
 echo "Applying LLM provider preference to skill files..."
 PROVIDER="$PROVIDER" "$VENV/bin/python3" "$REPO_DIR/scripts/apply_skill_provider.py" \
     "$BRAIN_DIR/skills"
 
-# ── 12c. Generate skill file checksums ───────────────────────────────────────
+# ── 13c. Generate skill file checksums ───────────────────────────────────────
 echo ""
 echo "Generating skill file checksums..."
 CHECKSUM_FILE="$DEPLOY_DIR/skill-checksums.json"
@@ -676,7 +696,7 @@ print(f"  ✓  Wrote skill checksums ({len(manifest)} skills)")
 PYEOF
 chmod 600 "$CHECKSUM_FILE"
 
-# ── 13. LiteLLM config ────────────────────────────────────────────────────────
+# ── 14. LiteLLM config ────────────────────────────────────────────────────────
 echo ""
 echo "Setting up LiteLLM config..."
 if [ -f "$LITELLM_CONFIG" ]; then
@@ -710,7 +730,7 @@ LITELLM_EOF
     ok "Created $LITELLM_CONFIG"
 fi
 
-# ── 14. launchd plist ─────────────────────────────────────────────────────────
+# ── 15. launchd plist ─────────────────────────────────────────────────────────
 echo ""
 echo "Configuring launchd agent..."
 
@@ -776,7 +796,7 @@ else
     PLIST_CHANGED=true
 fi
 
-# ── 15. Load (or reload) the agent ────────────────────────────────────────────
+# ── 16. Load (or reload) the agent ────────────────────────────────────────────
 NEEDS_RELOAD=false
 [ "$deployed" -gt 0 ] && NEEDS_RELOAD=true
 [ "$PLIST_CHANGED" = "true" ] && NEEDS_RELOAD=true
@@ -797,7 +817,7 @@ else
     fi
 fi
 
-# ── 16. Full Disk Access check (both roles) ───────────────────────────────────
+# ── 17. Full Disk Access check (both roles) ───────────────────────────────────
 echo ""
 echo "Checking Full Disk Access for email scanner..."
 
