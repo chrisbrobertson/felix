@@ -6,11 +6,8 @@ imported by an existing deployed module, but the author forgets to add it
 to the installer manifest — causing a ModuleNotFoundError crash loop at
 deploy time.
 """
-import ast
-import re
 from pathlib import Path
-
-REPO_ROOT = Path(__file__).parent.parent.parent
+from _manifest_helpers import REPO_ROOT, parse_daemon_files, _import_closure
 
 # .py files at repo root that are intentionally not deployed.
 # One-shot scripts, manual-run utilities, etc.
@@ -19,47 +16,9 @@ DO_NOT_DEPLOY = {
 }
 
 
-def _parse_daemon_files() -> set[str]:
-    """Extract the DAEMON_FILES array from install.sh."""
-    text = (REPO_ROOT / "install.sh").read_text()
-    m = re.search(r"DAEMON_FILES=\(\s*(.*?)\s*\)", text, re.DOTALL)
-    assert m, "Could not find DAEMON_FILES array in install.sh"
-    return set(m.group(1).split())
-
-
-def _local_imports(path: Path) -> set[str]:
-    """Return local-module names directly imported by path (non-recursive)."""
-    tree = ast.parse(path.read_text(), filename=str(path))
-    names = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                names.add(alias.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom):
-            if node.module and node.level == 0:
-                names.add(node.module.split(".")[0])
-    return {n for n in names if (REPO_ROOT / f"{n}.py").exists()}
-
-
-def _import_closure(entry: Path) -> set[str]:
-    """Compute the transitive closure of local-module imports from entry."""
-    visited: set[str] = set()
-    frontier = {entry.stem}
-    while frontier:
-        name = frontier.pop()
-        if name in visited:
-            continue
-        visited.add(name)
-        py = REPO_ROOT / f"{name}.py"
-        if py.exists():
-            frontier |= _local_imports(py)
-    # Return as filenames, not module names
-    return {f"{n}.py" for n in visited}
-
-
 # ── Shared state (computed once at module import) ──────────────────────────
 
-_daemon_files = _parse_daemon_files()
+_daemon_files = parse_daemon_files()
 _closure = _import_closure(REPO_ROOT / "daemon.py")
 
 

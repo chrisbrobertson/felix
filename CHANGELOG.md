@@ -16,6 +16,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `/project_note <N> <text>` — append a timestamped note to a project conversationally (#18).
 - `/project_due <N> <YYYY-MM-DD|none>` — update or clear a project's due date (#18).
 - `/changes [hours]` Telegram command: scans all active goals and projects, finds related memory files updated in the last N hours (default 24, max 168), and sends a concise LLM-generated activity digest per item — one paragraph per project/goal with recent activity. Implemented in `GoalProjectAgent.generate_change_digest()` (#74).
+- `install.sh` now runs a Python smoke import (`import daemon` + `from chat_handler import TelegramChatHandler` on full role) after deploying source files and before reloading launchd. If the deployed artefact would crash at import time, the installer exits 1 and leaves the running daemon untouched.
 
 ### Fixed
 - `notification_manager`: malformed or null frontmatter in any memory-cache entry no longer aborts `_assemble_briefing`, `_check_commitment_alerts`, or `_check_pre_meeting_alerts` — each `json.loads` call is now individually guarded by `try/except (JSONDecodeError, TypeError)`. Additionally, `_check_and_send` now runs each check (`_check_daily_briefing`, `_check_commitment_alerts`, etc.) in its own `try/except` so a single failing check cannot silence subsequent ones (#52).
