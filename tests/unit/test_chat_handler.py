@@ -3763,6 +3763,40 @@ async def test_cmd_goal_unknown_verb_shows_registry_help(handler, brain_dir):
     assert "/completegoal" in reply
     assert "/abandongoal" in reply
 
+
+@pytest.mark.asyncio
+async def test_cmd_goals_overdue_shows_was_due(handler, brain_dir):
+    """/goals marks past-due active goals with 'was due … OVERDUE'."""
+    m = brain_dir / "memories"
+    (m / "goal-old-abc123.md").write_text(
+        "---\ntype: goal\ncategory: personal\nsource_title: Overdue Goal\n"
+        "summary: ''\ntags: []\ncreated: '2024-01-01T09:00:00'\n"
+        "due_date: '2024-01-01'\nstatus: active\npriority: medium\n"
+        "linked_projects: []\nnotes: ''\n---\n\n## Notes\n"
+    )
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_goals(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "was due 2024-01-01" in reply
+    assert "OVERDUE" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_goals_future_due_shows_due(handler, brain_dir):
+    """/goals shows plain 'due' for goals not yet past their deadline."""
+    m = brain_dir / "memories"
+    (m / "goal-future-abc123.md").write_text(
+        "---\ntype: goal\ncategory: personal\nsource_title: Future Goal\n"
+        "summary: ''\ntags: []\ncreated: '2026-01-01T09:00:00'\n"
+        "due_date: '2099-12-31'\nstatus: active\npriority: medium\n"
+        "linked_projects: []\nnotes: ''\n---\n\n## Notes\n"
+    )
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_goals(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "due 2099-12-31" in reply
+    assert "OVERDUE" not in reply
+
 @pytest.mark.asyncio
 async def test_cmd_reading_invalid_index_shows_registry_help(handler, brain_dir):
     """Invalid index in /reading shows Knowledge listings group help"""
@@ -3903,7 +3937,61 @@ async def test_dismiss_multiple_indices(handler, brain_dir):
         assert "Review design doc" in reply
         assert mock_update.call_count == 2
 
+# ── Overdue indicator in /commitments ────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_commitments_overdue_shows_was_due(handler, brain_dir):
+    """/commitments marks past-due items with 'was due'."""
+    m = brain_dir / "memories"
+    write_commitment(m, "Overdue task", status="active", due_date="2024-01-01")
+
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_commitments(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "was due 2024-01-01" in reply
+    assert "⚠️" in reply
+
+
+@pytest.mark.asyncio
+async def test_commitments_future_due_shows_due(handler, brain_dir):
+    """/commitments shows 'due' (not 'was due') for future items."""
+    m = brain_dir / "memories"
+    write_commitment(m, "Future task", status="active", due_date="2099-12-31")
+
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_commitments(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "due 2099-12-31" in reply
+    assert "was due" not in reply
+
+
 # ── /todos command ───────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_cmd_todos_overdue_shows_was_due(handler, brain_dir):
+    """/todos marks overdue items with 'was due'."""
+    m = brain_dir / "memories"
+    write_commitment(m, "Overdue todo", status="active", due_date="2024-01-01")
+
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_todos(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "was due 2024-01-01" in reply
+    assert "⚠️" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_todos_future_due_shows_due(handler, brain_dir):
+    """/todos shows 'due' for future items, not 'was due'."""
+    m = brain_dir / "memories"
+    write_commitment(m, "Future todo", status="active", due_date="2099-12-31")
+
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_todos(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "due 2099-12-31" in reply
+    assert "was due" not in reply
+
 
 @pytest.mark.asyncio
 async def test_cmd_todos_empty_list(handler, brain_dir):
@@ -3918,7 +4006,7 @@ async def test_cmd_todos_empty_list(handler, brain_dir):
 async def test_cmd_todos_lists_with_checkbox_format(handler, brain_dir):
     """/todos shows commitments as [ ] checkboxes."""
     m = brain_dir / "memories"
-    write_commitment(m, "Send quarterly report", status="active", due_date="2026-05-01")
+    write_commitment(m, "Send quarterly report", status="active", due_date="2099-12-31")
     write_commitment(m, "Review design doc", status="active")
 
     update, context = _make_update(12345, args=[])
@@ -3927,7 +4015,7 @@ async def test_cmd_todos_lists_with_checkbox_format(handler, brain_dir):
     assert "Todos (2)" in reply
     assert "[ ] Send quarterly report" in reply
     assert "[ ] Review design doc" in reply
-    assert "due 2026-05-01" in reply
+    assert "due 2099-12-31" in reply
     assert "/todos done N" in reply
 
 
@@ -5249,6 +5337,26 @@ def test_list_projects_text_code_routes_to_code_repos(handler, brain_dir):
     text = handler._list_projects_text(category="code")
     assert "myrepo" in text
     assert "GoalManager Project" not in text
+
+
+def test_list_projects_text_overdue_shows_was_due(handler, brain_dir):
+    """_list_projects_text marks past-due active projects with 'was due … OVERDUE'."""
+    m = brain_dir / "memories"
+    _write_project_file(m, "work-overdue-abc123", "Overdue Project", due_date="2024-01-01")
+
+    text = handler._list_projects_text()
+    assert "was due 2024-01-01" in text
+    assert "OVERDUE" in text
+
+
+def test_list_projects_text_future_due_shows_due(handler, brain_dir):
+    """_list_projects_text shows plain 'due' for future-dated projects."""
+    m = brain_dir / "memories"
+    _write_project_file(m, "work-future-abc123", "Future Project", due_date="2099-12-31")
+
+    text = handler._list_projects_text()
+    assert "due 2099-12-31" in text
+    assert "OVERDUE" not in text
 
 
 @pytest.mark.asyncio

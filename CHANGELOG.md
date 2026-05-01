@@ -19,6 +19,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `install.sh` now runs a Python smoke import (`import daemon` + `from chat_handler import TelegramChatHandler` on full role) after deploying source files and before reloading launchd. If the deployed artefact would crash at import time, the installer exits 1 and leaves the running daemon untouched.
 
 ### Fixed
+- `/commitments`, `/todos`: past-due active items now display `was due <date> ⚠️` instead of the bare date, so overdue deliverables are visually flagged rather than silently showing a stale date. Same fix applied to `/goals` (shows `was due <date> ⚠️ OVERDUE`) and `/projects` (shows `was due <date> ⚠️ OVERDUE`) (#103).
 - `notification_manager`: malformed or null frontmatter in any memory-cache entry no longer aborts `_assemble_briefing`, `_check_commitment_alerts`, or `_check_pre_meeting_alerts` — each `json.loads` call is now individually guarded by `try/except (JSONDecodeError, TypeError)`. Additionally, `_check_and_send` now runs each check (`_check_daily_briefing`, `_check_commitment_alerts`, etc.) in its own `try/except` so a single failing check cannot silence subsequent ones (#52).
 - `usage_tracker.record_usage`: read-modify-write on the state JSON is now protected by a module-level `threading.Lock`, preventing lost increments when multiple async loops call it concurrently (#13).
 - `skill_optimizer`: all four `acompletion` call sites now record token usage via `record_usage`, so `/usage` totals include judge and optimizer traffic (#13).
