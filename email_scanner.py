@@ -47,6 +47,10 @@ _RE_FW_PATTERN = re.compile(
 # Max threads per scan cycle (rate limiting)
 MAX_THREADS_PER_CYCLE = 50
 
+# Bump this whenever the classification prompt logic changes so existing files are reclassified.
+# v1 = original; v2 = PR #98 forwarded-email guidance added to prompt.
+CLASSIFIER_VERSION = 2
+
 # Default excluded mailbox names
 DEFAULT_SKIP_MAILBOXES = {
     "trash", "junk", "spam", "archive", "deleted messages",
@@ -64,6 +68,35 @@ def _parse_frontmatter(text: str) -> dict:
         return yaml.safe_load(parts[1]) or {}
     except Exception:
         return {}
+
+
+def _parse_messages_section(text: str) -> list:
+    """Return message strings from the ## Messages section of a memory file.
+
+    Each bullet (`- <msg>`) becomes one entry. Continuation lines (no `- ` prefix)
+    are joined to the previous entry with a newline, preserving messages that were
+    written with embedded newlines (AppleScript path does not sanitise snippets).
+    Returns an empty list when the section is absent.
+    """
+    messages = []
+    current = None
+    in_section = False
+    for line in text.splitlines():
+        if line.strip() == "## Messages":
+            in_section = True
+            continue
+        if in_section:
+            if line.startswith("## "):
+                break
+            if line.startswith("- "):
+                if current is not None:
+                    messages.append(current)
+                current = line[2:]
+            elif current is not None and line.strip():
+                current = current + "\n" + line
+    if current is not None:
+        messages.append(current)
+    return messages
 
 
 def _normalize_subject(subject: str) -> str:
@@ -611,6 +644,14 @@ class EmailScanner:
             except Exception:
                 log.exception("Error processing thread: %s", thread.get("subject"))
 
+        # Threads with no new mail rows are absent from the list above but may
+        # still have a stale classifier_version. Run a separate reclassification
+        # pass over all memory files that were missed, sharing the per-cycle budget.
+        # state is mutated in-place to persist the stale_queue across cycles.
+        await self._reclassify_stale_memories(
+            archive_cutoff, budget=MAX_THREADS_PER_CYCLE - processed, state=state
+        )
+
         # Update state
         if new_max_rowid > high_water:
             state["high_water_rowid"] = new_max_rowid
@@ -643,7 +684,10 @@ class EmailScanner:
             stored_last = str(fm.get("last_message", ""))
             current_count = thread.get("message_count", 0)
             current_last = thread.get("last_message", "")
-            return stored_count != current_count or stored_last != current_last
+            if stored_count != current_count or stored_last != current_last:
+                return True
+            # Force reclassification when the classification prompt has been updated
+            return int(fm.get("classifier_version", 1)) != CLASSIFIER_VERSION
         except Exception:
             return True
 
@@ -656,6 +700,8 @@ class EmailScanner:
             current_count = thread.get("message_count", 0)
             if stored_count != current_count:
                 return None, None, None  # New messages — regenerate
+            if int(fm.get("classifier_version", 1)) != CLASSIFIER_VERSION:
+                return None, None, None  # Prompt changed — reclassify
             summary = fm.get("summary", "")
             tags = fm.get("tags", [])
             if isinstance(tags, str):
@@ -694,10 +740,13 @@ class EmailScanner:
                 "CLASSIFICATION: <one of: human | transactional | marketing | automated>\n"
                 "\n"
                 "Classification guide:\n"
-                "  human = real person-to-person correspondence (colleagues, vendors, family)\n"
-                "  transactional = receipts, order/shipping, account alerts, calendar invites\n"
+                "  human = real person-to-person correspondence (colleagues, vendors, family);\n"
+                "    includes forwarded emails and business contract/document discussions from real people\n"
+                "  transactional = automated system-generated emails: order confirmations, shipping\n"
+                "    updates, payment receipts, bank alerts (NOT human-forwarded business documents)\n"
                 "  marketing = newsletters, promotions, sales pitches, product announcements\n"
-                "  automated = CI/CD, monitoring, build reports, OTP codes, password resets"
+                "  automated = CI/CD, monitoring, build reports, OTP codes, password resets,\n"
+                "    system-generated reminders (not reminders forwarded by a real person)"
             )
 
         try:
@@ -749,10 +798,120 @@ class EmailScanner:
         s = s.strip('-')
         return s[:40].rstrip('-')
 
-    def _write_memory(self, thread: dict, summary: str, tags: list, classification: str = "unknown"):
+    async def _reclassify_stale_memories(
+        self, archive_cutoff: datetime, budget: int, state: dict
+    ) -> int:
+        """Reclassify email memory files whose classifier_version is outdated.
+
+        In incremental scans, threads with no new mail rows are not returned by
+        get_threads_updated_since, so they never reach the main processing loop.
+        This method finds those stale files and reclassifies them directly.
+
+        The glob scan that discovers stale files is expensive on large archives.
+        To avoid repeating it every cycle while the backlog drains, discovered
+        paths are persisted in state["stale_queue"]. A full glob is only issued
+        when the stored reclassify_classifier_version doesn't match the current
+        CLASSIFIER_VERSION (i.e. once per version bump, not once per cycle).
+        """
+        if budget <= 0:
+            return 0
+
+        state_version = state.get("reclassify_classifier_version")
+        stale_queue = state.get("stale_queue")
+
+        if state_version != CLASSIFIER_VERSION:
+            # Version was bumped (or this is the first run): discover stale files.
+            stale_queue = []
+            try:
+                for path in MEMORIES_DIR.glob("email-thread-*.md"):
+                    try:
+                        fm = _parse_frontmatter(path.read_text())
+                        if int(fm.get("classifier_version", 1)) != CLASSIFIER_VERSION:
+                            stale_queue.append(str(path))
+                    except Exception:
+                        continue
+            except Exception:
+                log.exception("Error scanning for stale email memories")
+                return 0
+            state["stale_queue"] = stale_queue
+            state["reclassify_classifier_version"] = CLASSIFIER_VERSION
+            if stale_queue:
+                log.info(
+                    "Found %d stale email memory file(s) to reclassify", len(stale_queue)
+                )
+
+        if not stale_queue:
+            return 0
+
+        to_process = stale_queue[:budget]
+        state["stale_queue"] = stale_queue[budget:]
+        reclassified = 0
+
+        for path_str in to_process:
+            path = Path(path_str)
+            try:
+                if not path.exists():
+                    continue
+
+                text = path.read_text()
+                fm = _parse_frontmatter(text)
+
+                # File may have been updated by the normal incremental path since
+                # the queue was built; skip it rather than reclassifying twice.
+                if int(fm.get("classifier_version", 1)) == CLASSIFIER_VERSION:
+                    continue
+
+                try:
+                    last_dt = datetime.fromisoformat(str(fm.get("last_message", "")))
+                    if last_dt < archive_cutoff:
+                        log.debug("Skipping archived stale thread: %s", path.name)
+                        continue
+                except ValueError:
+                    pass
+
+                stored_messages = _parse_messages_section(text)
+                participants = fm.get("participants", [])
+                thread = {
+                    "conversation_id": fm.get("conversation_id", 0),
+                    "subject": fm.get("source_title", ""),
+                    "raw_subject": fm.get("source_title", ""),
+                    "message_count": fm.get("message_count", 0),
+                    "last_message": str(fm.get("last_message", "")),
+                    "first_message": str(fm.get("first_message", "")),
+                    "participants": participants if isinstance(participants, list) else [],
+                    # Preserve original messages so downstream consumers keep full history;
+                    # fall back to stored summary only for pre-existing files that predate
+                    # the ## Messages section.
+                    "messages": stored_messages if stored_messages else [fm.get("summary", "")],
+                }
+
+                summary, tags, classification = await self._generate_summary_and_tags(thread)
+                if not summary:
+                    summary = str(fm.get("summary", thread["subject"]))
+                if not tags:
+                    raw_tags = fm.get("tags", [])
+                    tags = raw_tags if isinstance(raw_tags, list) else [
+                        t.strip() for t in str(raw_tags).split(",") if t.strip()
+                    ]
+                if not classification:
+                    classification = "unknown"
+
+                # Pass path explicitly: the stored source_title may be the raw
+                # (un-normalized) subject, which would produce a different slug
+                # than the original file name. Always write back to the same path.
+                self._write_memory(thread, summary, tags, classification, path=path)
+                reclassified += 1
+            except Exception:
+                log.exception("Error reclassifying stale thread: %s", path)
+
+        if reclassified:
+            log.info("Reclassified %d stale email memory file(s)", reclassified)
+        return reclassified
+
+    def _write_memory(self, thread: dict, summary: str, tags: list, classification: str = "unknown", path: Path = None):
         if not isinstance(tags, list):
             tags = [tags]
-        memory_path = self._memory_path(thread)
+        memory_path = path if path is not None else self._memory_path(thread)
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         conv_id = thread.get("conversation_id", 0)
 
@@ -761,6 +920,7 @@ class EmailScanner:
             "summary": summary,
             "tags": tags,
             "classification": classification,
+            "classifier_version": CLASSIFIER_VERSION,
             "last_scanned": now,
             "source_url": f"mailto:conversation-{conv_id}",
             "type": "email_thread",
