@@ -268,7 +268,11 @@ class TelegramChatHandler:
         # Conversation history per chat_id — {role, content} pairs, last N turns
         self._chat_history: dict = self._load_history()  # chat_id → list of {role, content}
         self._chat_history_locks: dict = {} # chat_id → asyncio.Lock
-        self.HISTORY_WINDOW_TURNS = 6       # keep last 6 user+assistant pairs (12 messages)
+        self.HISTORY_WINDOW_TURNS = 15      # keep last 15 user+assistant pairs (30 messages)
+        # Token budget for history injected into each request. Memory context already
+        # consumes up to MAX_CONTEXT_TOKENS (150K); reserving 20K for history leaves
+        # ~30K for system prompt, tools, new user message, and response inside 200K window.
+        self.HISTORY_TOKEN_BUDGET = 20_000
         # Last /review result set — used by /review <N>, /confirm <N>, /reject <N>, /edit <N>.
         self._last_candidate_set: list = []
         # Last /dupes result set — used by /merge <N>, /keep <N>.
@@ -592,6 +596,47 @@ class TelegramChatHandler:
             # Fallback: rough heuristic of 1 token ≈ 4 chars
             log.debug(f"Token counter failed, using char/4 fallback: {e}")
             return len(text) // 4
+
+    def _trim_history_tokens(self, history: list) -> list:
+        """Return a copy of history trimmed to HISTORY_TOKEN_BUDGET by dropping oldest turns.
+
+        Drops one turn at a time from the front (not assumed pairs) to correctly handle
+        standalone assistant notification turns inserted by the reconnect flow. Always
+        keeps at least the last user turn and everything after it. After budget trimming,
+        strips any remaining leading assistant turns so the API never receives history
+        that starts with an assistant message.
+
+        If there are no user turns at all (e.g. history contains only a reconnect
+        notification), returns an empty list — the API must not receive assistant-only
+        history.
+        """
+        trimmed = list(history)
+        if not trimmed:
+            return trimmed
+
+        total = sum(self._count_tokens(m.get("content", "") or "") for m in trimmed)
+
+        # Determine the minimum slice we must keep: from the last user turn onward.
+        last_user_idx = next(
+            (i for i in range(len(trimmed) - 1, -1, -1) if trimmed[i]["role"] == "user"),
+            None,
+        )
+        if last_user_idx is None:
+            # No user turn exists — entire history is assistant-only (e.g. a standalone
+            # reconnect notification). Return empty so the API never sees it.
+            return []
+        min_keep = len(trimmed) - last_user_idx
+
+        while total > self.HISTORY_TOKEN_BUDGET and len(trimmed) > min_keep:
+            total -= self._count_tokens(trimmed[0].get("content", "") or "")
+            trimmed = trimmed[1:]
+
+        # Strip leading assistant turns (e.g. reconnect notifications) so the API
+        # never sees a history that begins with an assistant message.
+        while len(trimmed) > min_keep and trimmed[0]["role"] == "assistant":
+            trimmed = trimmed[1:]
+
+        return trimmed
 
     def _edit_skip_domains(self, action: str, domain: str):
         """Add or remove a domain from browser_watcher.skip_domains in config.yaml.
@@ -6531,13 +6576,18 @@ class TelegramChatHandler:
                 or t["function"]["name"] not in ("deliver_pending_replies", "discard_pending_replies")
             ]
 
+            # Trim to token budget before sending — memory context already consumes
+            # up to 150K tokens; without this, a long thread can exceed the 200K window.
+            history_for_api = self._trim_history_tokens(history)
+
+
             try:
                 response = await asyncio.wait_for(
                     self.executor.run_with_tools(
                         inputs={"memory_context": memory_context, "user_query": query},
                         tools=active_tools,
                         tool_dispatch=tool_dispatch,
-                        history=history,
+                        history=history_for_api,
                     ),
                     timeout=240.0,
                 )

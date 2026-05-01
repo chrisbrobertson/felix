@@ -544,15 +544,122 @@ async def test_handle_message_passes_history_to_executor(handler, brain_dir):
 
 
 @pytest.mark.asyncio
-async def test_chat_history_window_truncates_to_six_turns(handler, brain_dir):
-    """Sending 10 turns keeps only the last 6 pairs (12 messages)."""
+async def test_chat_history_window_truncates_to_window_turns(handler, brain_dir):
+    """Sending more messages than HISTORY_WINDOW_TURNS keeps only the last N pairs."""
     update, context = _make_handle_message_mocks(handler)
-    for i in range(10):
+    overflow = handler.HISTORY_WINDOW_TURNS + 5
+    for i in range(overflow):
         update.message.text = f"Message {i}"
         handler.executor.run_with_tools = AsyncMock(return_value=f"Reply {i}")
         await handler.handle_message(update, context)
     history = handler._chat_history.get(99001, [])
     assert len(history) == handler.HISTORY_WINDOW_TURNS * 2
+    # The oldest messages are dropped; most recent query is preserved
+    assert history[-2]["content"] == f"Message {overflow - 1}"
+    # On this clean handle_message path (no reconnect notifications) the oldest
+    # retained entry is always a user turn and roles alternate perfectly.
+    assert history[0]["role"] == "user", "oldest retained message must be a user turn"
+
+
+@pytest.mark.asyncio
+async def test_trim_history_tokens_drops_oldest_pairs(handler):
+    """_trim_history_tokens removes oldest turns until within budget, keeping newest content."""
+    # Build a history that far exceeds the token budget using large synthetic turns.
+    # Each message is ~6000 chars; at char/4 heuristic that's ~1500 tokens each.
+    # 10 pairs × 2 messages × 1500 tokens = 30K tokens, well over the 20K budget.
+    history = []
+    for i in range(10):
+        history.append({"role": "user", "content": f"user msg {i} " + "x" * 5980})
+        history.append({"role": "assistant", "content": f"assistant reply {i} " + "x" * 5960})
+
+    trimmed = handler._trim_history_tokens(history)
+
+    # Must stay within budget (using the same char/4 heuristic the method uses)
+    total_tokens = sum(len(m.get("content", "")) // 4 for m in trimmed)
+    assert total_tokens <= handler.HISTORY_TOKEN_BUDGET
+    # Must retain at least the last pair
+    assert len(trimmed) >= 2
+    # Result must not start with an assistant turn
+    assert trimmed[0]["role"] == "user"
+    # Newest turns are preserved — not just any content but the specific tail
+    assert trimmed[-1]["content"].startswith("assistant reply 9 ")
+    assert trimmed[-2]["content"].startswith("user msg 9 ")
+
+
+@pytest.mark.asyncio
+async def test_trim_history_tokens_keeps_last_pair_even_if_oversized(handler):
+    """_trim_history_tokens never drops the final pair even if it exceeds the budget."""
+    # Single pair with content that exceeds the budget on its own.
+    huge_content = "y" * (handler.HISTORY_TOKEN_BUDGET * 5)
+    history = [
+        {"role": "user", "content": huge_content},
+        {"role": "assistant", "content": huge_content},
+    ]
+    trimmed = handler._trim_history_tokens(history)
+    assert len(trimmed) == 2
+    assert trimmed[0]["role"] == "user"
+    assert trimmed[1]["role"] == "assistant"
+
+
+@pytest.mark.asyncio
+async def test_trim_history_tokens_handles_leading_assistant_notification(handler):
+    """_trim_history_tokens strips leading assistant notification turns (reconnect path).
+
+    The reconnect loop appends standalone assistant turns to history. If the window
+    trim then slices to exactly max_msgs, the result can start with an assistant turn.
+    _trim_history_tokens must strip those so the API never receives a history beginning
+    with an assistant message.
+    """
+    notification = "📬 Network is back. I have 2 responses I couldn't deliver earlier."
+    # Simulate a history that starts with a reconnect notification (standalone assistant)
+    # followed by a normal user+assistant exchange — within the token budget.
+    history = [
+        {"role": "assistant", "content": notification},
+        {"role": "user", "content": "yes please deliver them"},
+        {"role": "assistant", "content": "Delivered!"},
+    ]
+    trimmed = handler._trim_history_tokens(history)
+    # Must not start with an assistant turn
+    assert trimmed[0]["role"] == "user", "leading assistant notification must be stripped"
+    # The real user turn and its response must be kept
+    assert trimmed[-2]["content"] == "yes please deliver them"
+    assert trimmed[-1]["content"] == "Delivered!"
+
+
+@pytest.mark.asyncio
+async def test_trim_history_tokens_assistant_only_returns_empty(handler):
+    """_trim_history_tokens returns [] when history has no user turns.
+
+    _reconnect_loop appends a standalone assistant notification before the user has
+    ever replied. If _handle_text is called next, history contains only that assistant
+    turn. _trim_history_tokens must return [] so the API never receives an
+    assistant-only history.
+    """
+    notification = "📬 Network is back. I have 1 response I couldn't deliver earlier."
+    history = [{"role": "assistant", "content": notification}]
+    trimmed = handler._trim_history_tokens(history)
+    assert trimmed == [], (
+        "_trim_history_tokens must return [] for assistant-only history (no user turn)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_trim_history_tokens_budget_then_strip_leading_assistant(handler):
+    """_trim_history_tokens trims for budget AND then strips leading assistant turns."""
+    # Build a history that exceeds budget and starts with a notification.
+    big = "x" * 6000
+    notification = "📬 Network is back."
+    history = [{"role": "assistant", "content": notification}]
+    for i in range(10):
+        history.append({"role": "user", "content": f"user msg {i} " + big})
+        history.append({"role": "assistant", "content": f"assistant reply {i} " + big})
+
+    trimmed = handler._trim_history_tokens(history)
+
+    total_tokens = sum(len(m.get("content", "")) // 4 for m in trimmed)
+    assert total_tokens <= handler.HISTORY_TOKEN_BUDGET
+    assert trimmed[0]["role"] == "user", "result must not start with assistant after budget trim"
+    assert trimmed[-1]["content"].startswith("assistant reply 9 ")
 
 
 @pytest.mark.asyncio
