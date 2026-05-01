@@ -2800,3 +2800,274 @@ async def test_quota_alert_persisted_only_for_successful_sends(tmp_path):
 
     # Exactly one platform's key committed (the successful send)
     assert len(state["sent_quota_alerts"]) == 1
+
+
+# ── Commitment Day Checkpoints ─────────────────────────────────────────────────
+
+def _make_checkpoint_env(tmp_path):
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({
+        "chat_id": 123456789,
+        "muted": False,
+        "sent_commitment_alerts": [],
+        "sent_commitment_checkpoints": [],
+    }))
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text(
+        "user:\n  timezone: America/Los_Angeles\n"
+        "notifications:\n  enabled: true\n"
+        "  midday_alert_time: '12:00'\n"
+        "  eod_alert_time: '17:00'\n"
+    )
+    return memories_dir, state_file, config_file
+
+
+@pytest.mark.asyncio
+async def test_commitment_midday_fires_after_noon(tmp_path):
+    """Midday checkpoint fires at 12:01 when commitment is due today."""
+    memories_dir, state_file, config_file = _make_checkpoint_env(tmp_path)
+    tz = ZoneInfo("America/Los_Angeles")
+    today = datetime(2026, 4, 11, 12, 1, tzinfo=tz)
+    make_commitment(memories_dir, "abc123def456", "Send report", due_date="2026-04-11")
+
+    bot_mock = AsyncMock()
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
+        with patch.object(mgr, "_get_local_now", return_value=today):
+            state = nm._load_state()
+            await mgr._check_commitment_day_checkpoints(state)
+
+    bot_mock.send_message.assert_called_once()
+    msg = bot_mock.send_message.call_args[1]["text"]
+    assert "Midday check-in" in msg
+    assert "Send report" in msg
+
+
+@pytest.mark.asyncio
+async def test_commitment_eod_fires_after_eod(tmp_path):
+    """EOD checkpoint fires at 17:01 and prompts /complete."""
+    memories_dir, state_file, config_file = _make_checkpoint_env(tmp_path)
+    tz = ZoneInfo("America/Los_Angeles")
+    today = datetime(2026, 4, 11, 17, 1, tzinfo=tz)
+    make_commitment(memories_dir, "abc123def456", "File expense", due_date="2026-04-11")
+
+    bot_mock = AsyncMock()
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
+        with patch.object(mgr, "_get_local_now", return_value=today):
+            state = nm._load_state()
+            await mgr._check_commitment_day_checkpoints(state)
+
+    bot_mock.send_message.assert_called_once()
+    msg = bot_mock.send_message.call_args[1]["text"]
+    assert "End-of-day reminder" in msg
+    assert "/complete" in msg
+
+
+@pytest.mark.asyncio
+async def test_commitment_checkpoint_not_before_slot(tmp_path):
+    """Neither slot fires before its configured time."""
+    memories_dir, state_file, config_file = _make_checkpoint_env(tmp_path)
+    tz = ZoneInfo("America/Los_Angeles")
+    now = datetime(2026, 4, 11, 9, 0, tzinfo=tz)  # Before noon
+    make_commitment(memories_dir, "abc123def456", "Early task", due_date="2026-04-11")
+
+    bot_mock = AsyncMock()
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
+        with patch.object(mgr, "_get_local_now", return_value=now):
+            state = nm._load_state()
+            await mgr._check_commitment_day_checkpoints(state)
+
+    bot_mock.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_commitment_checkpoint_dedup_same_day(tmp_path):
+    """Second call within same day does not re-send midday alert."""
+    memories_dir, state_file, config_file = _make_checkpoint_env(tmp_path)
+    tz = ZoneInfo("America/Los_Angeles")
+    today = datetime(2026, 4, 11, 12, 30, tzinfo=tz)
+    make_commitment(memories_dir, "abc123def456", "Send update", due_date="2026-04-11")
+
+    bot_mock = AsyncMock()
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
+        with patch.object(mgr, "_get_local_now", return_value=today):
+            state = nm._load_state()
+            await mgr._check_commitment_day_checkpoints(state)
+            # Second call — midday key already in sent set
+            await mgr._check_commitment_day_checkpoints(state)
+
+    assert bot_mock.send_message.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_commitment_checkpoint_fires_next_day(tmp_path):
+    """Checkpoint fires again the following day (new date key)."""
+    memories_dir, state_file, config_file = _make_checkpoint_env(tmp_path)
+    tz = ZoneInfo("America/Los_Angeles")
+    make_commitment(memories_dir, "abc123def456", "Daily task", due_date="2026-04-12")
+
+    # Pre-populate yesterday's sent keys
+    initial_state = {
+        "chat_id": 123456789,
+        "muted": False,
+        "sent_commitment_alerts": [],
+        "sent_commitment_checkpoints": ["2026-04-11:midday", "2026-04-11:eod"],
+    }
+    state_file.write_text(json.dumps(initial_state))
+
+    bot_mock = AsyncMock()
+    tomorrow = datetime(2026, 4, 12, 12, 5, tzinfo=tz)
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
+        with patch.object(mgr, "_get_local_now", return_value=tomorrow):
+            state = nm._load_state()
+            await mgr._check_commitment_day_checkpoints(state)
+
+    bot_mock.send_message.assert_called_once()
+    assert "2026-04-12:midday" in state["sent_commitment_checkpoints"]
+
+
+@pytest.mark.asyncio
+async def test_commitment_checkpoint_silent_when_nothing_due(tmp_path):
+    """No message sent when nothing is due today; slot still marked sent."""
+    memories_dir, state_file, config_file = _make_checkpoint_env(tmp_path)
+    tz = ZoneInfo("America/Los_Angeles")
+    today = datetime(2026, 4, 11, 12, 5, tzinfo=tz)
+    # No commitments created
+
+    bot_mock = AsyncMock()
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
+        with patch.object(mgr, "_get_local_now", return_value=today):
+            state = nm._load_state()
+            await mgr._check_commitment_day_checkpoints(state)
+
+    bot_mock.send_message.assert_not_called()
+    assert "2026-04-11:midday" in state["sent_commitment_checkpoints"]
+
+
+@pytest.mark.asyncio
+async def test_commitment_checkpoint_late_start_skips_stale_slot(tmp_path):
+    """Slot more than 2h late is skipped rather than firing a stale reminder."""
+    memories_dir, state_file, config_file = _make_checkpoint_env(tmp_path)
+    tz = ZoneInfo("America/Los_Angeles")
+    # It's 15:00 — midday slot was at 12:00, over 2h ago
+    now = datetime(2026, 4, 11, 15, 0, tzinfo=tz)
+    make_commitment(memories_dir, "abc123def456", "Long overdue task", due_date="2026-04-11")
+
+    bot_mock = AsyncMock()
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
+        with patch.object(mgr, "_get_local_now", return_value=now):
+            state = nm._load_state()
+            await mgr._check_commitment_day_checkpoints(state)
+
+    # Midday was skipped (stale); EOD not yet due; no message sent
+    bot_mock.send_message.assert_not_called()
+    # But midday was still marked as sent so it won't be checked again
+    assert "2026-04-11:midday" in state["sent_commitment_checkpoints"]
+
+
+@pytest.mark.asyncio
+async def test_commitment_checkpoint_disabled_notifications(tmp_path):
+    """No alerts when notifications.enabled is false."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "notification-state.json"
+    state_file.write_text(json.dumps({"chat_id": 123456789, "muted": False, "sent_commitment_checkpoints": []}))
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("notifications:\n  enabled: false\n")
+    make_commitment(memories_dir, "abc123def456", "Task X", due_date="2026-04-11")
+
+    bot_mock = AsyncMock()
+    tz = ZoneInfo("America/Los_Angeles")
+    now = datetime(2026, 4, 11, 12, 5, tzinfo=tz)
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
+        with patch.object(mgr, "_get_local_now", return_value=now):
+            state = nm._load_state()
+            await mgr._check_commitment_day_checkpoints(state)
+
+    bot_mock.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_commitment_checkpoint_both_slots_fire_independently(tmp_path):
+    """Midday and EOD slots both fire when time is past EOD."""
+    memories_dir, state_file, config_file = _make_checkpoint_env(tmp_path)
+    tz = ZoneInfo("America/Los_Angeles")
+    # 17:30 — both slots should fire
+    now = datetime(2026, 4, 11, 17, 30, tzinfo=tz)
+    make_commitment(memories_dir, "abc123def456", "Report due", due_date="2026-04-11")
+
+    bot_mock = AsyncMock()
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
+        with patch.object(mgr, "_get_local_now", return_value=now):
+            state = nm._load_state()
+            await mgr._check_commitment_day_checkpoints(state)
+
+    # Midday (within 2h window: 12:00–14:00) — skipped (15:30 past)
+    # EOD (within 2h window: 17:00–19:00) — fires
+    assert bot_mock.send_message.call_count == 1
+    msg = bot_mock.send_message.call_args[1]["text"]
+    assert "End-of-day reminder" in msg
+
+
+@pytest.mark.asyncio
+async def test_commitment_checkpoint_prune_old_keys(tmp_path):
+    """Old checkpoint keys are pruned during _prune_sent_alerts."""
+    memories_dir, state_file, config_file = _make_checkpoint_env(tmp_path)
+    tz = ZoneInfo("America/Los_Angeles")
+    now = datetime(2026, 4, 11, 10, 0, tzinfo=tz)
+
+    old_keys = ["2026-04-08:midday", "2026-04-08:eod", "2026-04-09:midday"]
+    initial_state = {
+        "chat_id": 123456789,
+        "muted": False,
+        "sent_commitment_checkpoints": old_keys,
+        "sent_commitment_alerts": [],
+        "sent_pre_meeting": [],
+        "sent_calendar_staleness_alerts": [],
+    }
+    state_file.write_text(json.dumps(initial_state))
+
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=AsyncMock(), cache=_make_cache(memories_dir))
+        with patch.object(mgr, "_get_local_now", return_value=now):
+            state = nm._load_state()
+            await mgr._prune_sent_alerts(state)
+
+    # Keys older than yesterday (2026-04-10) should be pruned
+    assert "2026-04-08:midday" not in state["sent_commitment_checkpoints"]
+    assert "2026-04-08:eod" not in state["sent_commitment_checkpoints"]
+    assert "2026-04-09:midday" not in state["sent_commitment_checkpoints"]

@@ -7,6 +7,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Commitment day checkpoints**: `notification_manager` now sends a midday summary (default 12:00) and an end-of-day reminder (default 17:00) for all active commitments due that day. Each slot fires at most once per calendar day and is silently skipped if the daemon was offline more than 2 hours past the scheduled time. Configurable via `notifications.midday_alert_time` and `notifications.eod_alert_time` in `config.yaml` (#106).
 - `/pending` Telegram command: unified inbox showing the count of all items awaiting human review — project/repo candidates, pending agent actions, and skill drafts. Points to `/review`, `/actions`, and `/skill_drafts` for detail (#20).
 - `/todos` Telegram command: shows all active commitments as a `[ ]` checklist. Supports `/todos done N [M…]` to mark complete and `/todos dismiss N` to dismiss. Personal todos are shown without a type tag; extracted commitments show their type in brackets (e.g. `[outbound]`). Populates the shared commitment index so `/complete N` also works after a `/todos` listing (#51).
 - `usage_tracker`: records prompt/completion token counts per model per day from every LiteLLM call in `skill_executor`. State stored in `~/secondbrain/usage-tracker-state.json` with 30-day retention (#13).

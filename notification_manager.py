@@ -63,6 +63,7 @@ def _load_state() -> dict:
         "sent_goal_alerts": [],
         "sent_project_alerts": [],
         "sent_calendar_staleness_alerts": [],
+        "sent_commitment_checkpoints": [],
     }
 
 
@@ -288,6 +289,18 @@ class NotificationManager:
             if d >= cutoff:
                 pruned_cal.append(date_str)
         state["sent_calendar_staleness_alerts"] = pruned_cal
+
+        # Prune commitment day-checkpoint keys older than 1 day (format: YYYY-MM-DD:slot).
+        pruned_ckpt = []
+        for key in state.get("sent_commitment_checkpoints", []):
+            try:
+                date_part = key.split(":")[0]
+                d = datetime.fromisoformat(date_part).date()
+                if d >= today - timedelta(days=1):
+                    pruned_ckpt.append(key)
+            except Exception:
+                continue
+        state["sent_commitment_checkpoints"] = pruned_ckpt
 
     async def _check_daily_briefing(self, state: dict):
         """Check if daily briefing should be sent."""
@@ -718,6 +731,102 @@ class NotificationManager:
 
         state["sent_commitment_alerts"] = list(sent_alerts)
         _save_state(state)
+
+    async def _check_commitment_day_checkpoints(self, state: dict):
+        """Send midday and end-of-day summary alerts for commitments still due today.
+
+        Each slot fires at most once per calendar day. If the daemon was offline
+        when the slot time passed, the alert fires on restart provided we are still
+        within 2 hours of the slot time; beyond that the slot is silently skipped
+        so stale reminders don't fire at midnight.
+        """
+        config = self._notification_config()
+        if not config.get("enabled", True):
+            return
+
+        now = self._get_local_now()
+        today = now.date()
+        today_str = today.isoformat()
+
+        midday_str = config.get("midday_alert_time", "12:00")
+        eod_str = config.get("eod_alert_time", "17:00")
+
+        checkpoints = []
+        for slot, time_str in [("midday", midday_str), ("eod", eod_str)]:
+            try:
+                h, m = map(int, time_str.split(":"))
+                slot_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
+            except Exception:
+                log.warning("Invalid %s_alert_time %r — skipping", slot, time_str)
+                continue
+            checkpoints.append((slot, slot_time))
+
+        sent = set(state.get("sent_commitment_checkpoints", []))
+
+        for slot, slot_time in checkpoints:
+            key = f"{today_str}:{slot}"
+            if key in sent:
+                continue  # Already sent today
+
+            if now < slot_time:
+                continue  # Not time yet
+
+            # If the daemon was down through the slot window, skip the alert
+            # rather than sending a stale reminder hours later.
+            if now > slot_time + timedelta(hours=2):
+                sent.add(key)
+                continue
+
+            # Collect active commitments due today
+            due_today = []
+            entries = await self._cache.query_by_type("commitment", status="active")
+            for entry in entries:
+                try:
+                    fm = _safe_frontmatter(entry["frontmatter"])
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                due_date_str = fm.get("due_date")
+                if not due_date_str:
+                    continue
+                try:
+                    due_date = datetime.fromisoformat(str(due_date_str)).date()
+                    if due_date == today:
+                        due_today.append(fm)
+                except Exception:
+                    continue
+
+            # Mark sent even when list is empty so we don't re-check each minute.
+            sent.add(key)
+
+            if not due_today:
+                log.debug("Commitment %s checkpoint: nothing due today — skipping send", slot)
+                continue
+
+            label = "Midday check-in" if slot == "midday" else "End-of-day reminder"
+            n = len(due_today)
+            lines = [f"{label}: {n} commitment{'s' if n != 1 else ''} due today:"]
+            for fm in due_today:
+                ct = fm.get("commitment_type", "outbound")
+                desc = (
+                    fm.get("source_title")
+                    or fm.get("summary")
+                    or "(untitled commitment)"
+                )[:60]
+                recipient = fm.get("recipient", "")
+                owner = fm.get("owner", "")
+                target = recipient if ct == "outbound" else owner
+                if target:
+                    lines.append(f"• [{ct}] {desc} → {target}")
+                else:
+                    lines.append(f"• [{ct}] {desc}")
+
+            if slot == "eod":
+                lines.append("\nUse /complete N to mark any done.")
+
+            await self.send_message("\n".join(lines))
+            log.info("Sent %s commitment checkpoint (%d due today)", slot, n)
+
+        state["sent_commitment_checkpoints"] = list(sent)
 
     async def _check_goal_alerts(self, state: dict):
         """Fire 7-day and 1-day deadline alerts for active goals."""
@@ -1167,6 +1276,7 @@ class NotificationManager:
             ("daily_briefing", self._check_daily_briefing(state)),
             ("llm_chat_refresh", self._check_llm_chat_refresh(state)),
             ("commitment_alerts", self._check_commitment_alerts(state)),
+            ("commitment_day_checkpoints", self._check_commitment_day_checkpoints(state)),
             ("goal_alerts", self._check_goal_alerts(state)),
             ("project_alerts", self._check_project_alerts(state)),
             ("quota_thresholds", self._check_quota_thresholds(state)),
