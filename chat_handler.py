@@ -1647,14 +1647,22 @@ class TelegramChatHandler:
         total = len(items)
         lines = [f"Active commitments ({total} total):"]
 
+        today = datetime.now().date()
         for i, (_, fm) in enumerate(items[:limit], 1):
             ct = fm.get("commitment_type", "outbound")
             desc = (fm.get("source_title") or fm.get("summary") or "")[:50]
             owner = fm.get("owner", "")
             due = fm.get("due_date")
-            due_str = f" — due {due}" if due else " — due unknown"
+            if due:
+                try:
+                    overdue = datetime.strptime(str(due), "%Y-%m-%d").date() < today
+                except ValueError:
+                    overdue = False
+                due_str = f" — was due {due} ⚠️" if overdue else f" — due {due}"
+            else:
+                due_str = " — due unknown"
             needs_review = "needs-review" in (fm.get("tags") or [])
-            flag = " ⚠️" if needs_review else ""
+            flag = " ⚠️" if needs_review and not due_str.endswith("⚠️") else ""
             lines.append(f"{i}. [{ct}] {desc} — {owner}{due_str}{flag}")
 
         if total > limit:
@@ -1721,14 +1729,22 @@ class TelegramChatHandler:
             self._active_list = self._last_commitment_set
             total = len(items)
             lines = [f"Active {type_filter} commitments ({total} total):"]
+            today = datetime.now().date()
             for i, (_, fm) in enumerate(items[:20], 1):
                 ct = fm.get("commitment_type", "outbound")
                 desc = (fm.get("source_title") or fm.get("summary") or "")[:50]
                 owner = fm.get("owner", "")
                 due = fm.get("due_date")
-                due_str = f" — due {due}" if due else " — due unknown"
+                if due:
+                    try:
+                        overdue = datetime.strptime(str(due), "%Y-%m-%d").date() < today
+                    except ValueError:
+                        overdue = False
+                    due_str = f" — was due {due} ⚠️" if overdue else f" — due {due}"
+                else:
+                    due_str = " — due unknown"
                 needs_review = "needs-review" in (fm.get("tags") or [])
-                flag = " ⚠️" if needs_review else ""
+                flag = " ⚠️" if needs_review and not due_str.endswith("⚠️") else ""
                 lines.append(f"{i}. [{ct}] {desc} — {owner}{due_str}{flag}")
             if total > 20:
                 lines.append(f"... and {total - 20} more.")
@@ -1755,14 +1771,22 @@ class TelegramChatHandler:
         total = len(items)
         lines = [f"Todos ({total}):"]
 
+        today = datetime.now().date()
         for i, (_, fm) in enumerate(items, 1):
             desc = (fm.get("source_title") or fm.get("summary") or "")[:55]
             due = fm.get("due_date")
-            due_str = f" — due {due}" if due else ""
+            if due:
+                try:
+                    overdue = datetime.strptime(str(due), "%Y-%m-%d").date() < today
+                except ValueError:
+                    overdue = False
+                due_str = f" — was due {due} ⚠️" if overdue else f" — due {due}"
+            else:
+                due_str = ""
             ct = fm.get("commitment_type", "outbound")
             type_hint = f" [{ct}]" if ct != "personal" else ""
             needs_review = "needs-review" in (fm.get("tags") or [])
-            flag = " ⚠️" if needs_review else ""
+            flag = " ⚠️" if needs_review and not due_str.endswith("⚠️") else ""
             lines.append(f"{i}. [ ] {desc}{due_str}{type_hint}{flag}")
 
         lines.append("\n/todos done N  — complete  |  /todos dismiss N  — dismiss")
@@ -2663,21 +2687,22 @@ class TelegramChatHandler:
                 cat = fm.get("category", "")
                 title = fm.get("source_title", "")
                 due = fm.get("due_date")
-                due_str = f"due {due}" if due else "no due date"
-
-                # Add deadline proximity indicator if within 7 days
-                proximity = ""
                 if due:
                     try:
                         due_dt = datetime.strptime(due, "%Y-%m-%d")
-                        now = datetime.now()
-                        days_until = (due_dt - now).days
-                        if 0 <= days_until <= 7:
-                            proximity = f" ⚠️ {days_until} days"
+                        days_until = (due_dt - datetime.now()).days
+                        if days_until < 0:
+                            due_str = f"was due {due} ⚠️ OVERDUE"
+                        elif days_until <= 7:
+                            due_str = f"due {due} ⚠️ {days_until} days"
+                        else:
+                            due_str = f"due {due}"
                     except ValueError:
-                        pass
+                        due_str = f"due {due}"
+                else:
+                    due_str = "no due date"
 
-                lines.append(f"{i}. [{cat}] {title} — {due_str}{proximity}")
+                lines.append(f"{i}. [{cat}] {title} — {due_str}")
 
             await update.message.reply_text("\n".join(lines))
         except Exception as e:
@@ -2918,6 +2943,7 @@ class TelegramChatHandler:
             return "No active projects found."
 
         lines = [f"Active projects ({len(projects)} total):"]
+        today = datetime.now().date()
 
         for i, path in enumerate(projects[:limit], 1):
             fm = self._parse_frontmatter(path)
@@ -2925,7 +2951,14 @@ class TelegramChatHandler:
             title = fm.get("source_title", "")
             proj_status = fm.get("status", "")
             due = fm.get("due_date")
-            due_str = f"due {due}" if due else "no due date"
+            if due:
+                try:
+                    overdue = datetime.strptime(str(due), "%Y-%m-%d").date() < today
+                except ValueError:
+                    overdue = False
+                due_str = f"was due {due} ⚠️ OVERDUE" if overdue else f"due {due}"
+            else:
+                due_str = "no due date"
 
             milestones = fm.get("milestones", [])
             if milestones:
@@ -2968,13 +3001,21 @@ class TelegramChatHandler:
                     await update.message.reply_text("No projects found.")
                     return
                 lines = [f"{status.capitalize() if status else 'All'} projects ({len(projects)} total):"]
+                today = datetime.now().date()
                 for i, path in enumerate(projects, 1):
                     fm = self._parse_frontmatter(path)
                     cat = fm.get("category", "")
                     title = fm.get("source_title", "")
                     proj_status = fm.get("status", "")
                     due = fm.get("due_date")
-                    due_str = f"due {due}" if due else "no due date"
+                    if due:
+                        try:
+                            overdue = datetime.strptime(str(due), "%Y-%m-%d").date() < today
+                        except ValueError:
+                            overdue = False
+                        due_str = f"was due {due} ⚠️ OVERDUE" if overdue else f"due {due}"
+                    else:
+                        due_str = "no due date"
                     milestones = fm.get("milestones", [])
                     if milestones:
                         done_count = sum(1 for m in milestones if m.get("done"))

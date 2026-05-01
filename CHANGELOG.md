@@ -7,6 +7,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Commitment day checkpoints**: `notification_manager` now sends a midday summary (default 12:00) and an end-of-day reminder (default 17:00) for all active commitments due that day. Each slot fires at most once per calendar day and is silently skipped if the daemon was offline more than 2 hours past the scheduled time. Configurable via `notifications.midday_alert_time` and `notifications.eod_alert_time` in `config.yaml` (#106).
 - `/pending` Telegram command: unified inbox showing the count of all items awaiting human review — project/repo candidates, pending agent actions, and skill drafts. Points to `/review`, `/actions`, and `/skill_drafts` for detail (#20).
 - `/todos` Telegram command: shows all active commitments as a `[ ]` checklist. Supports `/todos done N [M…]` to mark complete and `/todos dismiss N` to dismiss. Personal todos are shown without a type tag; extracted commitments show their type in brackets (e.g. `[outbound]`). Populates the shared commitment index so `/complete N` also works after a `/todos` listing (#51).
 - `usage_tracker`: records prompt/completion token counts per model per day from every LiteLLM call in `skill_executor`. State stored in `~/secondbrain/usage-tracker-state.json` with 30-day retention (#13).
@@ -16,8 +17,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `/project_note <N> <text>` — append a timestamped note to a project conversationally (#18).
 - `/project_due <N> <YYYY-MM-DD|none>` — update or clear a project's due date (#18).
 - `/changes [hours]` Telegram command: scans all active goals and projects, finds related memory files updated in the last N hours (default 24, max 168), and sends a concise LLM-generated activity digest per item — one paragraph per project/goal with recent activity. Implemented in `GoalProjectAgent.generate_change_digest()` (#74).
+- `install.sh` now runs a Python smoke import (`import daemon` + `from chat_handler import TelegramChatHandler` on full role) after deploying source files and before reloading launchd. If the deployed artefact would crash at import time, the installer exits 1 and leaves the running daemon untouched.
 
 ### Fixed
+- `/commitments`, `/todos`: past-due active items now display `was due <date> ⚠️` instead of the bare date, so overdue deliverables are visually flagged rather than silently showing a stale date. Same fix applied to `/goals` (shows `was due <date> ⚠️ OVERDUE`) and `/projects` (shows `was due <date> ⚠️ OVERDUE`) (#103).
 - `notification_manager`: malformed or null frontmatter in any memory-cache entry no longer aborts `_assemble_briefing`, `_check_commitment_alerts`, or `_check_pre_meeting_alerts` — each `json.loads` call is now individually guarded by `try/except (JSONDecodeError, TypeError)`. Additionally, `_check_and_send` now runs each check (`_check_daily_briefing`, `_check_commitment_alerts`, etc.) in its own `try/except` so a single failing check cannot silence subsequent ones (#52).
 - `usage_tracker.record_usage`: read-modify-write on the state JSON is now protected by a module-level `threading.Lock`, preventing lost increments when multiple async loops call it concurrently (#13).
 - `skill_optimizer`: all four `acompletion` call sites now record token usage via `record_usage`, so `/usage` totals include judge and optimizer traffic (#13).

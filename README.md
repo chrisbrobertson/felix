@@ -488,9 +488,21 @@ MAX_REVIEW_CYCLES=5 scripts/babysit-with-review.sh
 
 When unmuted, the bot sends:
 - **Daily briefing** at the configured time (default 7:30 AM): today's calendar, due/overdue commitments, active projects (with milestone progress and `[new]` marker for recent ones), new memories since yesterday
+- **Midday check-in** (default 12:00 PM): summary of all active commitments still due today
+- **End-of-day reminder** (default 5:00 PM): final summary of commitments due today with a prompt to mark any done via `/complete N`
 - **Pre-meeting context** 10 minutes before each calendar event: attendees, related commitments, recent email/Slack threads
 - **Commitment deadline alerts** when items are due today or tomorrow
 - **LLM chat refresh nudge** when imported Claude/ChatGPT conversations are stale (default: 14 days since last import, with 7-day cooldown between nudges)
+
+Configure notification times in `config.yaml`:
+```yaml
+notifications:
+  briefing_time: "07:30"      # Daily morning briefing
+  midday_alert_time: "12:00"  # Midday commitment check-in
+  eod_alert_time: "17:00"     # End-of-day commitment reminder
+```
+
+Each checkpoint fires at most once per calendar day. If the daemon is offline when a checkpoint time passes, the alert fires on restart only if still within 2 hours of the scheduled time — stale reminders are silently skipped.
 
 Muted state persists across daemon restarts. `/briefing` works even when muted — useful for manually checking in without turning on auto-notifications.
 
