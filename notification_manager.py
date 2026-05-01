@@ -243,9 +243,16 @@ class NotificationManager:
                 continue
 
             try:
-                due_date = datetime.fromisoformat(due_date_str).date()
+                due_date = datetime.fromisoformat(str(due_date_str)).date()
                 if (today - due_date).days <= 1:
                     pruned_commitments.append(commitment_id)
+            except ValueError:
+                log.warning(
+                    "_prune_sent_alerts: unparseable due_date %r in commitment %s — pruning",
+                    due_date_str,
+                    commitment_id,
+                )
+                pruned_commitments.append(commitment_id)
             except Exception:
                 pruned_commitments.append(commitment_id)
 
@@ -596,6 +603,8 @@ class NotificationManager:
                         else ""
                     )
                     lines.append(f"• {label}{proj['title']}{due_part}{ms_part}")
+                if len(active_projects) > 10:
+                    lines.append(f"  …and {len(active_projects) - 10} more.")
         except Exception:
             log.exception("briefing: error building active projects section")
 
@@ -673,7 +682,14 @@ class NotificationManager:
                 continue
 
             try:
-                due_date = datetime.fromisoformat(due_date_str).date()
+                due_date = datetime.fromisoformat(str(due_date_str)).date()
+            except ValueError:
+                log.warning(
+                    "commitment_alerts: unparseable due_date %r in %s — skipping",
+                    due_date_str,
+                    fm.get("source_title", "?"),
+                )
+                continue
             except Exception:
                 continue
 

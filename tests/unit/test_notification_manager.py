@@ -610,6 +610,33 @@ async def test_briefing_skips_project_candidates(tmp_path):
     assert "Should Be Hidden" not in briefing
 
 
+@pytest.mark.asyncio
+async def test_briefing_active_projects_overflow_marker(tmp_path):
+    """When >10 active projects exist, briefing shows overflow marker."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+
+    # Create 12 active projects
+    for i in range(12):
+        make_project(memories_dir, f"proj{i:02d}", f"Project {i+1}", status="active")
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "MEMORIES_DIR", memories_dir):
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
+            with patch.object(mgr, "_get_local_now", return_value=now):
+                briefing = await mgr._assemble_briefing()
+
+    assert "Active projects (12)" in briefing
+    assert "…and 2 more." in briefing
+
+
 # ── Commitment Alerts ─────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

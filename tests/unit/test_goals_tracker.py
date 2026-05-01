@@ -417,6 +417,42 @@ def test_append_goal_note_accumulates(manager, memories_dir):
     assert "note two" in fm["notes"]
 
 
+def test_goal_add_note_updates_body_notes_section(manager, memories_dir):
+    """After add_note, ## Notes section in body matches frontmatter."""
+    path = manager.create_goal(title="Body Sync Test", category="work")
+    manager.append_goal_note(path, "this is a test note")
+
+    with open(path) as f:
+        content = f.read()
+
+    # Extract body (everything after the second ---)
+    parts = content.split("---\n", 2)
+    assert len(parts) == 3
+    body = parts[2]
+
+    # Verify ## Notes section exists in body
+    assert "## Notes" in body
+    assert "this is a test note" in body
+
+
+def test_project_add_note_updates_body_notes_section(manager, memories_dir):
+    """After add_note, ## Notes section in body matches frontmatter."""
+    path = manager.create_project(title="Project Body Test", category="work")
+    manager.append_project_note(path, "project note content")
+
+    with open(path) as f:
+        content = f.read()
+
+    # Extract body
+    parts = content.split("---\n", 2)
+    assert len(parts) == 3
+    body = parts[2]
+
+    # Verify ## Notes section exists in body
+    assert "## Notes" in body
+    assert "project note content" in body
+
+
 # ── update_goal_due Tests ─────────────────────────────────────────────────────
 
 def test_update_goal_due_sets_date(manager, memories_dir):
