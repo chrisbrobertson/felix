@@ -2581,23 +2581,6 @@ async def test_briefing_skips_malformed_commitment_entry(tmp_path):
         commitment_type="outbound",
         due_date=today_str,
     )
-=======
-
-    # Build an enabled cache from the good file
-    db_path = tmp_path / "test-cache.sqlite"
-    cache = MemoryCache(db_path, memories_dir, enabled=True)
-    await cache.rebuild()
-
-    # Inject a row with NULL frontmatter to simulate a corrupted/legacy cache entry.
-    cache._conn.execute(
-        """INSERT OR REPLACE INTO memories
-           (filename, mtime, size, type, status, prefix, frontmatter, header500, body, indexed_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        ("commitment-bad-xxyyzz998877.md", 0.0, 0, "commitment", "active",
-         "commitment", None, "", "", time.time()),
-    )
-    cache._conn.commit()
->>>>>>> d8085cc (fix(blocking): sync close_issue to GitHub before mutating local file; fix promote archive; harden malformed-frontmatter tests)
 
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -2617,7 +2600,6 @@ async def test_briefing_skips_malformed_commitment_entry(tmp_path):
 
     with patch.object(nm, "CONFIG_PATH", config_file):
         with patch.object(nm, "MEMORIES_DIR", memories_dir):
-<<<<<<< HEAD
             mgr = NotificationManager(cache=_make_cache(memories_dir))
             _real_qbt = mgr._cache.query_by_type
 
