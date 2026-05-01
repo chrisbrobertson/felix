@@ -1242,3 +1242,135 @@ New improved instructions that are more specific.
     rewritten_bytes = skill_path.read_bytes()
     expected_checksum = hashlib.sha256(rewritten_bytes).hexdigest()
     assert new_checksum == expected_checksum
+
+
+# --- lean_issues field in critique (skill-creator methodology, #102) ---
+
+@pytest.mark.asyncio
+async def test_critique_includes_lean_issues_in_json_output(optimizer, skills_dir, memories_dir):
+    """critique JSON returned by _generate_critique always has a lean_issues list."""
+    rows = [{"date": "2026-04-14", "slug": "test-a1b2c3", "model": "gemini", "score": "0.45"}]
+    skill_content = create_skill_file("test-skill", total_runs=15, success_rate=0.50,
+                                      history_rows=rows)
+    skill_path = skills_dir / "test-skill.md"
+    skill_path.write_text(skill_content)
+
+    mem = memories_dir / "2026-04-14-test-a1b2c3-hash.md"
+    mem.write_text("---\nsource_url: test\n---\n\nContent body.")
+
+    critique_json = json.dumps({
+        "failure_patterns": ["missing entities"],
+        "root_cause": "entities not extracted",
+        "suggested_focus": "entity extraction",
+        "lean_issues": ["ALWAYS include a summary — this adds noise"]
+    })
+    mock_response = Mock()
+    mock_response.choices = [Mock(message=Mock(content=critique_json))]
+
+    with patch("skill_optimizer.acompletion", new=AsyncMock(return_value=mock_response)):
+        critique = await optimizer._generate_critique(skill_path)
+
+    assert critique is not None
+    assert "lean_issues" in critique
+    assert isinstance(critique["lean_issues"], list)
+    assert len(critique["lean_issues"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_critique_lean_issues_defaults_to_empty_list_when_absent(optimizer, skills_dir, memories_dir):
+    """If LLM omits lean_issues, _generate_critique normalises it to []."""
+    rows = [{"date": "2026-04-14", "slug": "test-a1b2c3", "model": "gemini", "score": "0.45"}]
+    skill_content = create_skill_file("test-skill", total_runs=15, success_rate=0.50,
+                                      history_rows=rows)
+    skill_path = skills_dir / "test-skill.md"
+    skill_path.write_text(skill_content)
+
+    mem = memories_dir / "2026-04-14-test-a1b2c3-hash.md"
+    mem.write_text("---\nsource_url: test\n---\n\nContent body.")
+
+    # Old-format critique without lean_issues field
+    critique_json = json.dumps({
+        "failure_patterns": ["missing entities"],
+        "root_cause": "entities not extracted",
+        "suggested_focus": "entity extraction"
+    })
+    mock_response = Mock()
+    mock_response.choices = [Mock(message=Mock(content=critique_json))]
+
+    with patch("skill_optimizer.acompletion", new=AsyncMock(return_value=mock_response)):
+        critique = await optimizer._generate_critique(skill_path)
+
+    assert critique is not None
+    assert critique["lean_issues"] == []
+
+
+@pytest.mark.asyncio
+async def test_critique_lean_issues_wrong_type_normalised(optimizer, skills_dir, memories_dir):
+    """If LLM returns lean_issues as a non-list (e.g. string), it is replaced with []."""
+    rows = [{"date": "2026-04-14", "slug": "test-a1b2c3", "model": "gemini", "score": "0.45"}]
+    skill_content = create_skill_file("test-skill", total_runs=15, success_rate=0.50,
+                                      history_rows=rows)
+    skill_path = skills_dir / "test-skill.md"
+    skill_path.write_text(skill_content)
+
+    mem = memories_dir / "2026-04-14-test-a1b2c3-hash.md"
+    mem.write_text("---\nsource_url: test\n---\n\nContent body.")
+
+    critique_json = json.dumps({
+        "failure_patterns": ["missing entities"],
+        "root_cause": "entities not extracted",
+        "suggested_focus": "entity extraction",
+        "lean_issues": "none"  # wrong type — should be normalised to []
+    })
+    mock_response = Mock()
+    mock_response.choices = [Mock(message=Mock(content=critique_json))]
+
+    with patch("skill_optimizer.acompletion", new=AsyncMock(return_value=mock_response)):
+        critique = await optimizer._generate_critique(skill_path)
+
+    assert critique is not None
+    assert critique["lean_issues"] == []
+
+
+@pytest.mark.asyncio
+async def test_critique_lean_issues_passed_to_rewrite_as_json(optimizer, skills_dir):
+    """lean_issues from critique appear in the JSON sent to the rewrite LLM call."""
+    skill_content = create_skill_file("test-skill", instructions="ALWAYS do X. MUST do Y.")
+    skill_path = skills_dir / "test-skill.md"
+    skill_path.write_text(skill_content)
+
+    meta_path = skills_dir / "skill-optimizer.md"
+    meta_path.write_text("""---
+name: skill-optimizer
+---
+
+## Instructions
+
+Rewrite skills.""")
+
+    critique = {
+        "failure_patterns": ["missing X"],
+        "root_cause": "X not done",
+        "suggested_focus": "do X",
+        "lean_issues": ["MUST do Y is over-specified and adds no signal"]
+    }
+
+    captured_messages = []
+
+    async def capture_call(**kwargs):
+        captured_messages.extend(kwargs.get("messages", []))
+        # Return a new skill so the rewrite doesn't no-op
+        new_skill = create_skill_file("test-skill", instructions="Do X because downstream needs it.")
+        mock = Mock()
+        mock.choices = [Mock(message=Mock(content=new_skill))]
+        return mock
+
+    with patch("skill_optimizer.acompletion", new=AsyncMock(side_effect=capture_call)):
+        await optimizer._rewrite_skill(skill_path, critique)
+
+    # The user message sent to the rewrite LLM should contain the lean_issues JSON
+    user_messages = [m for m in captured_messages if m.get("role") == "user"]
+    assert user_messages, "No user message captured"
+    content = user_messages[0]["content"]
+    assert "lean_issues" in content
+    assert "MUST do Y is over-specified" in content
