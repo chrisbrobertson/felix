@@ -2418,6 +2418,142 @@ async def test_cmd_remember_skill_failure(handler):
     assert any("Summary failed" in r or "failed" in r.lower() for r in replies)
 
 
+@pytest.mark.asyncio
+async def test_cmd_remember_deep_uses_detailed_skill(handler, brain_dir):
+    """'/remember <url> deep' must use summarize-webpage-detailed, not the default."""
+    update, ctx = _make_update(12345, ["https://example.com/article", "deep"])
+
+    with patch("chat_handler.fetch_url_content", new=AsyncMock(
+            return_value=("Article", "Long content."))), \
+         patch("chat_handler.SkillExecutor") as MockExec, \
+         patch("memory_writer.MemoryWriter") as MockWriter:
+        mock_executor_instance = MagicMock()
+        mock_executor_instance.run = AsyncMock(return_value="## Summary\nDeep notes.")
+        MockExec.return_value = mock_executor_instance
+        mock_writer_instance = MagicMock()
+        mock_writer_instance.write = AsyncMock(return_value="2026-04-28-article-abc123.md")
+        MockWriter.return_value = mock_writer_instance
+
+        await handler.cmd_remember(update, ctx)
+
+    MockExec.assert_called_once_with("summarize-webpage-detailed")
+
+
+@pytest.mark.asyncio
+async def test_cmd_remember_quick_uses_quick_skill(handler, brain_dir):
+    """'/remember <url> quick' must use summarize-webpage-quick."""
+    update, ctx = _make_update(12345, ["https://example.com/article", "quick"])
+
+    with patch("chat_handler.fetch_url_content", new=AsyncMock(
+            return_value=("Article", "Content."))), \
+         patch("chat_handler.SkillExecutor") as MockExec, \
+         patch("memory_writer.MemoryWriter") as MockWriter:
+        mock_executor_instance = MagicMock()
+        mock_executor_instance.run = AsyncMock(return_value="## Summary\nQuick.")
+        MockExec.return_value = mock_executor_instance
+        mock_writer_instance = MagicMock()
+        mock_writer_instance.write = AsyncMock(return_value="2026-04-28-article-abc123.md")
+        MockWriter.return_value = mock_writer_instance
+
+        await handler.cmd_remember(update, ctx)
+
+    MockExec.assert_called_once_with("summarize-webpage-quick")
+
+
+@pytest.mark.asyncio
+async def test_cmd_remember_numeric_depth_aliases(handler, brain_dir):
+    """Numeric depth aliases '1', '2', '3' map to quick, standard, deep."""
+    cases = [
+        ("1", "summarize-webpage-quick"),
+        ("3", "summarize-webpage-detailed"),
+    ]
+    for depth_arg, expected_skill in cases:
+        update, ctx = _make_update(12345, ["https://example.com/article", depth_arg])
+
+        with patch("chat_handler.fetch_url_content", new=AsyncMock(
+                return_value=("Article", "Content."))), \
+             patch("chat_handler.SkillExecutor") as MockExec, \
+             patch("memory_writer.MemoryWriter") as MockWriter:
+            mock_executor_instance = MagicMock()
+            mock_executor_instance.run = AsyncMock(return_value="## Summary\nNotes.")
+            MockExec.return_value = mock_executor_instance
+            mock_writer_instance = MagicMock()
+            mock_writer_instance.write = AsyncMock(return_value="file.md")
+            MockWriter.return_value = mock_writer_instance
+
+            await handler.cmd_remember(update, ctx)
+
+        MockExec.assert_called_once_with(expected_skill), f"depth '{depth_arg}' should use {expected_skill}"
+
+
+@pytest.mark.asyncio
+async def test_cmd_remember_deep_content_type_is_detailed(handler, brain_dir):
+    """Entry written with depth=deep must have content_type='detailed'."""
+    update, ctx = _make_update(12345, ["https://example.com/article", "deep"])
+
+    with patch("chat_handler.fetch_url_content", new=AsyncMock(
+            return_value=("Article", "Content."))), \
+         patch("chat_handler.SkillExecutor") as MockExec, \
+         patch("memory_writer.MemoryWriter") as MockWriter:
+        mock_executor_instance = MagicMock()
+        mock_executor_instance.run = AsyncMock(return_value="## Summary\nNotes.")
+        MockExec.return_value = mock_executor_instance
+        mock_writer_instance = MagicMock()
+        mock_writer_instance.write = AsyncMock(return_value="file.md")
+        MockWriter.return_value = mock_writer_instance
+
+        await handler.cmd_remember(update, ctx)
+
+    entry_arg = mock_writer_instance.write.call_args[0][0]
+    assert entry_arg["content_type"] == "detailed"
+
+
+@pytest.mark.asyncio
+async def test_cmd_remember_quick_content_type_is_quick(handler, brain_dir):
+    """Entry written with depth=quick must have content_type='quick'."""
+    update, ctx = _make_update(12345, ["https://example.com/article", "quick"])
+
+    with patch("chat_handler.fetch_url_content", new=AsyncMock(
+            return_value=("Article", "Content."))), \
+         patch("chat_handler.SkillExecutor") as MockExec, \
+         patch("memory_writer.MemoryWriter") as MockWriter:
+        mock_executor_instance = MagicMock()
+        mock_executor_instance.run = AsyncMock(return_value="## Summary\nNotes.")
+        MockExec.return_value = mock_executor_instance
+        mock_writer_instance = MagicMock()
+        mock_writer_instance.write = AsyncMock(return_value="file.md")
+        MockWriter.return_value = mock_writer_instance
+
+        await handler.cmd_remember(update, ctx)
+
+    entry_arg = mock_writer_instance.write.call_args[0][0]
+    assert entry_arg["content_type"] == "quick"
+
+
+@pytest.mark.asyncio
+async def test_cmd_remember_invalid_depth_falls_back_to_standard(handler, brain_dir):
+    """Unknown depth argument is treated as 'standard' (auto-detect), not an error."""
+    update, ctx = _make_update(12345, ["https://example.com/article", "bogus"])
+
+    with patch("chat_handler.fetch_url_content", new=AsyncMock(
+            return_value=("Article", "Content."))), \
+         patch("chat_handler.SkillExecutor") as MockExec, \
+         patch("memory_writer.MemoryWriter") as MockWriter, \
+         patch("skill_router.detect_content_type", return_value="default"):
+        mock_executor_instance = MagicMock()
+        mock_executor_instance.run = AsyncMock(return_value="## Summary\nNotes.")
+        MockExec.return_value = mock_executor_instance
+        mock_writer_instance = MagicMock()
+        mock_writer_instance.write = AsyncMock(return_value="file.md")
+        MockWriter.return_value = mock_writer_instance
+
+        await handler.cmd_remember(update, ctx)
+
+    # Should succeed and save — not show an error
+    replies = [call[0][0] for call in update.message.reply_text.call_args_list]
+    assert any("✅" in r for r in replies)
+
+
 # ── /note command ─────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

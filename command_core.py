@@ -163,7 +163,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
     ],
     "System": [
         ("backfill",       "Reprocess historical data: /backfill <type> [days] [host]. Types: readings, email, zoom, calendar, slack, projects"),
-        ("remember",       "Fetch a URL and save a reading memory: /remember <url>"),
+        ("remember",       "Fetch a URL and save a reading memory: /remember <url> [quick|standard|deep]"),
         ("deepen",         "Re-process reading N with deep analysis: /deepen N"),
         ("note",           "Fetch a URL and save detailed study notes: /note <url>"),
         ("rebuild_cache",  "Rebuild the memory cache from scratch (full role only)"),
