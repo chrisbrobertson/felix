@@ -2487,14 +2487,15 @@ async def test_cmd_remember_numeric_depth_aliases(handler, brain_dir):
 
 
 @pytest.mark.asyncio
-async def test_cmd_remember_deep_content_type_is_detailed(handler, brain_dir):
-    """Entry written with depth=deep must have content_type='detailed'."""
+async def test_cmd_remember_deep_passes_depth_to_writer(handler, brain_dir):
+    """depth=deep must pass depth='deep' to MemoryWriter.write() and preserve detected content_type."""
     update, ctx = _make_update(12345, ["https://example.com/article", "deep"])
 
     with patch("chat_handler.fetch_url_content", new=AsyncMock(
             return_value=("Article", "Content."))), \
          patch("chat_handler.SkillExecutor") as MockExec, \
-         patch("memory_writer.MemoryWriter") as MockWriter:
+         patch("memory_writer.MemoryWriter") as MockWriter, \
+         patch("skill_router.detect_content_type", return_value="documentation"):
         mock_executor_instance = MagicMock()
         mock_executor_instance.run = AsyncMock(return_value="## Summary\nNotes.")
         MockExec.return_value = mock_executor_instance
@@ -2504,19 +2505,22 @@ async def test_cmd_remember_deep_content_type_is_detailed(handler, brain_dir):
 
         await handler.cmd_remember(update, ctx)
 
-    entry_arg = mock_writer_instance.write.call_args[0][0]
-    assert entry_arg["content_type"] == "detailed"
+    write_call = mock_writer_instance.write.call_args
+    entry_arg = write_call[0][0]
+    assert entry_arg["content_type"] == "documentation", "content_type must reflect detected page type, not depth"
+    assert write_call[1].get("depth") == "deep", "depth='deep' must be forwarded to MemoryWriter.write()"
 
 
 @pytest.mark.asyncio
-async def test_cmd_remember_quick_content_type_is_quick(handler, brain_dir):
-    """Entry written with depth=quick must have content_type='quick'."""
+async def test_cmd_remember_quick_passes_depth_to_writer(handler, brain_dir):
+    """depth=quick must pass depth='quick' to MemoryWriter.write() and preserve detected content_type."""
     update, ctx = _make_update(12345, ["https://example.com/article", "quick"])
 
     with patch("chat_handler.fetch_url_content", new=AsyncMock(
             return_value=("Article", "Content."))), \
          patch("chat_handler.SkillExecutor") as MockExec, \
-         patch("memory_writer.MemoryWriter") as MockWriter:
+         patch("memory_writer.MemoryWriter") as MockWriter, \
+         patch("skill_router.detect_content_type", return_value="documentation"):
         mock_executor_instance = MagicMock()
         mock_executor_instance.run = AsyncMock(return_value="## Summary\nNotes.")
         MockExec.return_value = mock_executor_instance
@@ -2526,8 +2530,10 @@ async def test_cmd_remember_quick_content_type_is_quick(handler, brain_dir):
 
         await handler.cmd_remember(update, ctx)
 
-    entry_arg = mock_writer_instance.write.call_args[0][0]
-    assert entry_arg["content_type"] == "quick"
+    write_call = mock_writer_instance.write.call_args
+    entry_arg = write_call[0][0]
+    assert entry_arg["content_type"] == "documentation", "content_type must reflect detected page type, not depth"
+    assert write_call[1].get("depth") == "quick", "depth='quick' must be forwarded to MemoryWriter.write()"
 
 
 @pytest.mark.asyncio
