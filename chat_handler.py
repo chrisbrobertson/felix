@@ -4285,25 +4285,28 @@ class TelegramChatHandler:
         "3": "deep", "d": "deep", "deep": "deep", "detailed": "deep", "note": "deep",
     }
 
-    def _skill_for_depth(self, url: str, content: str, depth: str) -> tuple[str, str]:
-        """Return (skill_name, content_type) for the requested depth level.
+    def _skill_for_depth(self, url: str, content: str, depth: str) -> tuple[str, str, str]:
+        """Return (skill_name, content_type, actual_depth) for the requested depth level.
 
         The skill name is chosen based on depth; content_type is always auto-detected
         so frontmatter accurately reflects the page type regardless of capture depth.
+        actual_depth may differ from the requested depth when standard auto-routing
+        promotes a long article or research paper to deep.
 
         quick    → summarize-webpage-quick (concise 3-point capture)
-        standard → auto-detect skill via skill_router (default)
+        standard → get_skill_and_depth() — promotes 2000+ word articles to deep
         deep     → summarize-webpage-detailed (rich notes, same as /note)
         """
-        from skill_router import detect_content_type, SKILL_REGISTRY
+        from skill_router import detect_content_type, get_skill_and_depth
         content_type = detect_content_type(url=url, content=content[:3000])
         if depth == "quick":
-            return "summarize-webpage-quick", content_type
+            return "summarize-webpage-quick", content_type, "quick"
         if depth == "deep":
-            return "summarize-webpage-detailed", content_type
-        # standard: auto-detect skill too
-        skill_name = SKILL_REGISTRY.get(content_type, "summarize-webpage")
-        return skill_name, content_type
+            return "summarize-webpage-detailed", content_type, "deep"
+        # standard: delegate to get_skill_and_depth for word-count-aware routing
+        word_count = len(content.split())
+        skill_name, actual_depth = get_skill_and_depth(content_type, word_count)
+        return skill_name, content_type, actual_depth
 
     async def cmd_remember(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Fetch a URL and save a reading memory: /remember <url> [quick|standard|deep]"""
@@ -4336,7 +4339,7 @@ class TelegramChatHandler:
                 )
                 return
 
-            skill_name, content_type = self._skill_for_depth(url, content, depth)
+            skill_name, content_type, actual_depth = self._skill_for_depth(url, content, depth)
             executor = SkillExecutor(skill_name)
             memory_body = await executor.run({"url": url, "title": title or url, "content": content})
 
@@ -4351,7 +4354,7 @@ class TelegramChatHandler:
                 "browser": "telegram",
                 "content_type": content_type,
             }
-            filename = await MemoryWriter().write(entry, memory_body, depth=depth)
+            filename = await MemoryWriter().write(entry, memory_body, depth=actual_depth)
             preview = memory_body[:300].replace("\n", " ")
             await self._send_reply(
                 update,

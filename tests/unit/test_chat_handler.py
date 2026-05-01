@@ -2560,6 +2560,57 @@ async def test_cmd_remember_invalid_depth_falls_back_to_standard(handler, brain_
     assert any("✅" in r for r in replies)
 
 
+@pytest.mark.asyncio
+async def test_cmd_remember_standard_long_article_promotes_to_deep(handler, brain_dir):
+    """Standard auto-routing must select summarize-deep and write depth='deep' for 2000+ word articles."""
+    update, ctx = _make_update(12345, ["https://example.com/article"])
+
+    with patch("chat_handler.fetch_url_content", new=AsyncMock(
+            return_value=("Article", "word " * 2001))), \
+         patch("skill_router.detect_content_type", return_value="default"), \
+         patch("skill_router.get_skill_and_depth", return_value=("summarize-deep", "deep")) as mock_route, \
+         patch("chat_handler.SkillExecutor") as MockExec, \
+         patch("memory_writer.MemoryWriter") as MockWriter:
+        mock_executor_instance = MagicMock()
+        mock_executor_instance.run = AsyncMock(return_value="## Summary\nDeep notes.")
+        MockExec.return_value = mock_executor_instance
+        mock_writer_instance = MagicMock()
+        mock_writer_instance.write = AsyncMock(return_value="2026-04-28-article-abc123.md")
+        MockWriter.return_value = mock_writer_instance
+
+        await handler.cmd_remember(update, ctx)
+
+    MockExec.assert_called_once_with("summarize-deep")
+    write_call = mock_writer_instance.write.call_args
+    assert write_call[1].get("depth") == "deep", "auto-promoted long article must write depth='deep' to frontmatter"
+    mock_route.assert_called_once_with("default", 2001)
+
+
+@pytest.mark.asyncio
+async def test_cmd_remember_standard_research_paper_promotes_to_deep(handler, brain_dir):
+    """Standard auto-routing must select summarize-deep and write depth='deep' for research papers."""
+    update, ctx = _make_update(12345, ["https://arxiv.org/abs/1234.5678"])
+
+    with patch("chat_handler.fetch_url_content", new=AsyncMock(
+            return_value=("Paper Title", "abstract methodology conclusion references"))), \
+         patch("skill_router.detect_content_type", return_value="research-paper"), \
+         patch("skill_router.get_skill_and_depth", return_value=("summarize-deep", "deep")) as mock_route, \
+         patch("chat_handler.SkillExecutor") as MockExec, \
+         patch("memory_writer.MemoryWriter") as MockWriter:
+        mock_executor_instance = MagicMock()
+        mock_executor_instance.run = AsyncMock(return_value="## Summary\nPaper notes.")
+        MockExec.return_value = mock_executor_instance
+        mock_writer_instance = MagicMock()
+        mock_writer_instance.write = AsyncMock(return_value="2026-04-28-paper-abc123.md")
+        MockWriter.return_value = mock_writer_instance
+
+        await handler.cmd_remember(update, ctx)
+
+    MockExec.assert_called_once_with("summarize-deep")
+    write_call = mock_writer_instance.write.call_args
+    assert write_call[1].get("depth") == "deep", "research paper must write depth='deep' to frontmatter"
+
+
 # ── /note command ─────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
