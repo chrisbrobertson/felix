@@ -862,3 +862,141 @@ async def test_run_with_tools_returns_none_when_all_models_timeout(skills_dir):
         )
 
     assert result is None
+
+
+# --- Few-shot examples (multi-shot summarization pattern, issue #104) ---
+
+SKILL_WITH_EXAMPLES = """\
+---
+name: summarize-webpage
+version: 1
+preferred_model: gemini/gemini-2.0-flash
+fallback_model: claude-haiku-4-5-20251001
+success_rate: null
+total_runs: 0
+---
+
+## Instructions
+
+You are creating a long-term memory entry from a webpage.
+
+## Examples
+
+### Example 1
+**Input:**
+Title: Asyncio Guide
+URL: https://docs.python.org/asyncio
+Content: asyncio is a library for concurrent code using async/await.
+
+**Output:**
+## Summary
+Python asyncio enables concurrent I/O using async/await.
+
+**Key Points**
+- Single-threaded event loop handles concurrent tasks
+
+**Entities**
+- asyncio: Python async library
+
+**Tags:** python, async
+
+## Execution History
+
+| date | input_slug | model | score | notes |
+|------|-----------|-------|-------|-------|
+"""
+
+
+@pytest.fixture
+def executor_with_examples(tmp_path):
+    d = tmp_path / "skills"
+    d.mkdir()
+    (d / "summarize-webpage.md").write_text(SKILL_WITH_EXAMPLES)
+    with patch.object(se, "SKILLS_DIR", d):
+        yield se.SkillExecutor("summarize-webpage", role="full")
+
+
+def test_parse_examples_extracts_input_and_output():
+    """_parse_examples() correctly parses a well-formed ## Examples section."""
+    text = (
+        "### Example 1\n"
+        "**Input:**\nTitle: Foo\nContent: bar\n\n"
+        "**Output:**\n## Summary\nFoo is bar.\n"
+    )
+    examples = se._parse_examples(text)
+    assert len(examples) == 1
+    assert examples[0]["input"] == "Title: Foo\nContent: bar"
+    assert examples[0]["output"] == "## Summary\nFoo is bar."
+
+
+def test_parse_examples_empty_returns_empty():
+    assert se._parse_examples("") == []
+    assert se._parse_examples("   ") == []
+
+
+def test_parse_examples_multiple():
+    """Two examples are both parsed."""
+    text = (
+        "### Example 1\n"
+        "**Input:**\nInput A\n\n**Output:**\nOutput A\n\n"
+        "### Example 2\n"
+        "**Input:**\nInput B\n\n**Output:**\nOutput B\n"
+    )
+    examples = se._parse_examples(text)
+    assert len(examples) == 2
+    assert examples[0]["input"] == "Input A"
+    assert examples[1]["output"] == "Output B"
+
+
+def test_skill_with_examples_loaded(executor_with_examples):
+    """Skill file with ## Examples section loads examples into _skill dict."""
+    examples = executor_with_examples._skill.get("examples", [])
+    assert len(examples) == 1
+    assert "Asyncio Guide" in examples[0]["input"]
+    assert "## Summary" in examples[0]["output"]
+
+
+async def test_run_injects_examples_as_few_shot_messages(executor_with_examples):
+    """When skill has ## Examples, run() injects them as user/assistant pairs before the actual input."""
+    mock_resp = MagicMock()
+    mock_resp.choices[0].message.content = "## Summary\nGreat."
+    with patch("skill_executor.acompletion", new=AsyncMock(return_value=mock_resp)) as mock_ac:
+        await executor_with_examples.run({"url": "https://x.com", "title": "X", "content": "body"})
+
+    messages = mock_ac.call_args.kwargs["messages"]
+    # With 1 example: system, example-user, example-assistant, actual-user
+    assert len(messages) == 4
+    assert messages[0]["role"] == "system"
+    assert messages[1]["role"] == "user"    # example input
+    assert messages[2]["role"] == "assistant"  # example output
+    assert messages[3]["role"] == "user"    # actual input (wrapped in untrusted-input)
+
+    # Example input is plain text; actual input has untrusted-input tags
+    assert "<untrusted-input" not in messages[1]["content"]
+    assert "<untrusted-input" in messages[3]["content"]
+    assert "## Summary" in messages[2]["content"]
+
+
+async def test_run_without_examples_still_has_two_messages(executor_full):
+    """When skill has no ## Examples, run() produces the original system+user structure."""
+    mock_resp = MagicMock()
+    mock_resp.choices[0].message.content = "## Summary\nOk."
+    with patch("skill_executor.acompletion", new=AsyncMock(return_value=mock_resp)) as mock_ac:
+        await executor_full.run({"url": "u", "title": "t", "content": "c"})
+
+    messages = mock_ac.call_args.kwargs["messages"]
+    assert len(messages) == 2
+    assert messages[0]["role"] == "system"
+    assert messages[1]["role"] == "user"
+
+
+async def test_run_example_output_is_exact_assistant_content(executor_with_examples):
+    """The example output text is passed verbatim as the assistant message content."""
+    mock_resp = MagicMock()
+    mock_resp.choices[0].message.content = "output"
+    with patch("skill_executor.acompletion", new=AsyncMock(return_value=mock_resp)) as mock_ac:
+        await executor_with_examples.run({"url": "u", "title": "t", "content": "c"})
+
+    messages = mock_ac.call_args.kwargs["messages"]
+    assistant_msg = messages[2]["content"]
+    assert "asyncio enables concurrent I/O" in assistant_msg

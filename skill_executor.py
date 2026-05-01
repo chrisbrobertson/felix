@@ -71,6 +71,32 @@ def _format_inputs(inputs: dict) -> str:
     return "\n".join(parts)
 
 
+def _parse_examples(examples_text: str) -> list:
+    """Parse ## Examples section text into a list of {input, output} dicts.
+
+    Expected format in skill files:
+        ### Example N
+        **Input:**
+        <raw input text>
+
+        **Output:**
+        <expected output text>
+    """
+    if not examples_text.strip():
+        return []
+    examples = []
+    parts = re.split(r'^### Example \d+[^\n]*$', examples_text, flags=re.MULTILINE)
+    for part in parts[1:]:
+        input_m = re.search(r'\*\*Input:\*\*\n(.*?)(?=\n\*\*Output:\*\*)', part, re.DOTALL)
+        output_m = re.search(r'\*\*Output:\*\*\n(.*?)$', part, re.DOTALL)
+        if input_m and output_m:
+            examples.append({
+                "input": input_m.group(1).strip(),
+                "output": output_m.group(1).strip(),
+            })
+    return examples
+
+
 def _canonicalize_skill(content: bytes) -> bytes:
     """Strip the mutable `## Execution History` section before hashing.
 
@@ -129,7 +155,13 @@ class SkillExecutor:
         instructions_match = re.search(
             r'## Instructions\n(.*?)(?=\n## |\Z)', body, re.DOTALL)
         instructions = instructions_match.group(1).strip() if instructions_match else ""
-        return {"meta": meta, "instructions": instructions, "raw": text}
+        # Use named-section terminators here because example outputs can contain
+        # ## Summary, ## Key Points etc. — the generic \n## lookahead would stop too early.
+        examples_match = re.search(
+            r'## Examples\n(.*?)(?=\n## (?:Top Examples|Evolution Log|Execution History)|\Z)',
+            body, re.DOTALL)
+        examples = _parse_examples(examples_match.group(1) if examples_match else "")
+        return {"meta": meta, "instructions": instructions, "examples": examples, "raw": text}
 
     def _reload_if_modified(self):
         """FR-14: Reload skill if file has been modified (optimizer rewrote it)."""
@@ -154,6 +186,15 @@ class SkillExecutor:
             {"role": "system", "content": _UNTRUSTED_INPUT_PREFIX + self._skill["instructions"]},
             {"role": "user", "content": user_msg},
         ]
+        # Inject curated few-shot examples (multi-shot pattern from Anthropic cookbook)
+        # before the actual user message so the model sees desired input→output pairs.
+        examples = self._skill.get("examples", [])
+        if examples:
+            few_shot = []
+            for ex in examples:
+                few_shot.append({"role": "user", "content": ex["input"]})
+                few_shot.append({"role": "assistant", "content": ex["output"]})
+            messages = [messages[0]] + few_shot + [messages[1]]
 
         models_to_try = [preferred, fallback] if fallback else [preferred]
         last_err = None
