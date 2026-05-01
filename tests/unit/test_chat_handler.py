@@ -4437,6 +4437,18 @@ async def test_cmd_todos_non_personal_shows_type_hint(handler, brain_dir):
 
 
 @pytest.mark.asyncio
+async def test_cmd_todos_shows_owner(handler, brain_dir):
+    """/todos output includes the owner field."""
+    m = brain_dir / "memories"
+    write_commitment(m, "Send quarterly report", status="active")
+
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_todos(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "— Alice" in reply  # owner from write_commitment
+
+
+@pytest.mark.asyncio
 async def test_cmd_todos_done_completes_item(handler, brain_dir):
     """/todos done N marks the Nth item completed."""
     m = brain_dir / "memories"
@@ -6039,6 +6051,26 @@ async def test_cmd_changes_rejects_out_of_range_hours(handler, brain_dir):
     text = update.message.reply_text.call_args[0][0]
     assert "168" in text  # mentions the max
     mock_agent.generate_change_digest.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cmd_changes_uses_send_reply(handler, brain_dir):
+    """/changes calls _send_reply for retry/chunking instead of raw reply_text."""
+    from unittest.mock import AsyncMock as _AsyncMock
+    mock_agent = MagicMock()
+    mock_agent.generate_change_digest = _AsyncMock(return_value=[{
+        "type": "goal",
+        "title": "Test Goal",
+        "memory_count": 1,
+        "summary": "Some update"
+    }])
+
+    update, context = _make_update(12345, args=[])
+    with patch("goal_project_agent.GoalProjectAgent", return_value=mock_agent):
+        with patch.object(handler, "_send_reply", new_callable=_AsyncMock) as mock_send:
+            await handler.cmd_changes(update, context)
+            mock_send.assert_awaited_once()
+            assert "Test Goal" in mock_send.call_args[0][1]
 
 
 # ── /status tests ─────────────────────────────────────────────────────────────

@@ -556,7 +556,7 @@ class TelegramChatHandler:
             recent_tokens = {w for w in re.findall(r'\b\w{3,}\b', query.lower())}
             if len(recent_tokens) < 3:
                 recent_text = " ".join(
-                    turn["content"] for turn in history[-4:]
+                    turn["content"] for turn in history[-10:]
                     if turn.get("role") == "user"
                 )
                 score_query = query + " " + recent_text
@@ -1842,11 +1842,13 @@ class TelegramChatHandler:
                 due_str = f" — was due {due} ⚠️" if overdue else f" — due {due}"
             else:
                 due_str = ""
+            owner = fm.get("owner", "")
+            owner_part = f" — {owner}" if owner else ""
             ct = fm.get("commitment_type", "outbound")
             type_hint = f" [{ct}]" if ct != "personal" else ""
             needs_review = "needs-review" in (fm.get("tags") or [])
             flag = " ⚠️" if needs_review and not due_str.endswith("⚠️") else ""
-            lines.append(f"{i}. [ ] {desc}{due_str}{type_hint}{flag}")
+            lines.append(f"{i}. [ ] {desc}{owner_part}{due_str}{type_hint}{flag}")
 
         lines.append("\n/todos done N  — complete  |  /todos dismiss N  — dismiss")
         return "\n".join(lines)
@@ -3546,8 +3548,7 @@ class TelegramChatHandler:
             )
 
         msg = "\n\n".join(parts)
-        for chunk in [msg[i : i + TG_MAX_CHARS] for i in range(0, len(msg), TG_MAX_CHARS)]:
-            await update.message.reply_text(chunk)
+        await self._send_reply(update, msg)
 
     # ── /contacts command ─────────────────────────────────────────────────────
 

@@ -231,6 +231,15 @@ class GoalManager:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         existing = fm.get("notes", "") or ""
         fm["notes"] = f"{existing}\n[{ts}] {note}".strip()
+
+        # Update the ## Notes section in body to stay in sync with frontmatter
+        body = re.sub(
+            r"## Notes\n.*?(?=\n## |\Z)",
+            f"## Notes\n{fm['notes']}\n",
+            body,
+            flags=re.DOTALL,
+        )
+
         self._atomic_write(path, fm, body)
 
     def update_goal_due(self, path: Path, due_date: str) -> None:
@@ -417,6 +426,15 @@ class GoalManager:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         existing = fm.get("notes", "") or ""
         fm["notes"] = f"{existing}\n[{ts}] {note}".strip()
+
+        # Update the ## Notes section in body to stay in sync with frontmatter
+        body = re.sub(
+            r"## Notes\n.*?(?=\n## |\Z)",
+            f"## Notes\n{fm['notes']}\n",
+            body,
+            flags=re.DOTALL,
+        )
+
         self._atomic_write(path, fm, body)
 
     def update_project_due(self, path: Path, due_date: str) -> None:

@@ -6,6 +6,15 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Briefing "Active projects" section silently capped at 10 entries with no overflow marker — now appends "…and N more" when more than 10 active projects exist.
+- `/changes` command used raw `reply_text()` for chunked output, bypassing `_send_reply()` retry logic for `TimedOut`/`NetworkError` — switched to `_send_reply()`.
+- `/todos` rows omitted the `owner` field, making duplicate descriptions ambiguous — owner is now shown, matching `/commitments` style.
+- `goal_add_note` and `project_add_note` updated frontmatter `notes` field only; the `## Notes` body section became stale — both methods now re-render the body section via regex so the file has a single source of truth.
+- Mutation timeout reporting incorrectly counted tool calls that returned validation/not-found error strings as "completed" — error-response results are now excluded from the completed-mutations list.
+- Memory-context keyword scoring used `history[-4:]`, ignoring most of the 15-turn window; widened to `history[-10:]` for better retrieval on long threads.
+- `_prune_sent_alerts()` and `_check_commitment_alerts()` parsed `due_date` without `str()` coercion or warning on malformed input — applied the same normalization and warning pattern added to `_assemble_briefing()` in the EDEADLK fix.
+
 ## [1.12.0] — 2026-04-28
 
 ### Added
