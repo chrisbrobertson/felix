@@ -932,7 +932,6 @@ For `failure_patterns` and `root_cause`: cite specific evidence from the low-sco
 
 For `lean_issues`: identify instruction fragments that are:
 - Heavy-handed MUST/ALWAYS/NEVER without explaining why (adds noise, doesn't help the model understand the goal)
-- Present in both good and bad runs (not the differentiating factor)
 - Overfitted to a specific example rather than expressing a general principle
 - Redundant with other instructions, or so obvious they add no signal
 If the instructions are already lean, return an empty list.
