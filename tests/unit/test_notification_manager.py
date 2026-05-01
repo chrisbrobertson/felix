@@ -6,6 +6,7 @@ All external access (Telegram bot, filesystem) is mocked.
 import asyncio
 import json
 import os
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch

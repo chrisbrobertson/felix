@@ -115,12 +115,11 @@ def test_successful_promote_stamps_frontmatter_and_archives(tmp_path, monkeypatc
         rc = promote.main()
 
     assert rc == 0
-    # File moved to archive
-    assert not f.exists()
-    archived = memories / "archive" / "feature-request-go-fff666.md"
-    assert archived.exists()
-    # Frontmatter stamped
-    fm_text = archived.read_text().split("---", 2)[1]
+    # File stays in memories/ (not archived) — matches cmd_feature_import behaviour
+    assert f.exists()
+    assert not (memories / "archive").exists()
+    # Frontmatter stamped with github_issue_number
+    fm_text = f.read_text().split("---", 2)[1]
     fm = yaml.safe_load(fm_text)
     assert fm["github_issue_number"] == 123
     # gh was invoked once with expected labels

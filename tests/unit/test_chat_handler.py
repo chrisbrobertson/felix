@@ -1977,7 +1977,7 @@ async def test_github_fallback_when_pat_missing(handler, brain_dir):
 
 @pytest.mark.asyncio
 async def test_github_enabled_create_feature(handler, brain_dir):
-    """With GitHub enabled, /feature creates a GH issue not a local file."""
+    """With GitHub enabled, /feature creates a GH issue AND a local memory file."""
     mock_gh = AsyncMock()
     mock_gh.enabled = True
     mock_gh.create_issue = AsyncMock(return_value={
@@ -1994,11 +1994,17 @@ async def test_github_enabled_create_feature(handler, brain_dir):
     assert "kind:feature" in labels
     reply = update.message.reply_text.call_args[0][0]
     assert "42" in reply
+    # Local memory file must also exist with github_issue_number set
+    files = list((brain_dir / "memories").glob("feature-request-*.md"))
+    assert len(files) == 1
+    fm = _parse_fm(files[0])
+    assert fm.get("github_issue_number") == 42
+    assert fm.get("kind") == "feature"
 
 
 @pytest.mark.asyncio
 async def test_github_enabled_create_bug(handler, brain_dir):
-    """With GitHub enabled, /bug creates an issue with kind:bug label."""
+    """With GitHub enabled, /bug creates an issue with kind:bug label AND a local memory file."""
     mock_gh = AsyncMock()
     mock_gh.enabled = True
     mock_gh.create_issue = AsyncMock(return_value={
@@ -2013,6 +2019,12 @@ async def test_github_enabled_create_bug(handler, brain_dir):
     call = mock_gh.create_issue.call_args
     labels = call.kwargs.get("labels") or call.args[2]
     assert "kind:bug" in labels
+    # Local memory file must also exist with github_issue_number set
+    files = list((brain_dir / "memories").glob("feature-request-*.md"))
+    assert len(files) == 1
+    fm = _parse_fm(files[0])
+    assert fm.get("github_issue_number") == 7
+    assert fm.get("kind") == "bug"
 
 
 @pytest.mark.asyncio
@@ -2129,8 +2141,8 @@ async def test_feature_import_preview(handler, brain_dir):
 
 
 @pytest.mark.asyncio
-async def test_feature_import_confirm_creates_and_archives(handler, brain_dir):
-    """/feature_import confirm creates GH issues and moves local files to archive/."""
+async def test_feature_import_confirm_creates_and_retains_locally(handler, brain_dir):
+    """/feature_import confirm creates GH issues and keeps local files in memories/."""
     mock_gh = AsyncMock()
     mock_gh.enabled = True
     mock_gh.repo = "owner/repo"
@@ -2151,11 +2163,16 @@ async def test_feature_import_confirm_creates_and_archives(handler, brain_dir):
     update, ctx = _make_update(12345, ["confirm"])
     await handler.cmd_feature_import(update, ctx)
     assert mock_gh.create_issue.call_count == 2
-    # Files should be in archive/
+    # Files must remain in memories/ (not moved to archive)
+    remaining = list(memories_dir.glob("feature-request-*.md"))
+    assert len(remaining) == 2
+    # Each file must have github_issue_number stamped in frontmatter
+    for f in remaining:
+        fm = _parse_fm(f)
+        assert "github_issue_number" in fm
+    # archive/ should not exist (or be empty)
     archive = memories_dir / "archive"
-    assert archive.exists()
-    archived = list(archive.glob("feature-request-*.md"))
-    assert len(archived) == 2
+    assert not archive.exists() or not list(archive.glob("feature-request-*.md"))
     reply = update.message.reply_text.call_args[0][0]
     assert "2" in reply
 
@@ -2487,14 +2504,15 @@ async def test_cmd_remember_numeric_depth_aliases(handler, brain_dir):
 
 
 @pytest.mark.asyncio
-async def test_cmd_remember_deep_content_type_is_detailed(handler, brain_dir):
-    """Entry written with depth=deep must have content_type='detailed'."""
+async def test_cmd_remember_deep_passes_depth_to_writer(handler, brain_dir):
+    """depth=deep must pass depth='deep' to MemoryWriter.write() and preserve detected content_type."""
     update, ctx = _make_update(12345, ["https://example.com/article", "deep"])
 
     with patch("chat_handler.fetch_url_content", new=AsyncMock(
             return_value=("Article", "Content."))), \
          patch("chat_handler.SkillExecutor") as MockExec, \
-         patch("memory_writer.MemoryWriter") as MockWriter:
+         patch("memory_writer.MemoryWriter") as MockWriter, \
+         patch("skill_router.detect_content_type", return_value="documentation"):
         mock_executor_instance = MagicMock()
         mock_executor_instance.run = AsyncMock(return_value="## Summary\nNotes.")
         MockExec.return_value = mock_executor_instance
@@ -2504,19 +2522,22 @@ async def test_cmd_remember_deep_content_type_is_detailed(handler, brain_dir):
 
         await handler.cmd_remember(update, ctx)
 
-    entry_arg = mock_writer_instance.write.call_args[0][0]
-    assert entry_arg["content_type"] == "detailed"
+    write_call = mock_writer_instance.write.call_args
+    entry_arg = write_call[0][0]
+    assert entry_arg["content_type"] == "documentation", "content_type must reflect detected page type, not depth"
+    assert write_call[1].get("depth") == "deep", "depth='deep' must be forwarded to MemoryWriter.write()"
 
 
 @pytest.mark.asyncio
-async def test_cmd_remember_quick_content_type_is_quick(handler, brain_dir):
-    """Entry written with depth=quick must have content_type='quick'."""
+async def test_cmd_remember_quick_passes_depth_to_writer(handler, brain_dir):
+    """depth=quick must pass depth='quick' to MemoryWriter.write() and preserve detected content_type."""
     update, ctx = _make_update(12345, ["https://example.com/article", "quick"])
 
     with patch("chat_handler.fetch_url_content", new=AsyncMock(
             return_value=("Article", "Content."))), \
          patch("chat_handler.SkillExecutor") as MockExec, \
-         patch("memory_writer.MemoryWriter") as MockWriter:
+         patch("memory_writer.MemoryWriter") as MockWriter, \
+         patch("skill_router.detect_content_type", return_value="documentation"):
         mock_executor_instance = MagicMock()
         mock_executor_instance.run = AsyncMock(return_value="## Summary\nNotes.")
         MockExec.return_value = mock_executor_instance
@@ -2526,8 +2547,10 @@ async def test_cmd_remember_quick_content_type_is_quick(handler, brain_dir):
 
         await handler.cmd_remember(update, ctx)
 
-    entry_arg = mock_writer_instance.write.call_args[0][0]
-    assert entry_arg["content_type"] == "quick"
+    write_call = mock_writer_instance.write.call_args
+    entry_arg = write_call[0][0]
+    assert entry_arg["content_type"] == "documentation", "content_type must reflect detected page type, not depth"
+    assert write_call[1].get("depth") == "quick", "depth='quick' must be forwarded to MemoryWriter.write()"
 
 
 @pytest.mark.asyncio
@@ -5029,7 +5052,8 @@ def test_resolve_feature_by_numeric_index_still_works(handler, brain_dir):
 
 # ── _close_issue_text tests ────────────────────────────────────────────────
 
-def test_close_issue_by_short_id(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_issue_by_short_id(handler, brain_dir):
     """_close_issue_text updates status when short_id matches."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
@@ -5040,7 +5064,7 @@ def test_close_issue_by_short_id(handler, brain_dir):
         "short_id: abc123\n---\n\n## Bug\nPDF export doesn't work\n"
     )
 
-    result = handler._close_issue_text(short_id="abc123", status="done")
+    result = await handler._close_issue_text(short_id="abc123", status="done")
 
     assert "Closed" in result
     assert "abc123" in result
@@ -5052,7 +5076,8 @@ def test_close_issue_by_short_id(handler, brain_dir):
     assert "status: new" not in content
 
 
-def test_close_issue_by_title(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_issue_by_title(handler, brain_dir):
     """_close_issue_text updates status when title substring matches."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
@@ -5063,7 +5088,7 @@ def test_close_issue_by_title(handler, brain_dir):
         "short_id: def456\n---\n\n## Request\nDark mode needed\n"
     )
 
-    result = handler._close_issue_text(title="dark mode", status="done")
+    result = await handler._close_issue_text(title="dark mode", status="done")
 
     assert "Closed" in result
     assert "def456" in result
@@ -5074,7 +5099,8 @@ def test_close_issue_by_title(handler, brain_dir):
     assert "status: done" in content
 
 
-def test_close_issue_title_ambiguous(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_issue_title_ambiguous(handler, brain_dir):
     """_close_issue_text returns disambiguation list when multiple titles match."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
@@ -5091,7 +5117,7 @@ def test_close_issue_title_ambiguous(handler, brain_dir):
         "short_id: bbb222\n---\n\n## Bug\n"
     )
 
-    result = handler._close_issue_text(title="PDF")
+    result = await handler._close_issue_text(title="PDF")
 
     assert "Multiple matches" in result
     assert "aaa111" in result
@@ -5103,18 +5129,20 @@ def test_close_issue_title_ambiguous(handler, brain_dir):
     assert "status: new" in file2.read_text()
 
 
-def test_close_issue_not_found(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_issue_not_found(handler, brain_dir):
     """_close_issue_text returns error when short_id not found."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
 
-    result = handler._close_issue_text(short_id="xxxxxx")
+    result = await handler._close_issue_text(short_id="xxxxxx")
 
     assert "No issue found" in result
     assert "xxxxxx" in result
 
 
-def test_close_issue_custom_status(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_issue_custom_status(handler, brain_dir):
     """_close_issue_text writes custom status correctly."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
@@ -5125,31 +5153,111 @@ def test_close_issue_custom_status(handler, brain_dir):
         "short_id: ghi789\n---\n\n## Request\n"
     )
 
-    result = handler._close_issue_text(short_id="ghi789", status="wont_do")
+    result = await handler._close_issue_text(short_id="ghi789", status="wont_do")
 
-    assert "wont_do" in result
+    # Tool enum uses underscores; handler normalizes to hyphens before writing.
+    assert "wont-do" in result
 
-    # Verify file was updated with custom status
+    # Verify file was updated with the normalized (hyphen) form
     content = feature_file.read_text()
-    assert "status: wont_do" in content
+    assert "status: wont-do" in content
     assert "status: new" not in content
 
 
-def test_close_issue_no_params_returns_error(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_issue_no_params_returns_error(handler, brain_dir):
     """_close_issue_text returns error when neither short_id nor title provided."""
-    result = handler._close_issue_text()
+    result = await handler._close_issue_text()
     assert "Provide either short_id or title" in result
 
 
-def test_close_issue_title_not_found(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_issue_title_not_found(handler, brain_dir):
     """_close_issue_text returns error when title matches nothing."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
 
-    result = handler._close_issue_text(title="nonexistent feature")
+    result = await handler._close_issue_text(title="nonexistent feature")
 
     assert "No issue found" in result
     assert "nonexistent feature" in result
+
+
+@pytest.mark.asyncio
+async def test_close_issue_github_backed_wont_do(handler, brain_dir):
+    """close_issue with wont_do on a GH-backed file closes the GH issue as not_planned."""
+    memories_dir = brain_dir / "memories"
+    memories_dir.mkdir(exist_ok=True)
+    feature_file = memories_dir / "feature-request-feature-abc111.md"
+    feature_file.write_text(
+        "---\ntitle: Old feature\ntype: feature_request\nkind: feature\nstatus: new\n"
+        "short_id: abc111\ngithub_issue_number: 42\n---\n\n## Request\n"
+    )
+
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.get_issue = AsyncMock(return_value={"labels": [], "state": "open"})
+    mock_gh.update_issue = AsyncMock()
+    mock_gh.replace_labels = AsyncMock()
+    handler.github = mock_gh
+
+    result = await handler._close_issue_text(short_id="abc111", status="wont_do")
+
+    assert "wont-do" in result
+    # GH issue must be closed as not_planned
+    mock_gh.update_issue.assert_awaited_once_with(42, state="closed", state_reason="not_planned")
+    # Local file must carry the normalized form
+    assert "status: wont-do" in feature_file.read_text()
+
+
+@pytest.mark.asyncio
+async def test_close_issue_github_backed_in_progress(handler, brain_dir):
+    """close_issue with in_progress on a GH-backed file adds status:in-progress label."""
+    memories_dir = brain_dir / "memories"
+    memories_dir.mkdir(exist_ok=True)
+    feature_file = memories_dir / "feature-request-feature-abc222.md"
+    feature_file.write_text(
+        "---\ntitle: WIP feature\ntype: feature_request\nkind: feature\nstatus: new\n"
+        "short_id: abc222\ngithub_issue_number: 55\n---\n\n## Request\n"
+    )
+
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.get_issue = AsyncMock(return_value={"labels": [], "state": "open"})
+    mock_gh.update_issue = AsyncMock()
+    mock_gh.replace_labels = AsyncMock()
+    handler.github = mock_gh
+
+    result = await handler._close_issue_text(short_id="abc222", status="in_progress")
+
+    assert "in-progress" in result
+    # GH issue must get status:in-progress label (no close call)
+    mock_gh.replace_labels.assert_awaited_once_with(55, ["status:in-progress"])
+    mock_gh.update_issue.assert_not_awaited()
+    assert "status: in-progress" in feature_file.read_text()
+
+
+@pytest.mark.asyncio
+async def test_close_issue_github_failure_leaves_local_unchanged(handler, brain_dir):
+    """When GitHub sync fails, local file must not be modified."""
+    memories_dir = brain_dir / "memories"
+    memories_dir.mkdir(exist_ok=True)
+    original = (
+        "---\ntitle: Fragile feature\ntype: feature_request\nkind: feature\nstatus: new\n"
+        "short_id: abc333\ngithub_issue_number: 99\n---\n\n## Request\n"
+    )
+    feature_file = memories_dir / "feature-request-feature-abc333.md"
+    feature_file.write_text(original)
+
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.get_issue = AsyncMock(side_effect=RuntimeError("network error"))
+    handler.github = mock_gh
+
+    result = await handler._close_issue_text(short_id="abc333", status="done")
+
+    assert "GitHub sync failed" in result
+    assert feature_file.read_text() == original
 
 
 # ── Document upload tests ─────────────────────────────────────────────────────

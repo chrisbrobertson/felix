@@ -1729,8 +1729,10 @@ class TelegramChatHandler:
         lines.append("\nUse /complete N or /dismiss N to update status.")
         return "\n".join(lines)
 
-    def _close_issue_text(self, short_id=None, title=None, status="done") -> str:
+    async def _close_issue_text(self, short_id=None, title=None, status="done") -> str:
         """Close or update a bug/feature request. Used by close_issue tool."""
+        # Tool enum uses underscores; internals (GH labels, local frontmatter) use hyphens.
+        status = {"wont_do": "wont-do", "in_progress": "in-progress"}.get(status, status)
         memories = list((BRAIN_DIR / "memories").glob("feature-request-*.md"))
         match = None
 
@@ -1760,13 +1762,28 @@ class TelegramChatHandler:
         else:
             return "Provide either short_id or title."
 
+        fm = self._parse_frontmatter(match)
+
+        # Sync to GitHub first (before touching local) so the two stores stay consistent.
+        # If GitHub rejects the update, return an error without mutating the local file.
+        gh_number = fm.get("github_issue_number")
+        if gh_number:
+            if not self.github.enabled:
+                return (
+                    f"Cannot update GitHub issue #{gh_number}: "
+                    "GitHub integration not configured (GITHUB_PAT / GITHUB_REPO missing)"
+                )
+            try:
+                await self._gh_set_status(gh_number, status)
+            except Exception as gh_e:
+                return f"GitHub sync failed for #{gh_number}: {gh_e}"
+
         try:
             text = match.read_text()
             updated = re.sub(r'^status:\s*\S+', f'status: {status}', text, flags=re.MULTILINE)
             tmp = match.with_suffix(".tmp")
             tmp.write_text(updated)
             os.rename(str(tmp), str(match))
-            fm = self._parse_frontmatter(match)
             return f"Closed [{fm.get('short_id')}] {(fm.get('title') or '')[:60]} → {status}"
         except Exception as e:
             return f"Error updating issue: {e}"
@@ -4300,17 +4317,20 @@ class TelegramChatHandler:
     def _skill_for_depth(self, url: str, content: str, depth: str) -> tuple[str, str]:
         """Return (skill_name, content_type) for the requested depth level.
 
+        The skill name is chosen based on depth; content_type is always auto-detected
+        so frontmatter accurately reflects the page type regardless of capture depth.
+
         quick    → summarize-webpage-quick (concise 3-point capture)
-        standard → auto-detect via skill_router (default)
+        standard → auto-detect skill via skill_router (default)
         deep     → summarize-webpage-detailed (rich notes, same as /note)
         """
-        if depth == "quick":
-            return "summarize-webpage-quick", "quick"
-        if depth == "deep":
-            return "summarize-webpage-detailed", "detailed"
-        # standard: auto-detect content type and route
         from skill_router import detect_content_type, SKILL_REGISTRY
         content_type = detect_content_type(url=url, content=content[:3000])
+        if depth == "quick":
+            return "summarize-webpage-quick", content_type
+        if depth == "deep":
+            return "summarize-webpage-detailed", content_type
+        # standard: auto-detect skill too
         skill_name = SKILL_REGISTRY.get(content_type, "summarize-webpage")
         return skill_name, content_type
 
@@ -4360,7 +4380,7 @@ class TelegramChatHandler:
                 "browser": "telegram",
                 "content_type": content_type,
             }
-            filename = await MemoryWriter().write(entry, memory_body)
+            filename = await MemoryWriter().write(entry, memory_body, depth=depth)
             preview = memory_body[:300].replace("\n", " ")
             await self._send_reply(
                 update,
@@ -5732,9 +5752,16 @@ class TelegramChatHandler:
         clean_desc = re.sub(r'#\w+', '', description).strip()
         title = " ".join(clean_desc.split()[:8])  # first 8 words as title
 
+        import hashlib, os
+        from datetime import datetime
+        memories_dir = BRAIN_DIR / "memories"
+        memories_dir.mkdir(parents=True, exist_ok=True)
+        slug = re.sub(r'[^a-z0-9]+', '-', title.lower())[:40].strip('-')
+        id_hash = hashlib.sha1(f"{description}{datetime.now().isoformat()}".encode()).hexdigest()[:6]
+        filename = f"feature-request-{slug}-{id_hash}.md"
+
         if self.github.enabled:
             await self._gh_ensure_labels()
-            from datetime import datetime, timedelta
             body = (
                 f"## Request\n\n{clean_desc}\n\n"
                 f"## Context\n\nCaptured via /feature command at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n\n"
@@ -5746,21 +5773,28 @@ class TelegramChatHandler:
             except Exception as e:
                 await self._send_reply(update, f"GitHub error: {e}")
                 return
+            fm = {
+                "title": clean_desc[:100],
+                "type": "feature_request",
+                "kind": "feature",
+                "status": "new",
+                "priority": "medium",
+                "created": datetime.now().isoformat(),
+                "tags": tags,
+                "short_id": id_hash,
+                "github_issue_number": issue["number"],
+            }
+            content = f"---\n{yaml.dump(fm, sort_keys=False, allow_unicode=True)}---\n\n{body}"
+            target = memories_dir / filename
+            tmp = target.with_suffix(".tmp")
+            tmp.write_text(content)
+            os.rename(tmp, target)
             await self._rewrite_features_index_snapshot()
             await self._send_reply(update,
                 f"Feature captured: '{clean_desc[:60]}' (#{issue['number']})\n{issue['html_url']}")
             return
 
         # --- local fallback ---
-        import hashlib, os
-        from datetime import datetime, timedelta
-        memories_dir = BRAIN_DIR / "memories"
-        memories_dir.mkdir(parents=True, exist_ok=True)
-
-        slug = re.sub(r'[^a-z0-9]+', '-', title.lower())[:40].strip('-')
-        id_hash = hashlib.sha1(f"{description}{datetime.now().isoformat()}".encode()).hexdigest()[:6]
-        filename = f"feature-request-{slug}-{id_hash}.md"
-
         fm = {
             "title": clean_desc[:100],
             "type": "feature_request",
@@ -5793,36 +5827,51 @@ class TelegramChatHandler:
         clean_desc = re.sub(r'#\w+', '', description).strip()
         title = " ".join(clean_desc.split()[:8])
 
+        import hashlib, os
+        from datetime import datetime
+        memories_dir = BRAIN_DIR / "memories"
+        memories_dir.mkdir(parents=True, exist_ok=True)
+        slug = re.sub(r'[^a-z0-9]+', '-', title.lower())[:40].strip('-')
+        id_hash = hashlib.sha1(f"{description}{datetime.now().isoformat()}".encode()).hexdigest()[:6]
+        filename = f"feature-request-{slug}-{id_hash}.md"
+        body = (
+            f"## Bug\n\n{clean_desc}\n\n"
+            f"## Expected\n\n\n\n"
+            f"## Actual\n\n\n\n"
+            f"## Steps to reproduce\n\n\n\n"
+            f"## Notes\n\nCaptured via /bug at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n"
+        )
+
         if self.github.enabled:
             await self._gh_ensure_labels()
-            from datetime import datetime, timedelta
-            body = (
-                f"## Bug\n\n{clean_desc}\n\n"
-                f"## Expected\n\n\n\n"
-                f"## Actual\n\n\n\n"
-                f"## Steps to reproduce\n\n\n\n"
-                f"## Notes\n\nCaptured via /bug at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n"
-            )
             labels = ["kind:bug", "priority:medium"] + tags
             try:
                 issue = await self.github.create_issue(title, body, labels)
             except Exception as e:
                 await self._send_reply(update, f"GitHub error: {e}")
                 return
+            fm = {
+                "title":    clean_desc[:100],
+                "type":     "feature_request",
+                "kind":     "bug",
+                "status":   "new",
+                "priority": "medium",
+                "created":  datetime.now().isoformat(),
+                "tags":     tags,
+                "short_id": id_hash,
+                "github_issue_number": issue["number"],
+            }
+            content = f"---\n{yaml.dump(fm, sort_keys=False, allow_unicode=True)}---\n\n{body}"
+            target = memories_dir / filename
+            tmp = target.with_suffix(".tmp")
+            tmp.write_text(content)
+            os.rename(tmp, target)
             await self._rewrite_features_index_snapshot()
             await self._send_reply(update,
                 f"Bug captured: '{clean_desc[:60]}' (#{issue['number']})\n{issue['html_url']}")
             return
 
         # --- local fallback ---
-        import hashlib, os
-        from datetime import datetime, timedelta
-        memories_dir = BRAIN_DIR / "memories"
-        memories_dir.mkdir(parents=True, exist_ok=True)
-        slug = re.sub(r'[^a-z0-9]+', '-', title.lower())[:40].strip('-')
-        id_hash = hashlib.sha1(f"{description}{datetime.now().isoformat()}".encode()).hexdigest()[:6]
-        filename = f"feature-request-{slug}-{id_hash}.md"
-
         fm = {
             "title":    clean_desc[:100],
             "type":     "feature_request",
@@ -5833,13 +5882,6 @@ class TelegramChatHandler:
             "tags":     tags,
             "short_id": id_hash,
         }
-        body = (
-            f"## Bug\n\n{clean_desc}\n\n"
-            f"## Expected\n\n\n\n"
-            f"## Actual\n\n\n\n"
-            f"## Steps to reproduce\n\n\n\n"
-            f"## Notes\n\nCaptured via /bug at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n"
-        )
         content = f"---\n{yaml.dump(fm, sort_keys=False, allow_unicode=True)}---\n\n{body}"
         target = memories_dir / filename
         tmp = target.with_suffix(".tmp")
@@ -6148,9 +6190,6 @@ class TelegramChatHandler:
                 f"{len(to_import)} file(s) to import:\n" + "\n".join(titles) + extra +
                 "\n\nRun /feature_import confirm to proceed.")
             return
-        import os
-        archive_dir = memories_dir / "archive"
-        archive_dir.mkdir(exist_ok=True)
         await self._gh_ensure_labels()
         imported = 0
         for f, fm in to_import:
@@ -6174,9 +6213,9 @@ class TelegramChatHandler:
             except Exception as e:
                 await self._send_reply(update, f"Error importing '{title[:40]}': {e}")
                 continue
+            # Keep the file in memories/ — just stamp it with the GH issue number so
+            # future imports skip it and memory context can still reference it.
             self._rewrite_feature_frontmatter(f, {"github_issue_number": issue["number"]})
-            dest = archive_dir / f.name
-            os.rename(f, dest)
             if status == "done":
                 await self.github.update_issue(issue["number"], state="closed", state_reason="completed")
             elif status == "wont-do":

@@ -2,11 +2,10 @@
 """Promote locally-captured feature/bug requests to GitHub issues.
 
 Reads `feature-request-*.md` files from the iCloud memories directory,
-creates a GitHub issue per file via the `gh` CLI, stamps the file's
-frontmatter with `github_issue_number`, and moves the file into
-`memories/archive/`. Mirrors the semantics of `cmd_feature_import` in
-`chat_handler.py` so the daemon and this CLI agree on what's already been
-imported.
+creates a GitHub issue per file via the `gh` CLI, and stamps the file's
+frontmatter with `github_issue_number`. The file is kept in memories/ so
+local memory context remains available — mirrors the semantics of
+`cmd_feature_import` in `chat_handler.py`.
 
 Usage:
   scripts/promote_local_features.py [--dry-run] [--repo OWNER/NAME]
@@ -182,9 +181,6 @@ def main() -> int:
     if args.dry_run:
         return 0
 
-    archive_dir = memories_dir / "archive"
-    archive_dir.mkdir(exist_ok=True)
-
     failures = 0
     for idx, (f, fm) in enumerate(pending):
         title = (fm.get("title") or f.stem)[:100]
@@ -196,8 +192,9 @@ def main() -> int:
             print(f"FAILED to create issue for {f.name}: {e.stderr.strip()}", file=sys.stderr)
             failures += 1
             continue
+        # Stamp the local file with the GitHub issue number and keep it in memories/
+        # so local memory context remains available (mirrors cmd_feature_import behavior).
         rewrite_frontmatter(f, {"github_issue_number": number})
-        os.rename(f, archive_dir / f.name)
         status = fm.get("status", "new")
         if status == "done":
             try:

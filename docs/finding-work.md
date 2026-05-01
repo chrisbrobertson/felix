@@ -122,10 +122,10 @@ grep -rL "github_issue_number" . --include="feature-request-*.md"
 grep -rl "priority: high" . --include="feature-request-*.md"
 ```
 
-### Archive
+### Promotion
 
-After promotion via `/feature_import` or `scripts/promote_local_features.py`, files are
-moved to `memories/archive/` and their frontmatter gains `github_issue_number`.
+After promotion via `/feature_import` or `scripts/promote_local_features.py`, files
+**stay in `memories/`** with `github_issue_number` stamped into their frontmatter.
 Both promoters skip files that already have that field (`chat_handler.py:5418-5481`).
 
 ---
@@ -161,9 +161,10 @@ Used when the `chat` skill invokes tools rather than slash commands directly.
 | `add_bug` | `chat_tools.py:238-257` | File a bug report |
 | `close_issue` | `chat_tools.py:284-313` | Update `status:` on a local file |
 
-**`close_issue` caveat:** calls `_close_issue_text` (`chat_handler.py:1633-1673`) which
-only mutates local `feature-request-*.md` files. It does **not** call the GitHub API.
-To close a GitHub issue, use `/feature_done #NNN` or `gh issue close <NNN>`.
+**`close_issue` behaviour:** calls `_close_issue_text` in `chat_handler.py`. When the
+memory file carries a `github_issue_number`, the GitHub issue is updated first (via
+`_gh_set_status`); the local file is only written if that succeeds. For files without a
+GitHub number the update is local-only.
 
 ---
 
