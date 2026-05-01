@@ -130,6 +130,7 @@ EXISTING_ROLE=""
 EXISTING_PROVIDER=""
 EXISTING_GEMINI_KEY=""
 EXISTING_ANTHROPIC_KEY=""
+EXISTING_OPENAI_KEY=""
 EXISTING_TELEGRAM_TOKEN=""
 EXISTING_TELEGRAM_USER_ID=""
 EXISTING_ZOOM_ACCOUNT_ID=""
@@ -145,6 +146,7 @@ if [ -f "$PLIST_DEST" ]; then
     EXISTING_PROVIDER="$(_plist_env_val SECOND_BRAIN_PROVIDER)"
     EXISTING_GEMINI_KEY="$(_plist_env_val GEMINI_API_KEY)"
     EXISTING_ANTHROPIC_KEY="$(_plist_env_val ANTHROPIC_API_KEY)"
+    EXISTING_OPENAI_KEY="$(_plist_env_val OPENAI_API_KEY)"
     EXISTING_ZOOM_ACCOUNT_ID="$(_plist_env_val ZOOM_ACCOUNT_ID)"
     EXISTING_ZOOM_CLIENT_ID="$(_plist_env_val ZOOM_CLIENT_ID)"
     EXISTING_ZOOM_CLIENT_SECRET="$(_plist_env_val ZOOM_CLIENT_SECRET)"
@@ -195,6 +197,7 @@ printf "  Which LLM providers do you want this daemon to use?\n"
 printf "    gemini  Gemini only (cheap, fast; no Anthropic key needed)\n"
 printf "    claude  Claude only (higher quality; no Gemini key needed)\n"
 printf "    both    Prefer Claude, fall back to Gemini on errors (recommended)\n"
+printf "    openai  OpenAI only (GPT-4o for quality, GPT-4o-mini for summarisation)\n"
 echo ""
 DEFAULT_PROVIDER="${EXISTING_PROVIDER:-both}"
 if [ "$NONINTERACTIVE" = "1" ]; then
@@ -203,8 +206,8 @@ else
     read -r -p "  Provider [$DEFAULT_PROVIDER]: " PROVIDER
     PROVIDER="${PROVIDER:-$DEFAULT_PROVIDER}"
 fi
-[[ "$PROVIDER" == "gemini" || "$PROVIDER" == "claude" || "$PROVIDER" == "both" ]] \
-    || die "Provider must be 'gemini', 'claude', or 'both'."
+[[ "$PROVIDER" == "gemini" || "$PROVIDER" == "claude" || "$PROVIDER" == "both" || "$PROVIDER" == "openai" ]] \
+    || die "Provider must be 'gemini', 'claude', 'both', or 'openai'."
 ok "Provider: $PROVIDER"
 
 # ── 4. API keys ───────────────────────────────────────────────────────────────
@@ -254,6 +257,29 @@ if [ "$PROVIDER" != "gemini" ]; then
             ok "Anthropic API key (kept existing)"
         elif [ -z "$ANTHROPIC_KEY" ]; then
             die "Anthropic API key is required for provider '$PROVIDER'."
+        fi
+    fi
+fi
+
+# ── 4a. OpenAI API key (openai provider only) ────────────────────────────────
+OPENAI_KEY=""
+if [ "$PROVIDER" = "openai" ]; then
+    if [ -n "${OPENAI_API_KEY:-}" ]; then
+        ok "OPENAI_API_KEY (from environment)"
+        OPENAI_KEY="$OPENAI_API_KEY"
+    elif [ -n "$EXISTING_OPENAI_KEY" ]; then
+        ok "OpenAI API key (from existing config)"
+        OPENAI_KEY="$EXISTING_OPENAI_KEY"
+    elif [ "$NONINTERACTIVE" = "1" ]; then
+        die "NONINTERACTIVE mode requires existing OpenAI API key or OPENAI_API_KEY env var"
+    else
+        echo "  Get one at: https://platform.openai.com/api-keys"
+        read -r -p "  OpenAI API key: " OPENAI_KEY
+        if [ -z "$OPENAI_KEY" ] && [ -n "$EXISTING_OPENAI_KEY" ]; then
+            OPENAI_KEY="$EXISTING_OPENAI_KEY"
+            ok "OpenAI API key (kept existing)"
+        elif [ -z "$OPENAI_KEY" ]; then
+            die "OpenAI API key is required for provider 'openai'."
         fi
     fi
 fi
@@ -443,6 +469,7 @@ _store_in_keychain() {
 
 [ -n "$GEMINI_KEY" ] && _store_in_keychain "gemini_api_key" "$GEMINI_KEY"
 [ -n "$ANTHROPIC_KEY" ] && _store_in_keychain "anthropic_api_key" "$ANTHROPIC_KEY"
+[ -n "$OPENAI_KEY" ] && _store_in_keychain "openai_api_key" "$OPENAI_KEY"
 [ -n "$ZOOM_ACCOUNT_ID" ] && _store_in_keychain "zoom_account_id" "$ZOOM_ACCOUNT_ID"
 [ -n "$ZOOM_CLIENT_ID" ] && _store_in_keychain "zoom_client_id" "$ZOOM_CLIENT_ID"
 [ -n "$ZOOM_CLIENT_SECRET" ] && _store_in_keychain "zoom_client_secret" "$ZOOM_CLIENT_SECRET"
@@ -761,6 +788,8 @@ cat > "$PLIST_TMP" << PLIST_EOF
     <string>${GEMINI_KEY}</string>
     <key>ANTHROPIC_API_KEY</key>
     <string>${ANTHROPIC_KEY}</string>
+    <key>OPENAI_API_KEY</key>
+    <string>${OPENAI_KEY}</string>
     <key>ZOOM_ACCOUNT_ID</key>
     <string>${ZOOM_ACCOUNT_ID}</string>
     <key>ZOOM_CLIENT_ID</key>

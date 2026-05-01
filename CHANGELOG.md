@@ -23,6 +23,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `/project_note <N> <text>` — append a timestamped note to a project conversationally (#18).
 - `/project_due <N> <YYYY-MM-DD|none>` — update or clear a project's due date (#18).
 - `/changes [hours]` Telegram command: scans all active goals and projects, finds related memory files updated in the last N hours (default 24, max 168), and sends a concise LLM-generated activity digest per item — one paragraph per project/goal with recent activity. Implemented in `GoalProjectAgent.generate_change_digest()` (#74).
+- `install.sh` provider prompt now accepts `openai` as a fifth option alongside `gemini`, `claude`, `both`. Selecting `openai` prompts for `OPENAI_API_KEY`, writes it to the launchd plist and Keychain, and routes skill files to `openai/gpt-4o-mini` (summarisation) and `openai/gpt-4o` (quality/chat) via `scripts/apply_skill_provider.py` (#45). Note: `llm_routes.py` still hard-routes to Claude for non-SkillExecutor code paths (index builder, commitment tracker, etc.) — a follow-up will make those routes provider-aware.
 - `install.sh` now runs a Python smoke import (`import daemon` + `from chat_handler import TelegramChatHandler` on full role) after deploying source files and before reloading launchd. If the deployed artefact would crash at import time, the installer exits 1 and leaves the running daemon untouched.
 
 ### Fixed
@@ -37,10 +38,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `/usage` command now uses `_send_reply` instead of `reply_text` so long summaries are chunked and retried on transient network errors (#13).
 - `skill_executor`: `AuthenticationError` from LiteLLM now returns `None` immediately and logs an ERROR — the fallback model is never tried when the API key itself is bad (#59).
 - `skill_executor`: `PermissionDeniedError` (model-tier/entitlement 403) now falls back to the next configured model instead of hard-stopping, so skills with cross-provider fallbacks degrade gracefully when the preferred model is unavailable to the current key (#59).
+<<<<<<< HEAD
 - `chat_handler`: raised `HISTORY_WINDOW_TURNS` from 6 to 15 (30 messages) so long conversations retain context for 2.5× more turns without hitting the 200K token context limit (#70). The root cause of repeated context-loss complaints (#77, #65) is addressed by PR #80; this change provides headroom so a session can survive the tool-call iterations that filled the old window with `(I ran out of iterations…)` placeholders.
 - Chat tool-call loop: the `chat` skill prompt’s “Always attempt tool calls when appropriate” instruction caused the model to make unnecessary tool calls on questions already answered by `memory_context`, exhausting `max_iterations=5` and returning a “ran out of iterations” fallback visible to the user as “Too many tool calls” (#77). Rewrote the instruction to prefer context-first answers and call tools only when fresh data is genuinely required.
 - Chat lock starvation: added a 240 s `asyncio.wait_for` timeout around `executor.run_with_tools` in `handle_message`. A slow tool-call loop could hold the per-chat asyncio lock indefinitely, serialising all subsequent messages for that chat (#65, #77).
 - Mutation tracking: timeout warnings now show the result text of completed mutations (e.g. “Goal created: …”) rather than just the tool name, so users know what to verify before retrying. `deliver_pending_replies` added to `MUTATING_TOOLS` so it is tracked like other state-writing tools. In-flight mutations (in-progress when the timeout fired) are also reported separately, preventing blind retries that could resend already-delivered pending replies.
+=======
+- `scripts/apply_skill_provider.py`: fixed tier-detection idempotency — previously re-applying any provider to a skill already at `openai/gpt-4o` would misclassify it as cheap-tier and downgrade to `gpt-4o-mini`. Tier is now detected from model-ID patterns directly, so all cross-provider round-trips are idempotent (#45).
+>>>>>>> 63ee537 (feat(installer): add openai provider option + fix tier-detection idempotency (#45))
 
 ## [1.11.0] — 2026-04-28
 
