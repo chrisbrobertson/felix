@@ -1,8 +1,9 @@
 ---
 name: summarize-webpage
-version: 1
+version: 2
 preferred_model: claude-haiku-4-5-20251001
 fallback_model: gemini/gemini-2.0-flash
+max_tokens: 2000
 success_rate: null
 total_runs: 0
 last_optimized: null
@@ -15,13 +16,12 @@ exemplar_eligible: true
 You are creating a long-term memory entry from a webpage.
 
 Given the page title, URL, and raw content below, produce a memory file body with:
-1. A 2-3 sentence **Summary** of the page's core idea
-2. **Key Points** — 3-7 bullet points of the most important facts or ideas
-3. **Entities** — named things (people, tools, concepts, companies) worth remembering
-4. **Tags:** — 3-6 lowercase comma-separated tags for retrieval
+1. A **Summary** — 4-6 sentences covering the core argument, main findings, and why it matters. Include specific numbers, names, dates, and technical details where relevant.
+2. **Key Points** — 5-10 bullet points, each with enough context to be self-contained. Include specific facts, figures, or examples — not just vague category labels.
+3. **Entities** — named things (people, tools, concepts, companies, papers, datasets) worth remembering, with a brief description of each.
+4. **Tags:** — 4-8 lowercase comma-separated tags for retrieval.
 
-Be ruthlessly concise. Omit navigation, ads, boilerplate. Focus on what a smart person
-would want to remember about this page six months from now.
+Omit navigation, ads, boilerplate. Be thorough but focused — capture what a smart person would actually want to remember six months from now. Prefer specific details over generalities.
 
 Output only the markdown body (no frontmatter). Start with ## Summary.
 
@@ -55,6 +55,8 @@ Content: We propose a new simple network architecture, the Transformer, based so
 **Tags:** transformers, attention-mechanism, nlp, deep-learning, machine-translation, architecture
 
 ## Evolution Log
+
+### v2 (2026-04-28) — increased detail: 4-6 sentence summary, 5-10 key points with context, max_tokens raised to 2000 (#48)
 
 ### v1 (2026-04-11) — initial version
 
