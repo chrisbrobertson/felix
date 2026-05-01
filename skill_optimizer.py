@@ -924,17 +924,27 @@ Your output must be a JSON object:
 {{
   "failure_patterns": ["pattern 1", "pattern 2"],
   "root_cause": "one sentence summary of the core issue",
-  "suggested_focus": "what the rewrite should specifically address"
+  "suggested_focus": "what the rewrite should specifically address",
+  "lean_issues": ["instruction fragment that is over-specified or not contributing to quality"]
 }}
 
-Be specific. Cite evidence from the execution examples. Avoid generic observations."""
+For `failure_patterns` and `root_cause`: cite specific evidence from the low-scoring examples.
+
+For `lean_issues`: identify instruction fragments that are:
+- Heavy-handed MUST/ALWAYS/NEVER without explaining why (adds noise, doesn't help the model understand the goal)
+- Present in both good and bad runs (not the differentiating factor)
+- Overfitted to a specific example rather than expressing a general principle
+- Redundant with other instructions, or so obvious they add no signal
+If the instructions are already lean, return an empty list.
+
+Avoid generic observations. Be specific."""
 
         try:
             response = await asyncio.wait_for(
                 acompletion(
                     model=resolve("optimizer"),
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=500,
+                    max_tokens=700,
                 ),
                 timeout=60
             )
@@ -953,6 +963,10 @@ Be specific. Cite evidence from the execution examples. Avoid generic observatio
             if not critique.get("failure_patterns") or not critique.get("root_cause"):
                 log.warning(f"Critique missing required fields: {critique}")
                 return None
+
+            # lean_issues is optional — default to empty list if absent or wrong type
+            if not isinstance(critique.get("lean_issues"), list):
+                critique["lean_issues"] = []
 
             return critique
 
