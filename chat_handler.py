@@ -129,6 +129,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("dismiss", self.cmd_dismiss))
         self.app.add_handler(CommandHandler("wrong", self.cmd_wrong))
         self.app.add_handler(CommandHandler("missed", self.cmd_missed))
+        self.app.add_handler(CommandHandler("todo", self.cmd_todo))
         self.app.add_handler(CommandHandler("accuracy", self.cmd_accuracy))
         self.app.add_handler(CommandHandler("quota", self.cmd_quota))
         self.app.add_handler(CommandHandler("contacts", self.cmd_contacts))
@@ -1708,7 +1709,8 @@ class TelegramChatHandler:
                 due_str = " — due unknown"
             needs_review = "needs-review" in (fm.get("tags") or [])
             flag = " ⚠️" if needs_review and not due_str.endswith("⚠️") else ""
-            lines.append(f"{i}. [{ct}] {desc} — {owner}{due_str}{flag}")
+            owner_str = f" — {owner}" if owner and ct != "personal" else ""
+            lines.append(f"{i}. [{ct}] {desc}{owner_str}{due_str}{flag}")
 
         if total > limit:
             lines.append(f"... and {total - limit} more.")
@@ -1790,7 +1792,8 @@ class TelegramChatHandler:
                     due_str = " — due unknown"
                 needs_review = "needs-review" in (fm.get("tags") or [])
                 flag = " ⚠️" if needs_review and not due_str.endswith("⚠️") else ""
-                lines.append(f"{i}. [{ct}] {desc} — {owner}{due_str}{flag}")
+                owner_str = f" — {owner}" if owner and ct != "personal" else ""
+                lines.append(f"{i}. [{ct}] {desc}{owner_str}{due_str}{flag}")
             if total > 20:
                 lines.append(f"... and {total - 20} more.")
             lines.append("\nUse /complete N or /dismiss N to update status.")
@@ -2120,6 +2123,127 @@ class TelegramChatHandler:
             await update.message.reply_text(f"Error creating commitment: {_safe_error(e)}")
         finally:
             context.user_data["awaiting_missed_reply"] = False
+
+    # ── /todo command (#12) ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _classify_todo(text: str) -> str:
+        """Classify a todo description as waiting_on/outbound/personal using keyword heuristics."""
+        lower = text.lower()
+        outbound_markers = [
+            "send to", "send ", "deliver ", "share with", "provide to",
+            "give to", "submit to", "report to", "email to", "forward to",
+        ]
+        waiting_on_markers = [
+            "follow up with", "follow-up with", "check in with", "check on ",
+            "following up", "ask ", "remind ", "hear from ", "waiting for ",
+            "schedule with", "reach out to", "connect with",
+        ]
+        for marker in outbound_markers:
+            if marker in lower:
+                return "outbound"
+        for marker in waiting_on_markers:
+            if marker in lower:
+                return "waiting_on"
+        return "personal"
+
+    @staticmethod
+    def _extract_todo_recipient(text: str) -> Optional[str]:
+        """Extract a person name from patterns like 'follow up with John' or 'send to Jane Doe'."""
+        import re
+        # Match "with <Name>" or "to <Name>" where Name starts with a capital letter.
+        # Capture 1-3 capitalised words; stops naturally at lowercase continuation words.
+        m = re.search(
+            r"\b(?:with|to)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,2})\b",
+            text,
+        )
+        if m:
+            name = m.group(1).strip()
+            _NON_NAMES = {"Me", "Us", "Them", "Him", "Her", "You", "It", "The", "My", "Our"}
+            if name not in _NON_NAMES:
+                return name
+        return None
+
+    async def cmd_todo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Create a personal todo item. /todo <desc> [due:YYYY-MM-DD] [type:personal|waiting_on|outbound]"""
+        if not self._check_auth(update):
+            return
+
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /todo <description> [due:YYYY-MM-DD] [type:personal|waiting_on|outbound]\n"
+                "Examples:\n"
+                "  /todo Clean my desk\n"
+                "  /todo Get the report to Jane Doe due:2026-05-01\n"
+                "  /todo Follow up with John on the design doc"
+            )
+            return
+
+        from commitment_tracker import CommitmentTracker
+
+        raw_args = list(context.args)
+        due_date: Optional[str] = None
+        forced_type: Optional[str] = None
+
+        # Extract due: and type: tokens from args
+        remaining = []
+        for token in raw_args:
+            if token.lower().startswith("due:"):
+                raw_due = token[4:].strip()
+                try:
+                    datetime.strptime(raw_due, "%Y-%m-%d")
+                    due_date = raw_due
+                except ValueError:
+                    await update.message.reply_text(
+                        f"Invalid due date {raw_due!r}. Use format: due:YYYY-MM-DD"
+                    )
+                    return
+            elif token.lower().startswith("type:"):
+                value = token[5:].strip().lower()
+                if value in ("personal", "waiting_on", "outbound"):
+                    forced_type = value
+                else:
+                    await update.message.reply_text(
+                        f"Invalid type {value!r}. Must be: personal, waiting_on, or outbound."
+                    )
+                    return
+            else:
+                remaining.append(token)
+
+        description = " ".join(remaining).strip()
+        if not description:
+            await update.message.reply_text("Please provide a description after /todo.")
+            return
+
+        commitment_type = forced_type or self._classify_todo(description)
+        recipient = self._extract_todo_recipient(description)
+
+        # For waiting_on, the owner is the external party being waited on; the
+        # user is the recipient. For personal/outbound, the user is the owner.
+        if commitment_type == "waiting_on":
+            owner = recipient or "unknown"
+            todo_recipient = "self"
+        else:
+            owner = "self"
+            todo_recipient = recipient
+
+        try:
+            tracker = CommitmentTracker()
+            tracker.create_manual_commitment(
+                commitment_type=commitment_type,
+                description=description,
+                owner=owner,
+                due_date=due_date,
+                source_note="Created via /todo command",
+                force_unique=True,
+                recipient=todo_recipient,
+            )
+            due_str = f" — due {due_date}" if due_date else ""
+            await update.message.reply_text(
+                f"✓ Todo added [{commitment_type}]: {description}{due_str}"
+            )
+        except Exception as e:
+            await update.message.reply_text(f"Error creating todo: {_safe_error(e)}")
 
     # ── /accuracy command (FR-14) ─────────────────────────────────────────────
 

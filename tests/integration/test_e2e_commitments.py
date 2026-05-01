@@ -72,3 +72,8 @@ async def test_todos_smoke(handler, mk_update, brain_dir):
     update, ctx = mk_update("/todos")
     await handler.cmd_todos(update, ctx)
     update.message.reply_text.assert_called()
+async def test_todo_smoke(handler, mk_update):
+    update, ctx = mk_update("/todo", args=["Clean", "my", "desk"])
+    await handler.cmd_todo(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Clean my desk" in reply

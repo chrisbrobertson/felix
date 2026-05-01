@@ -428,7 +428,7 @@ class NotificationManager:
                 )[:60]
                 owner = fm.get("owner", "")
                 recipient = fm.get("recipient", "")
-                target = recipient if ct == "outbound" else owner
+                target = recipient if ct == "outbound" else (owner if ct != "personal" else "")
                 if target:
                     lines.append(f"• [{ct}] {desc} → {target}")
                 else:
@@ -697,7 +697,7 @@ class NotificationManager:
                 recipient = fm.get("recipient", "")
                 source_title = fm.get("source_memory", "").split(":", 1)[-1]
 
-                target = recipient if ct == "outbound" else owner
+                target = recipient if ct == "outbound" else (owner if ct != "personal" else "")
                 alert = f"Commitment due today:\n[{ct}] {desc}"
                 if target:
                     alert += f" → {target}"
@@ -719,7 +719,7 @@ class NotificationManager:
                 recipient = fm.get("recipient", "")
                 source_title = fm.get("source_memory", "").split(":", 1)[-1]
 
-                target = recipient if ct == "outbound" else owner
+                target = recipient if ct == "outbound" else (owner if ct != "personal" else "")
                 alert = f"Reminder: commitment due tomorrow:\n[{ct}] {desc}"
                 if target:
                     alert += f" → {target}"

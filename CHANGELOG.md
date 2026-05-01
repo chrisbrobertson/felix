@@ -6,6 +6,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.12.0] — 2026-04-28
+
+### Added
+- `/todo <desc> [due:YYYY-MM-DD] [type:personal|inbound|outbound]` Telegram command: quick-add a personal todo as a commitment file with `owner: self` and `confidence: 1.0`. Direction is auto-classified from keywords (outbound if delivering to someone, inbound if following up on someone's work, personal otherwise) and can be overridden with the `type:` token (#12).
 ### Changed
 - All five summarize skills updated to produce ~3x richer memory entries: `summarize-webpage`, `summarize-docs`, `summarize-paper`, `summarize-repo`, and `summarize-transcript` — each bumped to version 2. Summaries expanded from 2-3 sentences to 4-6 sentences with specific details, key points increased from 3-7 to 5-10 with self-contained context (including numbers, names, and comparisons where applicable), `max_tokens` raised from 1000 to 2000 across all five. Addresses chronic "only 300 bytes average" problem that made memories too sparse to be useful (#48).
 - `install.sh`: skill deployment now performs version-aware prompt splicing — when the repo skill has a higher `version:` than the deployed copy, the prompt section is updated while the `## Execution History` is preserved. Existing installs now receive prompt updates without losing run records (#48).

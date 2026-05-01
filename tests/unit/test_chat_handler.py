@@ -4360,6 +4360,75 @@ async def test_cmd_todos_unknown_verb_shows_usage(handler, brain_dir):
     """/todos with unrecognised verb shows usage hint."""
     update, context = _make_update(12345, args=["delete"])
     await handler.cmd_todos(update, context)
+# ── /todo command (#12) ─────────────────────────────────────────────────────
+
+def test_classify_todo_personal():
+    assert ch.TelegramChatHandler._classify_todo("Clean my desk") == "personal"
+    assert ch.TelegramChatHandler._classify_todo("Read the book") == "personal"
+
+
+def test_classify_todo_outbound():
+    assert ch.TelegramChatHandler._classify_todo("Send the report to Jane") == "outbound"
+    assert ch.TelegramChatHandler._classify_todo("Deliver the slides to the team") == "outbound"
+
+
+def test_classify_todo_waiting_on():
+    assert ch.TelegramChatHandler._classify_todo("Follow up with John on the design doc") == "waiting_on"
+    assert ch.TelegramChatHandler._classify_todo("Check in with Alice about the release") == "waiting_on"
+
+
+def test_extract_todo_recipient_follow_up():
+    assert ch.TelegramChatHandler._extract_todo_recipient("Follow up with John on the design doc") == "John"
+    assert ch.TelegramChatHandler._extract_todo_recipient("Check in with Alice Smith about the release") == "Alice Smith"
+
+
+def test_extract_todo_recipient_outbound():
+    assert ch.TelegramChatHandler._extract_todo_recipient("Get the report to Jane Doe") == "Jane Doe"
+    assert ch.TelegramChatHandler._extract_todo_recipient("Send the deck to Bob") == "Bob"
+
+
+def test_extract_todo_recipient_personal_returns_none():
+    assert ch.TelegramChatHandler._extract_todo_recipient("Clean my desk") is None
+    assert ch.TelegramChatHandler._extract_todo_recipient("Read the book") is None
+
+
+def test_extract_todo_recipient_does_not_capture_pronouns():
+    assert ch.TelegramChatHandler._extract_todo_recipient("Send it to them") is None
+    assert ch.TelegramChatHandler._extract_todo_recipient("Get the report to me") is None
+
+
+@pytest.mark.asyncio
+async def test_cmd_todo_persists_recipient(handler, brain_dir):
+    """For a waiting_on todo, owner is the external party and recipient is 'self'."""
+    with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
+        mock_create.return_value = brain_dir / "memories" / "commitment-test.md"
+        update, context = _make_update(12345, args=["Follow", "up", "with", "John"])
+        await handler.cmd_todo(update, context)
+
+    _, kwargs = mock_create.call_args
+    assert kwargs.get("commitment_type") == "waiting_on"
+    assert kwargs.get("owner") == "John"
+    assert kwargs.get("recipient") == "self"
+
+
+@pytest.mark.asyncio
+async def test_cmd_todo_outbound_owner_is_self(handler, brain_dir):
+    """For an outbound todo, owner is 'self' and the extracted name is the recipient."""
+    with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
+        mock_create.return_value = brain_dir / "memories" / "commitment-test.md"
+        update, context = _make_update(12345, args=["Send", "report", "to", "Jane"])
+        await handler.cmd_todo(update, context)
+
+    _, kwargs = mock_create.call_args
+    assert kwargs.get("commitment_type") == "outbound"
+    assert kwargs.get("owner") == "self"
+    assert kwargs.get("recipient") == "Jane"
+
+
+@pytest.mark.asyncio
+async def test_cmd_todo_no_args_shows_usage(handler, brain_dir):
+    update, context = _make_update(12345, args=[])
+    await handler.cmd_todo(update, context)
     reply = update.message.reply_text.call_args[0][0]
     assert "Usage:" in reply
 
@@ -4425,6 +4494,134 @@ async def test_cmd_todos_done_uses_todos_snapshot_not_commitment_set(handler, br
         await handler.cmd_todos(update, context)
         actual_path = mock_update.call_args[0][0]
         assert actual_path == todos_snapshot[0]
+async def test_cmd_todo_creates_personal_commitment(handler, brain_dir):
+    """Plain todo defaults to personal type with owner=self."""
+    with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
+        mock_create.return_value = brain_dir / "memories" / "commitment-test.md"
+        update, context = _make_update(12345, args=["Clean", "my", "desk"])
+        await handler.cmd_todo(update, context)
+
+    mock_create.assert_called_once()
+    call_kwargs = mock_create.call_args.kwargs if mock_create.call_args.kwargs else mock_create.call_args[1]
+    # positional call — check args
+    args, kwargs = mock_create.call_args
+    assert kwargs.get("commitment_type") == "personal" or (args and args[0] == "personal")
+    assert kwargs.get("owner") == "self" or (args and "self" in args)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "Clean my desk" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_todo_waiting_on_classification(handler, brain_dir):
+    """Todo with follow-up language is classified as waiting_on, not inbound."""
+    with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
+        mock_create.return_value = brain_dir / "memories" / "commitment-test.md"
+        update, context = _make_update(12345, args=["Follow", "up", "with", "John"])
+        await handler.cmd_todo(update, context)
+
+    args, kwargs = mock_create.call_args
+    ct = kwargs.get("commitment_type") or args[0]
+    assert ct == "waiting_on"
+
+
+@pytest.mark.asyncio
+async def test_cmd_todo_due_date_parsed(handler, brain_dir):
+    """due: token is parsed out of description and passed as due_date."""
+    with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
+        mock_create.return_value = brain_dir / "memories" / "commitment-test.md"
+        update, context = _make_update(12345, args=["Clean", "my", "desk", "due:2026-05-01"])
+        await handler.cmd_todo(update, context)
+
+    args, kwargs = mock_create.call_args
+    due = kwargs.get("due_date") or args[3]
+    assert due == "2026-05-01"
+    desc = kwargs.get("description") or args[1]
+    assert "due:" not in desc
+    reply = update.message.reply_text.call_args[0][0]
+    assert "2026-05-01" in reply
+
+
+@pytest.mark.asyncio
+async def test_cmd_todo_type_override(handler, brain_dir):
+    """type: token forces classification regardless of keywords."""
+    with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
+        mock_create.return_value = brain_dir / "memories" / "commitment-test.md"
+        update, context = _make_update(12345, args=["Clean", "my", "desk", "type:outbound"])
+        await handler.cmd_todo(update, context)
+
+    args, kwargs = mock_create.call_args
+    ct = kwargs.get("commitment_type") or args[0]
+    assert ct == "outbound"
+
+
+@pytest.mark.asyncio
+async def test_cmd_todo_only_special_tokens_shows_error(handler, brain_dir):
+    """If only due: and type: tokens are provided with no description, shows error."""
+    update, context = _make_update(12345, args=["due:2026-05-01"])
+    await handler.cmd_todo(update, context)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "description" in reply.lower() or "provide" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_cmd_todo_invalid_due_date_rejected(handler, brain_dir):
+    """due:tomorrow is rejected with a helpful error; no commitment is created."""
+    with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
+        update, context = _make_update(12345, args=["Take", "vitamins", "due:tomorrow"])
+        await handler.cmd_todo(update, context)
+    mock_create.assert_not_called()
+    reply = update.message.reply_text.call_args[0][0]
+    assert "invalid due date" in reply.lower() or "yyyy-mm-dd" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_cmd_todo_invalid_type_rejected(handler, brain_dir):
+    """type:inbound is rejected with a helpful error; no commitment is created."""
+    with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
+        update, context = _make_update(12345, args=["Clean", "desk", "type:inbound"])
+        await handler.cmd_todo(update, context)
+    mock_create.assert_not_called()
+    reply = update.message.reply_text.call_args[0][0]
+    assert "invalid type" in reply.lower() or "personal" in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_cmd_todo_waiting_on_type_sets_owner_to_recipient(handler, brain_dir):
+    """type:waiting_on is accepted and owner is set to the extracted person, not 'self'."""
+    with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
+        mock_create.return_value = brain_dir / "memories" / "commitment-test.md"
+        update, context = _make_update(12345, args=["Follow", "up", "with", "Alice", "type:waiting_on"])
+        await handler.cmd_todo(update, context)
+    mock_create.assert_called_once()
+    _, kwargs = mock_create.call_args
+    assert kwargs.get("commitment_type") == "waiting_on"
+    assert kwargs.get("owner") == "Alice"
+    assert kwargs.get("recipient") == "self"
+
+
+@pytest.mark.asyncio
+async def test_cmd_todo_waiting_on_no_name_uses_unknown(handler, brain_dir):
+    """type:waiting_on with no extractable name falls back to owner='unknown'."""
+    with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
+        mock_create.return_value = brain_dir / "memories" / "commitment-test.md"
+        update, context = _make_update(12345, args=["Waiting", "for", "approval", "type:waiting_on"])
+        await handler.cmd_todo(update, context)
+    mock_create.assert_called_once()
+    _, kwargs = mock_create.call_args
+    assert kwargs.get("commitment_type") == "waiting_on"
+    assert kwargs.get("owner") == "unknown"
+    assert kwargs.get("recipient") == "self"
+
+
+@pytest.mark.asyncio
+async def test_cmd_todo_force_unique_passed(handler, brain_dir):
+    """create_manual_commitment is always called with force_unique=True from /todo."""
+    with patch("commitment_tracker.CommitmentTracker.create_manual_commitment") as mock_create:
+        mock_create.return_value = brain_dir / "memories" / "commitment-test.md"
+        update, context = _make_update(12345, args=["Take", "vitamins"])
+        await handler.cmd_todo(update, context)
+    _, kwargs = mock_create.call_args
+    assert kwargs.get("force_unique") is True
 
 
 # ── Agent Actions Commands ───────────────────────────────────────────────────

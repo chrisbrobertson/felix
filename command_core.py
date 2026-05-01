@@ -43,6 +43,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
     "Commitments": [
         ("commitments", "List active commitments"),
         ("todos",       "List and manage todos as a checklist. /todos | /todos done N [M…] | /todos dismiss N"),
+        ("todo",        "Quick-add a personal todo. /todo <desc> [due:YYYY-MM-DD] [type:personal|inbound|outbound]"),
         ("complete",    "Mark commitment N complete"),
         ("dismiss",     "Dismiss commitment N"),
         ("wrong",       "Mark extracted commitment N as a false positive"),

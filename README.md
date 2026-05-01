@@ -238,8 +238,12 @@ Contacts are deduplicated by email address. The system picks the longest display
 /complete 3              # mark commitment #3 done
 /dismiss 3               # dismiss #3 (false positive or no longer relevant)
 
+/todo Clean my desk                          # personal todo (auto-classified)
+/todo Get the report to Jane due:2026-05-01  # outbound, with due date
+/todo Follow up with John type:inbound       # force classification
+
 /wrong 3                 # mark extracted commitment as false positive (improves accuracy stats)
-/missed                  # manually add a commitment the bot missed
+/missed                  # manually add a commitment the bot missed (multi-step form for external sources)
 /accuracy                # show extraction precision per source type (email, meeting, etc.)
 ```
 
