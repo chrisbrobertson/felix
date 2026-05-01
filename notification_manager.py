@@ -814,7 +814,7 @@ class NotificationManager:
                 )[:60]
                 recipient = fm.get("recipient", "")
                 owner = fm.get("owner", "")
-                target = recipient if ct == "outbound" else owner
+                target = recipient if ct == "outbound" else (owner if ct != "personal" else "")
                 if target:
                     lines.append(f"• [{ct}] {desc} → {target}")
                 else:
@@ -1175,7 +1175,7 @@ class NotificationManager:
                 recipient = fm.get("recipient", "")
                 due_date = fm.get("due_date")
                 due_str = f" (due {due_date})" if due_date else " (no due date)"
-                target = recipient if ct == "outbound" else owner
+                target = recipient if ct == "outbound" else (owner if ct != "personal" else "")
                 if target:
                     lines.append(f"• [{ct}] {desc} → {target}{due_str}")
                 else:
