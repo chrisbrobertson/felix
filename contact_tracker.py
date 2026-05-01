@@ -11,6 +11,7 @@ from typing import Optional
 import yaml
 
 from utils import load_config
+from heartbeat import record_beat
 
 log = logging.getLogger("contact-tracker")
 
@@ -298,10 +299,13 @@ class ContactTracker:
         log.info("Contact tracker started — scanning every %ds", interval)
 
         while not stop_event.is_set():
+            beat_status, beat_error = "ok", None
             try:
                 await self._run_scan()
-            except Exception:
+            except Exception as exc:
                 log.exception("Uncaught error in contact tracker cycle")
+                beat_status, beat_error = "error", str(exc)
+            record_beat("contact_tracker", beat_status, beat_error)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)
             except asyncio.TimeoutError:

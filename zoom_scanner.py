@@ -17,6 +17,7 @@ from llm_routes import resolve
 from usage_tracker import record_usage
 from secrets import get_secret_or_env
 from utils import load_config
+from heartbeat import record_beat
 
 log = logging.getLogger("zoom-scanner")
 
@@ -956,13 +957,16 @@ class ZoomScanner:
             # watcher: only local recordings
             log.info("Zoom scanner started (watcher — local recordings only)")
             while not stop_event.is_set():
+                beat_status, beat_error = "ok", None
                 try:
                     state = self._load_state()
                     state.setdefault("processed_summaries", [])
                     state.setdefault("processed_local", [])
                     await self._scan_local_recordings(state)
-                except Exception:
+                except Exception as exc:
                     log.exception("Uncaught error in zoom scanner (local) cycle")
+                    beat_status, beat_error = "error", str(exc)
+                record_beat("zoom_scanner", beat_status, beat_error)
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=interval)
                 except asyncio.TimeoutError:
@@ -981,10 +985,13 @@ class ZoomScanner:
             log.warning("ZOOM_CLIENT_ID not set — cloud scanning disabled, local only.")
 
         while not stop_event.is_set():
+            beat_status, beat_error = "ok", None
             try:
                 await self._run_scan()
-            except Exception:
+            except Exception as exc:
                 log.exception("Uncaught error in zoom scanner cycle")
+                beat_status, beat_error = "error", str(exc)
+            record_beat("zoom_scanner", beat_status, beat_error)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)
             except asyncio.TimeoutError:

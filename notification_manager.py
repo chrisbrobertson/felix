@@ -11,6 +11,7 @@ import yaml
 from zoneinfo import ZoneInfo
 
 from utils import read_text_with_retry_async
+from heartbeat import record_beat
 
 log = logging.getLogger("notification-manager")
 
@@ -814,7 +815,7 @@ class NotificationManager:
                 )[:60]
                 recipient = fm.get("recipient", "")
                 owner = fm.get("owner", "")
-                target = recipient if ct == "outbound" else owner
+                target = recipient if ct == "outbound" else (owner if ct != "personal" else "")
                 if target:
                     lines.append(f"• [{ct}] {desc} → {target}")
                 else:
@@ -1175,7 +1176,7 @@ class NotificationManager:
                 recipient = fm.get("recipient", "")
                 due_date = fm.get("due_date")
                 due_str = f" (due {due_date})" if due_date else " (no due date)"
-                target = recipient if ct == "outbound" else owner
+                target = recipient if ct == "outbound" else (owner if ct != "personal" else "")
                 if target:
                     lines.append(f"• [{ct}] {desc} → {target}{due_str}")
                 else:
@@ -1327,10 +1328,13 @@ class NotificationManager:
         log.info("Notification manager started — checking every 60s")
 
         while not stop_event.is_set():
+            beat_status, beat_error = "ok", None
             try:
                 await self._check_and_send()
-            except Exception:
+            except Exception as exc:
                 log.exception("Uncaught error in notification loop")
+                beat_status, beat_error = "error", str(exc)
+            record_beat("notification_manager", beat_status, beat_error)
 
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=60)

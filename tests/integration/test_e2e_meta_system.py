@@ -87,3 +87,9 @@ async def test_rebuild_cache_smoke(handler, mk_update):
     update, ctx = mk_update("/rebuild_cache")
     await handler.cmd_rebuild_cache(update, ctx)
     update.message.reply_text.assert_called()
+
+
+async def test_status_smoke(handler, mk_update):
+    update, ctx = mk_update("/status")
+    await handler.cmd_status(update, ctx)
+    update.message.reply_text.assert_called()

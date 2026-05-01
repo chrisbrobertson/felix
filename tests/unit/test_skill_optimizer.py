@@ -1374,3 +1374,38 @@ Rewrite skills.""")
     content = user_messages[0]["content"]
     assert "lean_issues" in content
     assert "MUST do Y is over-specified" in content
+@pytest.mark.asyncio
+async def test_run_loop_scheduled_pass_failure_records_error_beat(optimizer, tmp_path):
+    """When the scheduled _run_daily_pass raises, record_beat is called with 'error'."""
+    import skill_optimizer as so_mod
+
+    stop = asyncio.Event()
+
+    # Fake time: past run_hour so missed-pass check does nothing, then scheduled pass fires
+    now_before_run = datetime(2026, 4, 15, 5, 0, 0)
+    # next_run ends up tomorrow at 3 AM, so wait_for times out immediately to simulate wakeup
+    call_count = 0
+
+    async def fake_wait_for(coro, timeout=None):
+        nonlocal call_count
+        call_count += 1
+        stop.set()
+        raise asyncio.TimeoutError
+
+    with patch.object(so_mod, "DEPLOY_DIR", tmp_path), \
+         patch.object(so_mod, "BRAIN_DIR", tmp_path / "brain"), \
+         patch.object(so_mod, "SKILLS_DIR", tmp_path / "brain" / "skills"), \
+         patch.object(so_mod, "MEMORIES_DIR", tmp_path / "brain" / "memories"), \
+         patch("skill_optimizer.load_config", return_value=SAMPLE_CONFIG), \
+         patch("skill_optimizer.datetime") as mock_dt, \
+         patch("asyncio.wait_for", side_effect=fake_wait_for), \
+         patch("skill_optimizer.record_beat") as mock_beat, \
+         patch.object(optimizer, "_run_daily_pass", new=AsyncMock(side_effect=RuntimeError("boom"))):
+        mock_dt.now.return_value = now_before_run
+        mock_dt.side_effect = None
+
+        await optimizer.run_loop(stop)
+
+    # Last record_beat call should be "error" because _run_daily_pass raised
+    calls = mock_beat.call_args_list
+    assert any(c.args[1] == "error" for c in calls), f"Expected an error beat; got {calls}"

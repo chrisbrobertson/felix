@@ -18,6 +18,7 @@ from email_scanner import EmailScanner
 from calendar_scanner import CalendarScanner
 from slack_scanner import SlackScanner
 from memory_cache import MemoryCache
+import heartbeat as hb
 
 LOG_FORMAT = "%(asctime)s [%(name)s] %(levelname)s %(message)s"
 LOG_MAX_BYTES = 10_000_000   # 10 MB per file
@@ -126,6 +127,8 @@ async def main():
     # role is per-machine. Set SECOND_BRAIN_ROLE in each machine's launchd plist.
     role = os.environ.get("SECOND_BRAIN_ROLE") or config.get("daemon", {}).get("role", "full")
     log.info(f"Starting second-brain daemon v{version} — role: {role}")
+
+    hb.init(BRAIN_DIR, role, version)
 
     # ── Memory cache setup ────────────────────────────────────────────────────
     # Full role: SQLite cache at ~/secondbrain/memory-cache.sqlite
@@ -253,12 +256,15 @@ async def main():
         async def cache_sweep_loop(stop_event):
             """Sweep cache every 60s to catch iCloud-arrived files from watcher."""
             while not stop_event.is_set():
+                beat_status, beat_error = "ok", None
                 try:
                     added, updated, removed = await cache.sweep()
                     if added or updated or removed:
                         log.info(f"Cache sweep: {added} added, {updated} updated, {removed} removed")
-                except Exception:
+                except Exception as exc:
                     log.exception("Cache sweep failed")
+                    beat_status, beat_error = "error", str(exc)
+                hb.record_beat("cache_sweep", beat_status, beat_error)
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=60)
                 except asyncio.TimeoutError:

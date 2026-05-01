@@ -14,6 +14,7 @@ import yaml
 from llm_routes import resolve
 from usage_tracker import record_usage
 from utils import load_config
+from heartbeat import record_beat
 
 log = logging.getLogger("commitment-tracker")
 
@@ -480,10 +481,13 @@ class CommitmentTracker:
         log.info("Commitment tracker started — scanning every %ds", interval)
 
         while not stop_event.is_set():
+            beat_status, beat_error = "ok", None
             try:
                 await self._run_scan()
-            except Exception:
+            except Exception as exc:
                 log.exception("Uncaught error in commitment tracker cycle")
+                beat_status, beat_error = "error", str(exc)
+            record_beat("commitment_tracker", beat_status, beat_error)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)
             except asyncio.TimeoutError:

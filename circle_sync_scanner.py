@@ -19,6 +19,7 @@ from typing import Optional
 import yaml
 
 from circle_ruleset import CircleRuleset, load_ruleset, should_sync
+from heartbeat import record_beat
 
 log = logging.getLogger("circle-sync")
 
@@ -79,10 +80,13 @@ class CircleSyncScanner:
         self._load_state()
 
         while not stop_event.is_set():
+            beat_status, beat_error = "ok", None
             try:
                 await self._run_cycle()
-            except Exception:
+            except Exception as exc:
                 log.exception("Circle sync cycle error")
+                beat_status, beat_error = "error", str(exc)
+            record_beat("circle_sync_scanner", beat_status, beat_error)
 
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=self._scan_interval)

@@ -14,6 +14,7 @@ from skill_executor import SkillExecutor
 from content_fetcher import fetch_url_content
 from skill_router import detect_content_type, get_skill_and_depth
 from utils import load_config
+from heartbeat import record_beat
 
 log = logging.getLogger("browser-watcher")
 
@@ -303,6 +304,7 @@ class BrowserWatcher:
 
             interval = config.get("browser_watcher", {}).get("interval_seconds", 300)
 
+            beat_status, beat_error = "ok", None
             try:
                 since = datetime.now() - timedelta(seconds=interval * 2)
                 entries = await asyncio.to_thread(self._fetch_recent_urls, since)
@@ -311,6 +313,8 @@ class BrowserWatcher:
                         await self.process_url(entry)
             except Exception as e:
                 log.error(f"Browser watcher loop error: {e}")
+                beat_status, beat_error = "error", str(e)
+            record_beat("browser_watcher", beat_status, beat_error)
 
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)

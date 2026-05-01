@@ -21,6 +21,7 @@ from skill_executor import SkillExecutor, SkillAuthError
 from content_fetcher import fetch_url_content
 from github_client import GitHubClient, _STANDARD_LABELS
 from goals_tracker import GoalManager
+import heartbeat as hb
 
 log = logging.getLogger("chat-handler")
 
@@ -230,6 +231,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("deepen", self.cmd_deepen))
         self.app.add_handler(CommandHandler("note", self.cmd_note))
         self.app.add_handler(CommandHandler("rebuild_cache", self.cmd_rebuild_cache))
+        self.app.add_handler(CommandHandler("status", self.cmd_status))
         # Circles
         self.app.add_handler(CommandHandler("circles", self.cmd_circles))
         self.app.add_handler(CommandHandler("circle", self.cmd_circle))
@@ -776,42 +778,51 @@ class TelegramChatHandler:
             except asyncio.TimeoutError:
                 pass  # normal 30s tick
 
-            state = self._load_pending()
-            if not state:
-                continue
-            if not await self._is_telegram_reachable():
-                continue
-
-            for chat_id_str, entry in list(state.items()):
-                pending = entry.get("pending", [])
-                if not pending or entry.get("summary_sent"):
+            beat_status, beat_error = "ok", None
+            try:
+                state = self._load_pending()
+                if not state:
+                    hb.record_beat("reconnect_worker", beat_status, beat_error)
                     continue
-                count = len(pending)
-                notification_text = (
-                    f"📬 Network is back. I have {count} response"
-                    f"{'s' if count != 1 else ''} I couldn't deliver earlier.\n\n"
-                    f"• /deliver — send them now\n"
-                    f"• /discard — drop them"
-                )
-                try:
-                    await self.app.bot.send_message(
-                        chat_id=int(chat_id_str),
-                        text=notification_text,
-                    )
-                    # Add to chat history so LLM has context when user responds
-                    turns = self._chat_history.setdefault(int(chat_id_str), [])
-                    turns.append({"role": "assistant", "content": notification_text})
-                    max_msgs = self.HISTORY_WINDOW_TURNS * 2
-                    if len(turns) > max_msgs:
-                        self._chat_history[int(chat_id_str)] = turns[-max_msgs:]
-                    self._save_history()
+                if not await self._is_telegram_reachable():
+                    hb.record_beat("reconnect_worker", beat_status, beat_error)
+                    continue
 
-                    entry["summary_sent"] = True
-                    state[chat_id_str] = entry
-                    self._save_pending(state)
-                    log.info("Notified chat %s of %d queued reply/replies", chat_id_str, count)
-                except Exception as e:
-                    log.warning("Reconnect summary send failed for %s: %s", chat_id_str, e)
+                for chat_id_str, entry in list(state.items()):
+                    pending = entry.get("pending", [])
+                    if not pending or entry.get("summary_sent"):
+                        continue
+                    count = len(pending)
+                    notification_text = (
+                        f"📬 Network is back. I have {count} response"
+                        f"{'s' if count != 1 else ''} I couldn't deliver earlier.\n\n"
+                        f"• /deliver — send them now\n"
+                        f"• /discard — drop them"
+                    )
+                    try:
+                        await self.app.bot.send_message(
+                            chat_id=int(chat_id_str),
+                            text=notification_text,
+                        )
+                        # Add to chat history so LLM has context when user responds
+                        turns = self._chat_history.setdefault(int(chat_id_str), [])
+                        turns.append({"role": "assistant", "content": notification_text})
+                        max_msgs = self.HISTORY_WINDOW_TURNS * 2
+                        if len(turns) > max_msgs:
+                            self._chat_history[int(chat_id_str)] = turns[-max_msgs:]
+                        self._save_history()
+
+                        entry["summary_sent"] = True
+                        state[chat_id_str] = entry
+                        self._save_pending(state)
+                        log.info("Notified chat %s of %d queued reply/replies", chat_id_str, count)
+                    except Exception as e:
+                        log.warning("Reconnect summary send failed for %s: %s", chat_id_str, e)
+            except Exception as exc:
+                log.exception("Reconnect worker iteration failed: %s", exc)
+                beat_status, beat_error = "error", str(exc)
+
+            hb.record_beat("reconnect_worker", beat_status, beat_error)
 
     async def _on_telegram_error(self, update, context: ContextTypes.DEFAULT_TYPE):
         """Catch all unhandled exceptions from handlers.
@@ -4558,6 +4569,78 @@ class TelegramChatHandler:
         except Exception as e:
             log.exception("Cache rebuild failed")
             await update.message.reply_text(f"Cache rebuild failed: {_safe_error(e)}")
+
+    async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show last heartbeat time and loop status for all connected instances."""
+        if not self._check_auth(update):
+            return
+
+        instances = hb.read_all(BRAIN_DIR)
+        if not instances:
+            await update.message.reply_text(
+                "No heartbeat data found.\n"
+                "Instances write heartbeat-{hostname}.json to the brain dir "
+                "after each scan iteration — data will appear once the first iteration completes."
+            )
+            return
+
+        now = datetime.now(timezone.utc)
+        lines = []
+        for inst in instances:
+            hostname = inst.get("hostname", "unknown")
+            role = inst.get("role", "?")
+            version = inst.get("version", "?")
+            last_hb = inst.get("last_heartbeat", "")
+            try:
+                hb_dt = datetime.fromisoformat(last_hb)
+                age_s = int((now - hb_dt).total_seconds())
+                if age_s < 60:
+                    age_str = f"{age_s}s ago"
+                elif age_s < 3600:
+                    age_str = f"{age_s // 60}m ago"
+                else:
+                    age_str = f"{age_s // 3600}h ago"
+                stale = age_s > 600  # no heartbeat in 10+ minutes
+            except Exception:
+                age_str = "unknown"
+                stale = True
+
+            header = f"[{hostname}] {role} v{version}"
+            if stale:
+                header += "  [STALE]"
+            header += f"  (last seen {age_str})"
+            lines.append(header)
+
+            loops = inst.get("loops", {})
+            if loops:
+                for loop_name, info in sorted(loops.items()):
+                    status = info.get("status", "?")
+                    last_run = info.get("last_run", "")
+                    error = info.get("error")
+                    try:
+                        run_dt = datetime.fromisoformat(last_run)
+                        run_age_s = int((now - run_dt).total_seconds())
+                        if run_age_s < 60:
+                            run_str = f"{run_age_s}s ago"
+                        elif run_age_s < 3600:
+                            run_str = f"{run_age_s // 60}m ago"
+                        else:
+                            run_str = f"{run_age_s // 3600}h ago"
+                    except Exception:
+                        run_str = "unknown"
+
+                    flag = "OK " if status == "ok" else "ERR"
+                    line = f"  {flag}  {loop_name:<32} {run_str}"
+                    if status != "ok" and error:
+                        scrubbed = re.sub(r'/\S+/\S+', '[path]', error)[:80]
+                        line += f"\n       {scrubbed}"
+                    lines.append(line)
+            else:
+                lines.append("  (no loop data yet)")
+
+            lines.append("")
+
+        await self._send_reply(update, "\n".join(lines).rstrip())
 
     # ── /code command ─────────────────────────────────────────────────────────
 

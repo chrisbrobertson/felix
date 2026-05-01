@@ -15,6 +15,7 @@ from litellm import acompletion
 from llm_routes import resolve
 from usage_tracker import record_usage
 from utils import load_config
+from heartbeat import record_beat
 
 log = logging.getLogger("skill-optimizer")
 
@@ -85,6 +86,7 @@ class SkillOptimizer:
 
             # Check if today's pass was missed (e.g. daemon restarted after run_hour)
             state_file = DEPLOY_DIR / "skill-optimizer-state.json"
+            beat_status, beat_error = "ok", None
             try:
                 state = json.loads(state_file.read_text()) if state_file.exists() else {}
                 last_pass = state.get("last_pass_date")
@@ -99,6 +101,8 @@ class SkillOptimizer:
                         break
             except Exception as e:
                 log.warning(f"Missed-pass check failed: {e}")
+                beat_status, beat_error = "error", str(e)
+            record_beat("skill_optimizer", beat_status, beat_error)
 
             # Calculate sleep duration until next run_hour
             now = datetime.now()
@@ -122,7 +126,13 @@ class SkillOptimizer:
             # Run the optimization pass
             if stop_event.is_set():
                 break
-            await self._run_daily_pass(stop_event)
+            beat_status, beat_error = "ok", None
+            try:
+                await self._run_daily_pass(stop_event)
+            except Exception as exc:
+                log.exception("Daily optimization pass failed")
+                beat_status, beat_error = "error", str(exc)
+            record_beat("skill_optimizer", beat_status, beat_error)
 
     async def _run_daily_pass(self, stop_event: asyncio.Event):
         """One full optimization pass: merge logs, score, optimize eligible skills."""
@@ -1223,7 +1233,13 @@ Please rewrite the skill file following the meta-skill instructions."""
             if stop_event.is_set():
                 break
 
-            await self._process_urgent_queue(stop_event)
+            beat_status, beat_error = "ok", None
+            try:
+                await self._process_urgent_queue(stop_event)
+            except Exception as exc:
+                log.exception("Uncaught error in skill optimizer urgent cycle")
+                beat_status, beat_error = "error", str(exc)
+            record_beat("skill_optimizer_urgent", beat_status, beat_error)
 
     async def _process_urgent_queue(self, stop_event: asyncio.Event):
         """Process skills in the urgent queue, rewriting those with ≥2 flags."""
