@@ -821,9 +821,36 @@ class NotificationManager:
                     lines.append(f"• [{ct}] {desc}")
 
             if slot == "eod":
-                lines.append("\nUse /complete N to mark any done.")
+                lines.append("\nRun /commitments for current item numbers, then /complete N to mark any done.")
 
-            await self.send_message("\n".join(lines))
+            # State-before-send dedup: persist the key before delivery so a
+            # crash between send and the outer _check_and_send save cannot
+            # replay an already-delivered checkpoint on restart.
+            state["sent_commitment_checkpoints"] = list(sent)
+            try:
+                _save_state(state)
+            except Exception:
+                log.exception(
+                    "Failed to save commitment checkpoint dedup; skipping %s send", slot
+                )
+                sent.discard(key)
+                state["sent_commitment_checkpoints"] = list(sent)
+                continue
+            try:
+                await self.send_message("\n".join(lines))
+            except Exception:
+                log.exception(
+                    "Failed to send %s commitment checkpoint; rolling back dedup", slot
+                )
+                sent.discard(key)
+                state["sent_commitment_checkpoints"] = list(sent)
+                try:
+                    _save_state(state)
+                except Exception:
+                    log.exception(
+                        "Failed to roll back commitment checkpoint dedup for %s", slot
+                    )
+                continue
             log.info("Sent %s commitment checkpoint (%d due today)", slot, n)
 
         state["sent_commitment_checkpoints"] = list(sent)

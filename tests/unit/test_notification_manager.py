@@ -3071,3 +3071,70 @@ async def test_commitment_checkpoint_prune_old_keys(tmp_path):
     assert "2026-04-08:midday" not in state["sent_commitment_checkpoints"]
     assert "2026-04-08:eod" not in state["sent_commitment_checkpoints"]
     assert "2026-04-09:midday" not in state["sent_commitment_checkpoints"]
+
+
+@pytest.mark.asyncio
+async def test_commitment_checkpoint_state_persisted_before_send(tmp_path):
+    """State file contains the dedup key at the moment send_message is invoked.
+
+    This is a crash-window regression test: if the process dies between send and
+    the outer _check_and_send save the key must already be on disk so a restart
+    does not replay the delivery.
+    """
+    memories_dir, state_file, config_file = _make_checkpoint_env(tmp_path)
+    tz = ZoneInfo("America/Los_Angeles")
+    today = datetime(2026, 4, 11, 12, 5, tzinfo=tz)
+    make_commitment(memories_dir, "abc123def456", "Persist check", due_date="2026-04-11")
+
+    saved_at_send: list[dict] = []
+
+    async def snapshot_on_send(*args, **kwargs):
+        saved_at_send.append(json.loads(state_file.read_text()))
+
+    bot_mock = AsyncMock()
+    bot_mock.send_message.side_effect = snapshot_on_send
+
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
+        with patch.object(mgr, "_get_local_now", return_value=today):
+            state = nm._load_state()
+            await mgr._check_commitment_day_checkpoints(state)
+
+    assert len(saved_at_send) == 1, "send_message should have been called once"
+    assert "2026-04-11:midday" in saved_at_send[0]["sent_commitment_checkpoints"], (
+        "dedup key must be persisted to disk before send_message is called"
+    )
+
+
+@pytest.mark.asyncio
+async def test_commitment_checkpoint_no_resend_after_restart(tmp_path):
+    """Simulated restart does not replay a checkpoint that was already delivered.
+
+    Models the crash window: state is saved before send, so fresh state loaded
+    on restart already has the key and suppresses a duplicate delivery.
+    """
+    memories_dir, state_file, config_file = _make_checkpoint_env(tmp_path)
+    tz = ZoneInfo("America/Los_Angeles")
+    today = datetime(2026, 4, 11, 12, 5, tzinfo=tz)
+    make_commitment(memories_dir, "abc123def456", "Restart check", due_date="2026-04-11")
+
+    bot_mock = AsyncMock()
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file), \
+         patch.object(nm, "MEMORIES_DIR", memories_dir):
+        mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
+        with patch.object(mgr, "_get_local_now", return_value=today):
+            # First run — delivers the message and persists state.
+            state = nm._load_state()
+            await mgr._check_commitment_day_checkpoints(state)
+
+            # Simulate restart: load fresh state from the file (outer
+            # _check_and_send save has NOT yet run — worst-case crash window).
+            fresh_state = nm._load_state()
+            await mgr._check_commitment_day_checkpoints(fresh_state)
+
+    assert bot_mock.send_message.call_count == 1, (
+        "checkpoint must not be resent after restart when state was persisted before send"
+    )
