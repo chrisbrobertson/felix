@@ -2,8 +2,17 @@
 import hashlib
 import re
 import uuid
+import yaml
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _write_memory(path: Path, fm: dict, body: str) -> Path:
+    """Serialize frontmatter dict as YAML and write the memory file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = f"---\n{yaml.dump(fm, sort_keys=False, allow_unicode=True)}---\n\n{body}"
+    path.write_text(content)
+    return path
 
 
 def _slugify(text: str, max_len: int = 40) -> str:
@@ -61,13 +70,21 @@ def calendar_event(brain_dir, *, title="Standup", start_iso="2026-04-28T09:00:00
     hostname = "test-host"
     date = start_iso.split("T")[0]
     path = memories / f"calendar-event-{hostname}-{date}-{slug}-{event_id}.md"
-    path.write_text(
-        f"---\ntype: calendar_event\nsource_title: {title}\nsummary: Meeting\n"
-        f"tags: []\nsource_url: calendar:{event_id}\nhostname: {hostname}\n"
-        f"participants: [alice@example.com]\nstart: {start_iso}\n"
-        f"end: 2026-04-28T10:00:00-07:00\nlast_scanned: 2026-04-27T10:00:00\n---\n\n## Summary\n{title}\n"
-    )
-    return path
+    # Derive end_time by bumping the hour; keep timezone suffix if present
+    end_iso = start_iso[:10] + "T10:00:00" + start_iso[19:]
+    fm = {
+        "type": "calendar_event",
+        "source_title": title,
+        "summary": "Meeting",
+        "tags": [],
+        "source_url": f"calendar:{event_id}",
+        "hostname": hostname,
+        "participants": ["alice@example.com"],
+        "start_time": start_iso,
+        "end_time": end_iso,
+        "last_scanned": "2026-04-27T10:00:00",
+    }
+    return _write_memory(path, fm, f"## Summary\n{title}\n")
 
 
 def email_thread(brain_dir, *, subject="Re: Planning", classification="human") -> Path:
@@ -77,13 +94,19 @@ def email_thread(brain_dir, *, subject="Re: Planning", classification="human") -
     slug = _slugify(subject)
     conv_id = uuid.uuid4().hex[:8]
     path = memories / f"email-thread-{slug}-{conv_id}.md"
-    path.write_text(
-        f"---\ntype: email_thread\nsource_title: {subject}\nsummary: Email thread\n"
-        f"tags: []\nsource_url: email:{conv_id}\nclassification: {classification}\n"
-        f"participants: [alice@example.com]\nlast_message: 2026-04-27T10:00:00\n"
-        f"message_count: 3\nlast_scanned: 2026-04-27T10:00:00\n---\n\n## Messages\n- Alice: Message\n"
-    )
-    return path
+    fm = {
+        "type": "email_thread",
+        "source_title": subject,
+        "summary": "Email thread",
+        "tags": [],
+        "source_url": f"email:{conv_id}",
+        "classification": classification,
+        "participants": ["alice@example.com"],
+        "last_message": "2026-04-27T10:00:00",
+        "message_count": 3,
+        "last_scanned": "2026-04-27T10:00:00",
+    }
+    return _write_memory(path, fm, "## Messages\n- Alice: Message\n")
 
 
 def meeting(brain_dir, *, title="Q2 Planning") -> Path:
@@ -162,6 +185,26 @@ def candidate(brain_dir, *, title="Project Z", status="pending_confirmation") ->
         f"category: work\n---\n\n## Summary\nCandidate project\n"
     )
     return path
+
+
+def feature_request_item(brain_dir, *, title="Add feature A", kind="feature", status="new", priority="medium") -> Path:
+    """Write a feature-request-*.md file in the format cmd_features expects."""
+    memories = brain_dir / "memories"
+    memories.mkdir(exist_ok=True)
+    slug = _slugify(title)
+    req_id = uuid.uuid4().hex[:6]
+    path = memories / f"feature-request-{slug}-{req_id}.md"
+    fm = {
+        "title": title,
+        "type": "feature_request",
+        "kind": kind,
+        "status": status,
+        "priority": priority,
+        "created": "2026-04-27T10:00:00",
+        "tags": [],
+        "short_id": req_id,
+    }
+    return _write_memory(path, fm, f"## Request\n\n{title}\n")
 
 
 def feature_request(brain_dir, *, title="Add feature A", kind="feature", status="new") -> Path:
