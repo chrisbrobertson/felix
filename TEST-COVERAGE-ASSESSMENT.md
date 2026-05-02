@@ -87,10 +87,11 @@ The primary gap was assertion depth in the integration (e2e) layer. **Gap 1 and 
 |---|---|---|---|---|
 | 1 | ~75% of e2e smoke tests assert only `reply_text.assert_called()` — a handler that always returns "OK" would pass. Specific untested behaviors: `/commitments` formatting, `/complete` error path, `/goals` list content, `/features` status/priority tags. | Integration | P1 | ✅ **Remediated 2026-05-01** — `tests/integration/test_content_assertions.py` (15 tests) |
 | 2 | Frontmatter schema contract between writers (scanners) and readers (trackers, notification_manager) untested. Schema drift causes silent KeyErrors in production. The fix also uncovered and corrected `seed.calendar_event` using `start:` instead of `start_time:` (silent test bug). | Contract | P1 | ✅ **Remediated 2026-05-01** — `tests/integration/test_frontmatter_contract.py` (19 tests); `seed.py` fixed to use `yaml.dump` for frontmatter (prevents YAML parse bugs on datetime strings and colon-containing titles) |
-| 3 | No automated CI runs the test suite. "Run pytest before every commit" is an honor-system convention. Risk: a failing commit reaches main if the author forgets. | Integration | P1 | ⚙️ **User preference: local-only CI** — suggested approach: pre-commit hook (`echo '#!/bin/sh\npytest -q' > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit`) to gate every commit automatically without a remote CI service. |
-| 4 | No daemon lifecycle test verifies all 15 loops start cleanly and shut down on SIGTERM. `test_daemon.py` (3 tests) scope is narrow. | Integration | P2 | Open |
-| 5 | No dependency scanning (`pip audit` or Dependabot). Known CVEs in `litellm`, `python-telegram-bot`, or `httpx` would be invisible. | Security | P2 | Open — run `pip audit` locally or add to pre-commit hook |
-| 6 | `quota_scrapers.py` (47 lines, disabled by default) has no tests. | Unit | P3 | Open — acceptable risk given ToS-warning status |
+| 3 | No automated CI runs the test suite. "Run pytest before every commit" is an honor-system convention. Risk: a failing commit reaches main if the author forgets. | Integration | P1 | [#111](https://github.com/chrisbrobertson/felix/issues/111) — pre-commit hook (local CI, user preference) |
+| 4 | No daemon lifecycle test verifies all 15 loops start cleanly and shut down on SIGTERM. `test_daemon.py` (3 tests) scope is narrow. | Integration | P2 | [#112](https://github.com/chrisbrobertson/felix/issues/112) |
+| 5 | No dependency scanning (`pip audit` or Dependabot). Known CVEs in `litellm`, `python-telegram-bot`, or `httpx` would be invisible. | Security | P2 | [#113](https://github.com/chrisbrobertson/felix/issues/113) |
+| 6 | `quota_scrapers.py` (47 lines, disabled by default) has no tests. | Unit | P3 | [#114](https://github.com/chrisbrobertson/felix/issues/114) — acceptable risk given ToS-warning status |
+| 7 | `test_related_memories_recency_filter` uses hardcoded `"2026-05-01T00:00:00"` as a "future" timestamp; fails as of today. | Unit | P1 | [#115](https://github.com/chrisbrobertson/felix/issues/115) — pre-existing date-sensitive test failure |
 
 ---
 
