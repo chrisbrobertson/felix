@@ -141,6 +141,9 @@ class SkillOptimizer:
         # FR-2: Merge watcher node execution logs
         await self._merge_watcher_logs()
 
+        # Merge full-node chat execution log
+        await self._merge_chat_execution_log()
+
         if stop_event.is_set():
             return
 
@@ -313,6 +316,76 @@ class SkillOptimizer:
 
             except Exception as e:
                 log.error(f"Error merging watcher log {jsonl_file.name}: {e}", exc_info=True)
+
+    async def _merge_chat_execution_log(self):
+        """Merge full-node chat execution JSONL into chat.md and archive it."""
+        chat_log = DEPLOY_DIR / "chat-execution-log.jsonl"
+        if not chat_log.exists():
+            return
+
+        skill_path = SKILLS_DIR / "chat.md"
+        if not skill_path.exists():
+            log.warning("_merge_chat_execution_log: chat.md not found, skipping")
+            return
+
+        records = []
+        for line_no, line in enumerate(chat_log.read_text().splitlines(), 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                log.warning("Skipping malformed line %d in chat-execution-log.jsonl: %s", line_no, e)
+
+        if not records:
+            return
+
+        text = skill_path.read_text()
+        rows = [
+            f"| {r['date']} | {r['input_slug']} | {r['model']} | {r['score']} | {r.get('notes', '')} |\n"
+            for r in records
+        ]
+
+        if "## Execution History" not in text:
+            text += (
+                "\n## Execution History\n\n"
+                "| date | input_slug | model | score | notes |\n"
+                "|------|-----------|-------|-------|-------|\n"
+            )
+            text += "".join(rows)
+        else:
+            lines = text.splitlines(keepends=True)
+            insert_at = len(lines)
+            for i in range(len(lines) - 1, -1, -1):
+                if lines[i].strip().startswith("|"):
+                    insert_at = i + 1
+                    break
+            for row in rows:
+                lines.insert(insert_at, row)
+                insert_at += 1
+            text = "".join(lines)
+
+        self._atomic_write(skill_path, text)
+        log.info("Merged %d chat execution records into chat.md", len(records))
+
+        # Archive
+        date_suffix = datetime.now().strftime("%Y-%m-%d")
+        archived = DEPLOY_DIR / f"chat-execution-log.processed-{date_suffix}.jsonl"
+        chat_log.rename(archived)
+
+        # Delete archived files older than 30 days
+        cutoff = datetime.now() - timedelta(days=30)
+        for old_file in DEPLOY_DIR.glob("chat-execution-log.processed-*.jsonl"):
+            try:
+                date_match = re.search(r"processed-(\d{4}-\d{2}-\d{2})\.jsonl$", old_file.name)
+                if date_match:
+                    file_date = datetime.strptime(date_match.group(1), "%Y-%m-%d")
+                    if file_date < cutoff:
+                        old_file.unlink()
+                        log.debug("Deleted old chat log: %s", old_file.name)
+            except Exception as e:
+                log.warning("Error cleaning up old chat log %s: %s", old_file.name, e)
 
     async def _score_pending_rows(self, skill_path: Path, stop_event: asyncio.Event):
         """FR-3: Score all pending execution history rows using LLM-as-judge."""

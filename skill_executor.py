@@ -287,6 +287,21 @@ class SkillExecutor:
                 log.warning("_log_execution: watcher log write failed (skipping): %s", e)
             return
 
+        # Full node, chat skill: write to local JSONL to avoid iCloud write-per-message.
+        # The optimizer merges this file into chat.md during its nightly pass.
+        if self.skill_name == "chat":
+            try:
+                chat_log = DEPLOY_DIR / "chat-execution-log.jsonl"
+                record = {
+                    "date": date, "skill": self.skill_name, "input_slug": slug,
+                    "model": model, "score": score_str, "notes": notes,
+                }
+                with open(chat_log, "a") as f:
+                    f.write(json.dumps(record) + "\n")
+            except OSError as e:
+                log.warning("_log_execution: chat log write failed (skipping): %s", e)
+            return
+
         # Full node: write to the skill file in iCloud as before.
         # Logging is best-effort: iCloud I/O failure must never crash the caller.
         row = f"| {date} | {slug} | {model} | {score_str} | {notes} |\n"

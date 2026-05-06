@@ -177,6 +177,47 @@ async def test_watcher_does_not_modify_skill_file(executor_watcher, skills_dir, 
     assert (skills_dir / "summarize-webpage.md").read_text() == original
 
 
+# --- Chat skill on full node writes to local JSONL ---
+
+@pytest.mark.asyncio
+async def test_log_execution_chat_full_writes_to_local_jsonl(skills_dir, tmp_path):
+    # Ensure chat.md exists in skills_dir (required for SkillExecutor init)
+    chat_md = skills_dir / "chat.md"
+    chat_md.write_text("---\nname: chat\nversion: 1\n---\n\n## Instructions\n\nTest.\n")
+
+    with patch.object(se, "SKILLS_DIR", skills_dir), \
+         patch.object(se, "DEPLOY_DIR", tmp_path):
+        executor = se.SkillExecutor("chat", role="full")
+        await executor._log_execution({"query": "hello world"}, "claude-sonnet-4-6", score=None)
+
+    # Local JSONL must exist with one record
+    jsonl_path = tmp_path / "chat-execution-log.jsonl"
+    assert jsonl_path.exists()
+    records = [json.loads(line) for line in jsonl_path.read_text().splitlines() if line.strip()]
+    assert len(records) == 1
+    assert records[0]["skill"] == "chat"
+    assert records[0]["score"] == "pending"
+
+    # Skill file must NOT have been appended to
+    assert "## Execution History" not in chat_md.read_text()
+
+
+@pytest.mark.asyncio
+async def test_log_execution_non_chat_full_writes_to_skill_file(skills_dir, tmp_path):
+    skill_md = skills_dir / "summarize-webpage.md"
+    skill_md.write_text("---\nname: summarize-webpage\nversion: 1\n---\n\n## Instructions\n\nTest.\n")
+
+    with patch.object(se, "SKILLS_DIR", skills_dir), \
+         patch.object(se, "DEPLOY_DIR", tmp_path):
+        executor = se.SkillExecutor("summarize-webpage", role="full")
+        await executor._log_execution({"url": "https://example.com", "title": "Test"}, "claude-haiku-4-5-20251001", score=None)
+
+    # Skill file must have the row
+    assert "## Execution History" in skill_md.read_text()
+    # Local JSONL must NOT exist
+    assert not (tmp_path / "chat-execution-log.jsonl").exists()
+
+
 # --- Error handling ---
 
 async def test_run_returns_none_on_api_error(executor_full, caplog):

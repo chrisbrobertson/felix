@@ -228,6 +228,7 @@ All runtime state lives in `~/secondbrain/` — separate from the repo and from 
 ├── logs/                           # out.log, error.log (RotatingFileHandler; 10 MB × 5 backups)
 ├── seen-urls                       # flat file of processed URLs (browser watcher)
 ├── execution-log.jsonl             # watcher-node skill execution log
+├── chat-execution-log.jsonl        # full-node chat skill execution log (merged into chat.md nightly)
 ├── memory-cache.sqlite             # derived SQLite read-cache of all memory files; rebuilds automatically
 ├── email-scanner-state.json        # high-water ROWID for email scanner
 ├── zoom-scanner-state.json         # processed meeting UUIDs for zoom scanner

@@ -201,6 +201,50 @@ async def test_merge_watcher_logs_skips_missing_skill(optimizer, logs_dir, caplo
     assert "nonexistent-skill" in caplog.text
 
 
+# --- Chat execution log merging ---
+
+@pytest.mark.asyncio
+async def test_merge_chat_execution_log(optimizer, tmp_path, skills_dir):
+    # Setup chat.md in skills dir
+    chat_md = skills_dir / "chat.md"
+    chat_md.write_text(
+        "---\nname: chat\nversion: 1\n---\n\n## Instructions\n\nTest.\n\n"
+        "## Execution History\n\n"
+        "| date | input_slug | model | score | notes |\n"
+        "|------|-----------|-------|-------|-------|\n"
+    )
+
+    # Setup chat-execution-log.jsonl in deploy dir
+    chat_log = tmp_path / "chat-execution-log.jsonl"
+    chat_log.write_text(
+        '{"date": "2026-05-06", "skill": "chat", "input_slug": "hello-world", '
+        '"model": "claude-sonnet-4-6", "score": "pending", "notes": ""}\n'
+    )
+
+    with patch.object(so, "DEPLOY_DIR", tmp_path), \
+         patch.object(so, "SKILLS_DIR", skills_dir):
+        await optimizer._merge_chat_execution_log()
+
+    # Row must be in chat.md
+    content = chat_md.read_text()
+    assert "hello-world" in content
+    assert "claude-sonnet-4-6" in content
+
+    # Original JSONL must be archived (renamed)
+    assert not chat_log.exists()
+    archived = list(tmp_path.glob("chat-execution-log.processed-*.jsonl"))
+    assert len(archived) == 1
+
+
+@pytest.mark.asyncio
+async def test_merge_chat_execution_log_no_file(optimizer, tmp_path, skills_dir):
+    with patch.object(so, "DEPLOY_DIR", tmp_path), \
+         patch.object(so, "SKILLS_DIR", skills_dir):
+        await optimizer._merge_chat_execution_log()
+    # No errors, no files created
+    assert not (tmp_path / "chat-execution-log.jsonl").exists()
+
+
 @pytest.mark.asyncio
 async def test_score_pending_updates_row(optimizer, skills_dir, memories_dir):
     """pending row replaced with numeric score."""

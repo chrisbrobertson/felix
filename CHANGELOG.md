@@ -15,6 +15,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Mutation timeout reporting incorrectly counted tool calls that returned validation/not-found error strings as "completed" — error-response results are now excluded from the completed-mutations list.
 - Memory-context keyword scoring used `history[-4:]`, ignoring most of the 15-turn window; widened to `history[-10:]` for better retrieval on long threads.
 - `_prune_sent_alerts()` and `_check_commitment_alerts()` parsed `due_date` without `str()` coercion or warning on malformed input — applied the same normalization and warning pattern added to `_assemble_briefing()` in the EDEADLK fix.
+- Chat skill execution logging now writes to local JSONL (`~/secondbrain/chat-execution-log.jsonl`) instead of iCloud-synced `chat.md` — every chat message was triggering an iCloud write and mtime change, causing EDEADLK race conditions in `_reload_if_modified()`. Skill optimizer merges the JSONL into `chat.md` during its nightly 3 AM pass. All other skills continue writing to iCloud skill files as before.
 
 ## [1.12.0] — 2026-04-28
 
