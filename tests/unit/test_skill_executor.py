@@ -1000,3 +1000,25 @@ async def test_run_example_output_is_exact_assistant_content(executor_with_examp
     messages = mock_ac.call_args.kwargs["messages"]
     assistant_msg = messages[2]["content"]
     assert "asyncio enables concurrent I/O" in assistant_msg
+
+
+def test_reload_if_modified_keeps_cached_skill_on_icloud_lock(skills_dir):
+    """_reload_if_modified must not raise when iCloud EDEADLK prevents re-reading the file.
+
+    Regression test for the 2026-05-06 incident where chat.md modification during
+    iCloud sync caused read_bytes_with_retry to return None, _load() to raise
+    RuntimeError, and the entire chat request to fail with 'Skill chat unavailable'.
+    """
+    with patch.object(se, "SKILLS_DIR", skills_dir):
+        executor = se.SkillExecutor("summarize-webpage", role="full")
+
+    original_skill = executor._skill
+
+    # Simulate iCloud lock: bump mtime so reload is triggered, but make _load raise
+    with patch.object(executor, "_load", side_effect=RuntimeError("Skill summarize-webpage unavailable (iCloud lock after retries)")):
+        # Bump stored mtime so the condition fires
+        executor._mtime -= 1
+        executor._reload_if_modified()  # must not raise
+
+    # Cached skill must be preserved
+    assert executor._skill is original_skill

@@ -170,8 +170,13 @@ class SkillExecutor:
         current_mtime = self.skill_path.stat().st_mtime
         if current_mtime > self._mtime:
             log.info(f"Reloading {self.skill_name} (file modified)")
-            self._skill = self._load()
-            self._mtime = current_mtime
+            try:
+                self._skill = self._load()
+                self._mtime = current_mtime
+            except RuntimeError as e:
+                # iCloud EDEADLK during reload — keep the previously loaded skill
+                # and retry on the next call, identical to memory_cache EDEADLK handling.
+                log.warning("Reload of %s failed (%s) — using cached version", self.skill_name, e)
 
     async def run(self, inputs: dict, score=None):
         # FR-14: Reload skill if optimizer has rewritten it
