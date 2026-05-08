@@ -260,8 +260,9 @@ async def test_related_memories_recency_filter(tmp_path):
     fm = _parse_frontmatter(goal_path.read_text())
     fm["tags"] = ["launch"]
 
-    # Set last_checked to a future timestamp
-    last_checked = "2026-05-01T00:00:00"
+    # Set last_checked to a future timestamp so the memory (written now) is skipped
+    from datetime import datetime, timedelta
+    last_checked = (datetime.now() + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
 
     with patch.object(gpa, "CONFIG_PATH", config_file), \
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
