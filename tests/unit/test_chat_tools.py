@@ -172,6 +172,8 @@ def test_all_tool_names_in_dispatcher():
         "list_commands", "deliver_pending_replies", "discard_pending_replies",
         "add_goal", "add_project", "add_feature", "add_bug", "close_issue",
         "close_commitment",
+        # Handled in handle_message's tool_dispatch closure (needs chat_id in scope)
+        "get_recent_commands",
     }
     for tool in chat_tools.TOOLS:
         name = tool["function"]["name"]

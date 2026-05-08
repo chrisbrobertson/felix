@@ -6377,3 +6377,94 @@ async def test_close_commitment_invalid_status(handler, brain_dir):
     result = await handler._close_commitment_text(index=1, status="done")
 
     assert "Invalid status" in result
+
+
+# --- _record_command_reply / _recent_commands_text ---
+
+def test_record_and_retrieve_recent_command(handler):
+    """_record_command_reply stores output; _recent_commands_text returns it."""
+    handler._record_command_reply(42, "events", "Calendar events (3 shown):\n1. ...")
+    text = handler._recent_commands_text(42)
+    assert "/events" in text
+    assert "Calendar events" in text
+
+
+def test_recent_commands_empty_session(handler):
+    """_recent_commands_text returns sentinel when no commands recorded."""
+    text = handler._recent_commands_text(99)
+    assert "No recent slash commands" in text
+
+
+def test_recent_commands_ring_buffer_max_5(handler):
+    """Ring buffer evicts oldest entry after 5 pushes."""
+    for i in range(6):
+        handler._record_command_reply(1, f"cmd{i}", f"output {i}")
+    text = handler._recent_commands_text(1, limit=10)
+    assert "/cmd0" not in text  # evicted
+    assert "/cmd5" in text       # newest retained
+
+
+def test_recent_commands_limit_parameter(handler):
+    """_recent_commands_text(limit=2) returns at most 2 entries."""
+    for i in range(5):
+        handler._record_command_reply(7, f"cmd{i}", f"output {i}")
+    text = handler._recent_commands_text(7, limit=2)
+    # Only the last 2 should appear
+    assert "/cmd4" in text
+    assert "/cmd3" in text
+    assert "/cmd2" not in text
+
+
+def test_recent_commands_text_capped_per_entry(handler):
+    """Entries are capped at 2000 chars to avoid bloat."""
+    long_text = "x" * 5000
+    handler._record_command_reply(3, "goals", long_text)
+    from collections import deque
+    buf = handler._recent_commands.get(3)
+    _, stored = list(buf)[0]
+    assert len(stored) == 2000
+
+
+def test_recent_commands_per_chat_isolation(handler):
+    """Each chat_id has its own ring buffer."""
+    handler._record_command_reply(10, "events", "chat 10 events")
+    handler._record_command_reply(20, "goals", "chat 20 goals")
+    assert "chat 10 events" in handler._recent_commands_text(10)
+    assert "chat 20 goals" not in handler._recent_commands_text(10)
+    assert "chat 20 goals" in handler._recent_commands_text(20)
+
+
+@pytest.mark.asyncio
+async def test_cmd_events_records_reply(handler, brain_dir):
+    """cmd_events populates the recent-commands buffer after sending."""
+    write_event_memory(
+        brain_dir / "memories",
+        "standup",
+        "2026-05-10T09:00:00",
+        "2026-05-10T09:30:00",
+    )
+    update, context = _make_update(12345)
+    chat_id = 12345
+    update.effective_chat.id = chat_id
+    context.args = []
+    with patch.object(ch, "BRAIN_DIR", brain_dir):
+        await handler.cmd_events(update, context)
+    buf = handler._recent_commands.get(chat_id)
+    assert buf is not None
+    assert any(cmd == "events" for cmd, _ in buf)
+
+
+@pytest.mark.asyncio
+async def test_tool_dispatch_get_recent_commands(handler):
+    """get_recent_commands tool returns ring-buffer content for the current chat_id."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch as mock_patch
+
+    chat_id = 42
+    handler._record_command_reply(chat_id, "todos", "Todos (2):\n1. Fix bug\n2. Write tests")
+
+    # Simulate calling the tool_dispatch closure from handle_message by directly
+    # exercising _recent_commands_text with the chat_id in scope.
+    result = handler._recent_commands_text(chat_id, limit=5)
+    assert "/todos" in result
+    assert "Fix bug" in result

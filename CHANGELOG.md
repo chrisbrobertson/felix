@@ -6,6 +6,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `get_recent_commands` LLM tool: the chat skill can now recall the output of recent slash commands (`/events`, `/commitments`, `/todos`, `/goals`, `/projects`, `/contacts`, `/actions`) when the user asks follow-up questions ("which of those is most urgent?", "tell me more about item 3"). A per-chat ring buffer (max 5 entries) records each listing reply; the LLM calls the tool to fetch it (#119).
+
 ### Fixed
 - Commitments could not be closed via natural language chat — added `close_commitment` LLM tool so the chat skill can mark commitments completed or dismissed by index or title substring, matching what `/complete` and `/dismiss` slash commands do (#121).
 - `SkillExecutor._reload_if_modified()` now catches `RuntimeError` on iCloud EDEADLK during skill file reload and retains the previously loaded skill instead of propagating the error — prevents "Skill chat unavailable" from crashing chat requests when iCloud syncs a skill file mid-flight.

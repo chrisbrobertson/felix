@@ -8,6 +8,7 @@ import re
 import socket
 import time
 import yaml
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -271,6 +272,9 @@ class TelegramChatHandler:
         # Conversation history per chat_id — {role, content} pairs, last N turns
         self._chat_history: dict = self._load_history()  # chat_id → list of {role, content}
         self._chat_history_locks: dict = {} # chat_id → asyncio.Lock
+        # Ring buffer of recent slash-command outputs per chat_id — lets the LLM reference
+        # previous listing results in follow-up questions ("which of those is urgent?")
+        self._recent_commands: dict = {}  # chat_id → deque[(label, text), maxlen=5]
         self.HISTORY_WINDOW_TURNS = 15      # keep last 15 user+assistant pairs (30 messages)
         # Token budget for history injected into each request. Memory context already
         # consumes up to MAX_CONTEXT_TOKENS (150K); reserving 20K for history leaves
@@ -730,6 +734,20 @@ class TelegramChatHandler:
             os.rename(str(tmp), str(self.HISTORY_FILE))
         except Exception as e:
             log.warning("Failed to save chat history: %s", e)
+
+    def _record_command_reply(self, chat_id: int, command: str, text: str) -> None:
+        """Push a slash-command output into this chat's ring buffer (max 5 entries)."""
+        buf = self._recent_commands.setdefault(chat_id, deque(maxlen=5))
+        buf.append((command, text[:2000]))
+
+    def _recent_commands_text(self, chat_id: int, limit: int = 5) -> str:
+        """Return the last `limit` slash-command outputs formatted for LLM context."""
+        buf = self._recent_commands.get(chat_id)
+        if not buf:
+            return "No recent slash commands in this session."
+        entries = list(buf)[-limit:]
+        parts = [f"/{cmd}\n{text}" for cmd, text in entries]
+        return "\n\n---\n\n".join(parts)
 
     def _load_pending(self) -> dict:
         if self.PENDING_FILE.exists():
@@ -1865,10 +1883,13 @@ class TelegramChatHandler:
             if total > 20:
                 lines.append(f"... and {total - 20} more.")
             lines.append("\nUse /complete N or /dismiss N to update status.")
-            await update.message.reply_text("\n".join(lines))
+            reply_text = "\n".join(lines)
+            await update.message.reply_text(reply_text)
+            self._record_command_reply(update.effective_chat.id, "commitments", reply_text)
         else:
             text = self._list_commitments_text(limit=20)
             await update.message.reply_text(text)
+            self._record_command_reply(update.effective_chat.id, "commitments", text)
 
     def _list_todos_text(self) -> str:
         """Format all active commitments as a checklist (todo-list style)."""
@@ -1918,7 +1939,9 @@ class TelegramChatHandler:
         args = list(context.args) if context.args else []
 
         if not args:
-            await self._send_reply(update, self._list_todos_text())
+            todos_text = self._list_todos_text()
+            await self._send_reply(update, todos_text)
+            self._record_command_reply(update.effective_chat.id, "todos", todos_text)
             return
 
         verb = args[0].lower()
@@ -2499,7 +2522,9 @@ class TelegramChatHandler:
 
         lines.append("")
         lines.append("Use /action N for details, /run N to approve and execute.")
-        await update.message.reply_text("\n".join(lines))
+        actions_text = "\n".join(lines)
+        await update.message.reply_text(actions_text)
+        self._record_command_reply(update.effective_chat.id, "actions", actions_text)
 
     async def cmd_action(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show full detail for action N."""
@@ -2943,7 +2968,9 @@ class TelegramChatHandler:
 
                 lines.append(f"{i}. [{cat}] {title} — {due_str}")
 
-            await update.message.reply_text("\n".join(lines))
+            goals_text = "\n".join(lines)
+            await update.message.reply_text(goals_text)
+            self._record_command_reply(update.effective_chat.id, "goals", goals_text)
         except Exception as e:
             log.exception("Error in cmd_goals")
             await update.message.reply_text(f"Error listing goals: {_safe_error(e)}")
@@ -3262,10 +3289,13 @@ class TelegramChatHandler:
                     else:
                         milestone_str = ""
                     lines.append(f"{i}. [{cat}] {title} — {proj_status} — {due_str}{milestone_str}")
-                await update.message.reply_text("\n".join(lines))
+                projects_text = "\n".join(lines)
+                await update.message.reply_text(projects_text)
+                self._record_command_reply(update.effective_chat.id, "projects", projects_text)
             else:
                 text = self._list_projects_text(category=category, limit=100)
                 await update.message.reply_text(text)
+                self._record_command_reply(update.effective_chat.id, "projects", text)
         except Exception as e:
             log.exception("Error in cmd_projects")
             await update.message.reply_text(f"Error listing projects: {_safe_error(e)}")
@@ -3652,6 +3682,7 @@ class TelegramChatHandler:
             limit = 20
         text = self._list_contacts_text(limit)
         await update.message.reply_text(text)
+        self._record_command_reply(update.effective_chat.id, "contacts", text)
 
     # ── /contact command ──────────────────────────────────────────────────────
 
@@ -5037,6 +5068,7 @@ class TelegramChatHandler:
                 calendar_filter = arg
         text = self._list_events_text(limit, calendar_filter=calendar_filter)
         await update.message.reply_text(text)
+        self._record_command_reply(update.effective_chat.id, "events", text)
 
     async def cmd_event(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -6866,6 +6898,9 @@ class TelegramChatHandler:
             _inflight_mutations: list[str] = []
 
             async def tool_dispatch(name: str, args: dict) -> str:
+                if name == "get_recent_commands":
+                    limit = min(int(args.get("limit", 5)), 10)
+                    return self._recent_commands_text(chat_id, limit)
                 is_mutating = name in MUTATING_TOOLS
                 if is_mutating:
                     _inflight_mutations.append(name)

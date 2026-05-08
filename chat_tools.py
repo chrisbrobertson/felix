@@ -215,6 +215,28 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "get_recent_commands",
+            "description": (
+                "Return the output of recent slash commands the user ran in this session "
+                "(e.g. /events, /commitments, /goals, /projects, /contacts, /actions, /todos). "
+                "Call this when the user asks a follow-up question that references something "
+                "they just listed — e.g. 'which of those is most urgent?', 'tell me more about "
+                "item 3', 'which one should I focus on first?'. Returns the raw text the user saw."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max number of recent commands to return (default 5, max 10)",
+                    }
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "discard_pending_replies",
             "description": (
                 "Discard all queued replies from when the network was down. ONLY call this tool when "
