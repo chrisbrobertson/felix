@@ -17,7 +17,7 @@ MEMORIES_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/secon
 # detect the case where a timeout fires after a mutation has already landed, so
 # it can warn the user rather than silently suggest they retry.
 MUTATING_TOOLS: frozenset[str] = frozenset(
-    {"add_goal", "add_project", "add_bug", "add_feature", "close_issue", "deliver_pending_replies"}
+    {"add_goal", "add_project", "add_bug", "add_feature", "close_issue", "close_commitment", "deliver_pending_replies"}
 )
 
 TOOLS: list[dict] = [
@@ -322,6 +322,37 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "close_commitment",
+            "description": (
+                "Mark a commitment or waiting-on item as completed or dismissed. "
+                "Use when the user says something like 'I sent that report', "
+                "'mark commitment 3 done', 'dismiss the dentist commitment', "
+                "or 'I finished that task'. "
+                "Call list_commitments first if you don't have an index or title yet."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_commitments result",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Partial title of the commitment when index is unknown",
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "New status (default: completed)",
+                        "enum": ["completed", "dismissed"],
+                    },
+                },
+            },
+        },
+    },
 ]
 
 
@@ -464,6 +495,12 @@ async def _call(name: str, arguments: dict, handler):
             short_id=arguments.get("short_id"),
             title=arguments.get("title"),
             status=arguments.get("status", "done"),
+        )
+    if name == "close_commitment":
+        return await handler._close_commitment_text(
+            index=arguments.get("index"),
+            title=arguments.get("title"),
+            status=arguments.get("status", "completed"),
         )
     if name in ("add_feature", "add_bug"):
         import hashlib, os, re, yaml

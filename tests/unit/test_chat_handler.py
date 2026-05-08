@@ -6273,3 +6273,107 @@ async def test_cmd_status_error_scrubs_filesystem_paths(handler, brain_dir):
     text = update.message.reply_text.call_args[0][0]
     assert "/Users/chris/secondbrain/email-state.json" not in text
     assert "[path]" in text
+
+
+# ── _close_commitment_text tests ────────────────────────────────────────────
+
+
+def _make_commitment_file(memories_dir, filename, title, status="active"):
+    content = (
+        f"---\nsource_title: {title}\ntype: commitment\ncommitment_type: outbound\n"
+        f"status: {status}\nowner: me\ndue_date: null\ntags: []\n---\n\n## Context\ntest\n"
+    )
+    f = memories_dir / filename
+    f.write_text(content)
+    return f
+
+
+@pytest.mark.asyncio
+async def test_close_commitment_by_index(handler, brain_dir):
+    """_close_commitment_text resolves by 1-based index into _last_commitment_set."""
+    memories_dir = brain_dir / "memories"
+    f = _make_commitment_file(memories_dir, "commitment-send-report-aaa111.md", "Send the quarterly report")
+
+    # Populate the index by calling _list_commitments_text
+    handler._list_commitments_text()
+
+    result = await handler._close_commitment_text(index=1, status="completed")
+
+    assert "Send the quarterly report" in result
+    assert "completed" in result
+    content = f.read_text()
+    assert "status: completed" in content
+
+
+@pytest.mark.asyncio
+async def test_close_commitment_by_title(handler, brain_dir):
+    """_close_commitment_text resolves by title substring."""
+    memories_dir = brain_dir / "memories"
+    f = _make_commitment_file(memories_dir, "commitment-dentist-bbb222.md", "Book dentist appointment")
+
+    result = await handler._close_commitment_text(title="dentist", status="completed")
+
+    assert "dentist" in result.lower()
+    assert "completed" in result
+    content = f.read_text()
+    assert "status: completed" in content
+
+
+@pytest.mark.asyncio
+async def test_close_commitment_dismissed(handler, brain_dir):
+    """_close_commitment_text marks status as dismissed when requested."""
+    memories_dir = brain_dir / "memories"
+    f = _make_commitment_file(memories_dir, "commitment-old-task-ccc333.md", "Old stale task")
+    handler._list_commitments_text()
+
+    result = await handler._close_commitment_text(index=1, status="dismissed")
+
+    assert "dismissed" in result
+    content = f.read_text()
+    assert "status: dismissed" in content
+
+
+@pytest.mark.asyncio
+async def test_close_commitment_title_ambiguous(handler, brain_dir):
+    """_close_commitment_text returns disambiguation list when multiple titles match."""
+    memories_dir = brain_dir / "memories"
+    _make_commitment_file(memories_dir, "commitment-report-1-ddd444.md", "Send progress report")
+    _make_commitment_file(memories_dir, "commitment-report-2-eee555.md", "Send status report")
+
+    result = await handler._close_commitment_text(title="report")
+
+    assert "Multiple matches" in result
+
+
+@pytest.mark.asyncio
+async def test_close_commitment_not_found_by_title(handler, brain_dir):
+    """_close_commitment_text returns error when no title matches."""
+    result = await handler._close_commitment_text(title="nonexistent commitment")
+
+    assert "No active commitment" in result
+
+
+@pytest.mark.asyncio
+async def test_close_commitment_index_out_of_range(handler, brain_dir):
+    """_close_commitment_text returns error for an out-of-range index."""
+    handler._last_commitment_set = []
+
+    result = await handler._close_commitment_text(index=99)
+
+    assert "not found" in result.lower() or "No commitment" in result
+
+
+@pytest.mark.asyncio
+async def test_close_commitment_no_args(handler, brain_dir):
+    """_close_commitment_text returns error when neither index nor title provided."""
+    result = await handler._close_commitment_text()
+
+    assert "Provide either" in result
+
+
+@pytest.mark.asyncio
+async def test_close_commitment_invalid_status(handler, brain_dir):
+    """_close_commitment_text rejects invalid status values."""
+    result = await handler._close_commitment_text(index=1, status="done")
+
+    assert "Invalid status" in result

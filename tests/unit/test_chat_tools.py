@@ -171,6 +171,7 @@ def test_all_tool_names_in_dispatcher():
         "list_contacts", "list_comms", "list_readings", "search_memories", "get_memory",
         "list_commands", "deliver_pending_replies", "discard_pending_replies",
         "add_goal", "add_project", "add_feature", "add_bug", "close_issue",
+        "close_commitment",
     }
     for tool in chat_tools.TOOLS:
         name = tool["function"]["name"]
@@ -456,4 +457,82 @@ async def test_close_issue_custom_status(mock_handler, tmp_path):
         short_id="ghi789",
         title=None,
         status="wont_do"
+    )
+
+
+# --- close_commitment tool tests ---
+
+def test_close_commitment_tool_in_tools_list():
+    """close_commitment is present in TOOLS with required fields."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "close_commitment" in names
+
+    tool = next(t for t in chat_tools.TOOLS if t["function"]["name"] == "close_commitment")
+    assert tool["function"]["description"]
+    params = tool["function"]["parameters"]
+    assert "index" in params["properties"]
+    assert "title" in params["properties"]
+    assert "status" in params["properties"]
+    assert params["properties"]["status"]["enum"] == ["completed", "dismissed"]
+
+
+def test_close_commitment_in_mutating_tools():
+    """close_commitment is listed as a mutating tool."""
+    assert "close_commitment" in chat_tools.MUTATING_TOOLS
+
+
+@pytest.mark.asyncio
+async def test_close_commitment_by_index(mock_handler):
+    """close_commitment by index calls _close_commitment_text correctly."""
+    mock_handler._close_commitment_text = AsyncMock(return_value="✓ Send the report → completed")
+
+    result = await chat_tools.dispatch(
+        "close_commitment",
+        {"index": 2},
+        mock_handler,
+    )
+
+    assert result == "✓ Send the report → completed"
+    mock_handler._close_commitment_text.assert_called_once_with(
+        index=2,
+        title=None,
+        status="completed",
+    )
+
+
+@pytest.mark.asyncio
+async def test_close_commitment_by_title(mock_handler):
+    """close_commitment by title substring calls _close_commitment_text correctly."""
+    mock_handler._close_commitment_text = AsyncMock(return_value="✓ dentist → completed")
+
+    result = await chat_tools.dispatch(
+        "close_commitment",
+        {"title": "dentist"},
+        mock_handler,
+    )
+
+    assert "dentist" in result
+    mock_handler._close_commitment_text.assert_called_once_with(
+        index=None,
+        title="dentist",
+        status="completed",
+    )
+
+
+@pytest.mark.asyncio
+async def test_close_commitment_dismissed_status(mock_handler):
+    """close_commitment with dismissed status passes it through."""
+    mock_handler._close_commitment_text = AsyncMock(return_value="✕ old task → dismissed")
+
+    result = await chat_tools.dispatch(
+        "close_commitment",
+        {"index": 1, "status": "dismissed"},
+        mock_handler,
+    )
+
+    assert "dismissed" in result
+    mock_handler._close_commitment_text.assert_called_once_with(
+        index=1,
+        title=None,
+        status="dismissed",
     )

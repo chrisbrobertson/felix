@@ -7,6 +7,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- Commitments could not be closed via natural language chat — added `close_commitment` LLM tool so the chat skill can mark commitments completed or dismissed by index or title substring, matching what `/complete` and `/dismiss` slash commands do (#121).
 - `SkillExecutor._reload_if_modified()` now catches `RuntimeError` on iCloud EDEADLK during skill file reload and retains the previously loaded skill instead of propagating the error — prevents "Skill chat unavailable" from crashing chat requests when iCloud syncs a skill file mid-flight.
 - Briefing "Active projects" section silently capped at 10 entries with no overflow marker — now appends "…and N more" when more than 10 active projects exist.
 - `/changes` command used raw `reply_text()` for chunked output, bypassing `_send_reply()` retry logic for `TimedOut`/`NetworkError` — switched to `_send_reply()`.

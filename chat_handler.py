@@ -1729,6 +1729,46 @@ class TelegramChatHandler:
         lines.append("\nUse /complete N or /dismiss N to update status.")
         return "\n".join(lines)
 
+    async def _close_commitment_text(self, index: int = None, title: str = None, status: str = "completed") -> str:
+        """Mark a commitment completed or dismissed. Used by close_commitment tool."""
+        if status not in ("completed", "dismissed"):
+            return f"Invalid status {status!r}. Use 'completed' or 'dismissed'."
+
+        from commitment_tracker import CommitmentTracker
+
+        # Resolve by 1-based index into _last_commitment_set
+        if index is not None:
+            path = self._resolve_commitment_index(str(index))
+            if path is None:
+                return f"No commitment at index {index} (run list_commitments first to refresh)."
+        elif title:
+            # Search active commitments by title substring
+            items = self._load_active_commitments()
+            hits = [
+                f for f, fm in items
+                if title.lower() in (fm.get("source_title") or fm.get("summary") or "").lower()
+            ]
+            if not hits:
+                return f"No active commitment matching '{title}'."
+            if len(hits) > 1:
+                lines = ["Multiple matches — be more specific:"]
+                for h in hits[:5]:
+                    fm = self._parse_frontmatter(h)
+                    lines.append(f"• {(fm.get('source_title') or fm.get('summary') or '')[:60]}")
+                return "\n".join(lines)
+            path = hits[0]
+        else:
+            return "Provide either index or title."
+
+        fm = self._parse_frontmatter(path)
+        label = (fm.get("source_title") or fm.get("summary") or str(path.name))[:60]
+        try:
+            CommitmentTracker().update_commitment_status(path, status)
+            mark = "✓" if status == "completed" else "✕"
+            return f"{mark} {label} → {status}"
+        except Exception as e:
+            return f"Error updating commitment: {e}"
+
     async def _close_issue_text(self, short_id=None, title=None, status="done") -> str:
         """Close or update a bug/feature request. Used by close_issue tool."""
         # Tool enum uses underscores; internals (GH labels, local frontmatter) use hyphens.
