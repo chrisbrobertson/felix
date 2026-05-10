@@ -40,6 +40,7 @@ def handler(brain_dir, tmp_path):
     mock_app = MagicMock()
     mock_builder = MagicMock()
     mock_builder.token.return_value = mock_builder
+    mock_builder.concurrent_updates.return_value = mock_builder
     mock_builder.build.return_value = mock_app
 
     deploy_dir = tmp_path / "deploy"
@@ -3682,6 +3683,7 @@ async def test_cmd_review_cache_enabled_prefix(brain_dir, tmp_path):
     mock_app = MagicMock()
     mock_builder = MagicMock()
     mock_builder.token.return_value = mock_builder
+    mock_builder.concurrent_updates.return_value = mock_builder
     mock_builder.build.return_value = mock_app
 
     with patch.object(ch, "BRAIN_DIR", brain_dir), \
@@ -6633,3 +6635,28 @@ async def test_features_shows_project_tag_when_mixed(handler, brain_dir):
     reply = update.message.reply_text.call_args[0][0]
     # Item with project should show [myapp], item without should not
     assert "[myapp]" in reply
+
+
+def test_concurrent_updates_enabled_on_init(brain_dir, tmp_path):
+    """TelegramChatHandler enables concurrent_updates so slash commands don't block LLM calls."""
+    from memory_cache import MemoryCache
+    mock_app = MagicMock()
+    mock_builder = MagicMock()
+    mock_builder.token.return_value = mock_builder
+    mock_builder.concurrent_updates.return_value = mock_builder
+    mock_builder.build.return_value = mock_app
+
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir(exist_ok=True)
+    cache = MemoryCache(None, brain_dir / "memories", enabled=False)
+
+    with patch.object(ch, "BRAIN_DIR", brain_dir), \
+         patch.object(ch, "DEPLOY_DIR", deploy_dir), \
+         patch.object(ch.TelegramChatHandler, "PENDING_FILE", deploy_dir / "pending-replies.json"), \
+         patch.object(ch.TelegramChatHandler, "HISTORY_FILE", deploy_dir / "chat-history.json"), \
+         patch("chat_handler.ApplicationBuilder", return_value=mock_builder), \
+         patch("chat_handler.SkillExecutor"), \
+         patch.dict(os.environ, {"GITHUB_PAT": "", "GITHUB_REPO": ""}, clear=False):
+        ch.TelegramChatHandler(cache=cache)
+
+    mock_builder.concurrent_updates.assert_called_once_with(True)

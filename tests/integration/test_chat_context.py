@@ -21,6 +21,7 @@ def handler(brain_dir, deploy_dir):
     mock_app = MagicMock()
     mock_builder = MagicMock()
     mock_builder.token.return_value = mock_builder
+    mock_builder.concurrent_updates.return_value = mock_builder
     mock_builder.build.return_value = mock_app
 
     with patch.object(ch, "BRAIN_DIR", brain_dir), \

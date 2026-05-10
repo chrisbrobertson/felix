@@ -8,6 +8,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 - Multi-project feature and bug tracking: `/feature for:<project> <desc>` and `/bug for:<project> <desc>` tag items with a project name stored in frontmatter and as a `project:<name>` GitHub label. `/features project:<name>` filters the list to one project; items with a project show `[project]` in the list view. The `add_feature` and `add_bug` LLM tools also accept an optional `project` parameter. Closes #122.
+- Telegram bot now processes updates concurrently (`concurrent_updates=True`): fast slash commands (e.g. `/help`, `/status`) respond immediately even when a slow LLM query or `/briefing` is in-flight. Per-chat message ordering is preserved by the existing `_chat_history_locks`. Closes #116.
 
 ### Fixed
 - `/bugs` and `/features` list entries now include the 6-character hash ID (e.g. `[abc123]`) so users can reference items by ID in follow-up commands like `/feature_detail` (#131).

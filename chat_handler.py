@@ -102,7 +102,7 @@ class TelegramChatHandler:
         self.token = config["telegram"]["bot_token"]
         self.allowed_user_id = int(config["user"]["telegram_user_id"])
         self.executor = SkillExecutor("chat")
-        self.app = ApplicationBuilder().token(self.token).build()
+        self.app = ApplicationBuilder().token(self.token).concurrent_updates(True).build()
         self.scanners = scanners or {}
 
         # Goal manager for FR-7 context injection and FR-8 LLM tools

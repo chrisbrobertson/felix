@@ -75,6 +75,7 @@ def handler(brain_dir, deploy_dir, fake_llm, monkeypatch):
     mock_app = MagicMock()
     mock_builder = MagicMock()
     mock_builder.token.return_value = mock_builder
+    mock_builder.concurrent_updates.return_value = mock_builder
     mock_builder.build.return_value = mock_app
 
     # Create memory cache
