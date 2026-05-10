@@ -6,7 +6,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.14.0] — 2026-05-10
+
 ### Added
+- Four new LLM tool calls so the chat skill can fetch data it previously couldn't without a slash command: `list_goals` (category + status filter), `list_features` (kind + show_all filter, GitHub or local), `list_todos` (active commitment checklist), `list_actions` (pending agent-proposed actions). The LLM can now answer natural-language queries like "what are my work goals?", "what bugs are open?", "what do I have to do today?" without the user typing a slash command first. Closes #128, #129.
 - `get_recent_commands` LLM tool: the chat skill can now recall the output of recent slash commands (`/events`, `/commitments`, `/todos`, `/goals`, `/projects`, `/contacts`, `/actions`) when the user asks follow-up questions ("which of those is most urgent?", "tell me more about item 3"). A per-chat ring buffer (max 5 entries) records each listing reply; the LLM calls the tool to fetch it (#119).
 
 ### Fixed

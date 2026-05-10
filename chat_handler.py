@@ -2452,6 +2452,25 @@ class TelegramChatHandler:
 
     # ── Agent actions commands ────────────────────────────────────────────────
 
+    def _list_actions_text(self, filter_status: Optional[str] = None) -> str:
+        """Return formatted action list text. Called by cmd_actions and tool dispatch."""
+        actions = self._load_action_set(filter_status=filter_status)
+        if not actions:
+            msg = "No pending agent actions."
+            if filter_status:
+                msg += f" (filter: {filter_status})"
+            msg += " Use /actions all to see all."
+            return msg
+        lines = [f"Agent-proposed actions ({len(actions)}):"]
+        for i, (path, fm) in enumerate(actions, 1):
+            action_type = fm.get("action_type", "")
+            target = fm.get("target") or fm.get("source_goal", "")
+            rationale = fm.get("rationale", "")[:60]
+            lines.append(f"{i}. [{action_type}] {target} — {rationale}")
+        lines.append("")
+        lines.append("Use /action N for details, /run N to approve and execute.")
+        return "\n".join(lines)
+
     def _load_action_set(self, filter_status: Optional[str] = None, update_last_set: bool = True) -> list:
         """Load action-*.md files and filter by status. Returns list of (path, fm) tuples."""
         actions = []
@@ -2503,26 +2522,7 @@ class TelegramChatHandler:
             return
 
         filter_arg = context.args[0].lower() if context.args else None
-        actions = self._load_action_set(filter_status=filter_arg)
-
-        if not actions:
-            msg = "No pending agent actions."
-            if filter_arg:
-                msg += f" (filter: {filter_arg})"
-            msg += " Use /actions all to see all."
-            await update.message.reply_text(msg)
-            return
-
-        lines = [f"Agent-proposed actions ({len(actions)}):"]
-        for i, (path, fm) in enumerate(actions, 1):
-            action_type = fm.get("action_type", "")
-            target = fm.get("target") or fm.get("source_goal", "")
-            rationale = fm.get("rationale", "")[:60]
-            lines.append(f"{i}. [{action_type}] {target} — {rationale}")
-
-        lines.append("")
-        lines.append("Use /action N for details, /run N to approve and execute.")
-        actions_text = "\n".join(lines)
+        actions_text = self._list_actions_text(filter_status=filter_arg)
         await update.message.reply_text(actions_text)
         self._record_command_reply(update.effective_chat.id, "actions", actions_text)
 
@@ -2914,61 +2914,59 @@ class TelegramChatHandler:
         finally:
             context.user_data["awaiting_addgoal_reply"] = False
 
+    def _list_goals_text(self, category: Optional[str] = None, status: Optional[str] = "active") -> str:
+        """Return formatted goals list text. Called by cmd_goals and tool dispatch."""
+        goals = self._goal_manager.list_goals(category=category, status=status)
+        self._last_goal_set = goals
+        self._active_list = self._last_goal_set
+
+        if not goals:
+            return "No goals found."
+
+        lines = []
+        header = f"{status.capitalize() if status else 'All'} goals ({len(goals)} total):"
+        lines.append(header)
+
+        for i, path in enumerate(goals, 1):
+            fm = self._parse_frontmatter(path)
+            cat = fm.get("category", "")
+            title = fm.get("source_title", "")
+            due = fm.get("due_date")
+            if due:
+                try:
+                    due_dt = datetime.strptime(due, "%Y-%m-%d")
+                    days_until = (due_dt - datetime.now()).days
+                    if days_until < 0:
+                        due_str = f"was due {due} ⚠️ OVERDUE"
+                    elif days_until <= 7:
+                        due_str = f"due {due} ⚠️ {days_until} days"
+                    else:
+                        due_str = f"due {due}"
+                except ValueError:
+                    due_str = f"due {due}"
+            else:
+                due_str = "no due date"
+            lines.append(f"{i}. [{cat}] {title} — {due_str}")
+
+        return "\n".join(lines)
+
     async def cmd_goals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
 
         # Parse optional filter argument
         category = None
-        status = "active"  # default
+        status: Optional[str] = "active"
         if context.args:
             arg = context.args[0]
-            # Check if it's a status
             if arg in ["active", "completed", "abandoned"]:
                 status = arg
-            # Otherwise treat as category
             else:
                 category = arg
                 status = None
 
         try:
-            goals = self._goal_manager.list_goals(category=category, status=status)
-            self._last_goal_set = goals
-            self._active_list = self._last_goal_set
-
-            if not goals:
-                await update.message.reply_text("No goals found.")
-                return
-
-            # Format the list
-            from datetime import datetime, timedelta
-            lines = []
-            header = f"{status.capitalize() if status else 'All'} goals ({len(goals)} total):"
-            lines.append(header)
-
-            for i, path in enumerate(goals, 1):
-                fm = self._parse_frontmatter(path)
-                cat = fm.get("category", "")
-                title = fm.get("source_title", "")
-                due = fm.get("due_date")
-                if due:
-                    try:
-                        due_dt = datetime.strptime(due, "%Y-%m-%d")
-                        days_until = (due_dt - datetime.now()).days
-                        if days_until < 0:
-                            due_str = f"was due {due} ⚠️ OVERDUE"
-                        elif days_until <= 7:
-                            due_str = f"due {due} ⚠️ {days_until} days"
-                        else:
-                            due_str = f"due {due}"
-                    except ValueError:
-                        due_str = f"due {due}"
-                else:
-                    due_str = "no due date"
-
-                lines.append(f"{i}. [{cat}] {title} — {due_str}")
-
-            goals_text = "\n".join(lines)
+            goals_text = self._list_goals_text(category=category, status=status)
             await update.message.reply_text(goals_text)
             self._record_command_reply(update.effective_chat.id, "goals", goals_text)
         except Exception as e:
@@ -5396,6 +5394,61 @@ class TelegramChatHandler:
             kind_tag = f"[{kind[:4]}] " if not kind_filter else ""
             lines.append(f"{idx}. {kind_tag}[{status}] [{priority}] {title} ({created}) #{issue['number']}")
         await self._send_reply(update, "\n".join(lines))
+
+    async def _list_features_text(self, kind: Optional[str] = None, show_all: bool = False) -> str:
+        """Return formatted features/bugs list text. Called by cmd_features and tool dispatch.
+        kind: 'feature', 'bug', or None for both. show_all includes done/wont-do."""
+        if self.github.enabled:
+            labels = [f"kind:{kind}"] if kind else None
+            state = "all" if show_all else "open"
+            try:
+                issues = await self.github.list_issues(state=state, labels=labels)
+            except Exception as e:
+                return f"GitHub error: {e}"
+            if not show_all:
+                issues = [i for i in issues if i.get("state") == "open"]
+            self._last_feature_set = [i["number"] for i in issues]
+            if not issues:
+                return "No feature requests found."
+            lines = [f"Feature requests ({len(issues)}):"]
+            for idx, issue in enumerate(issues, 1):
+                status = self._status_from_labels(issue)
+                priority = self._priority_from_labels(issue)
+                issue_kind = self._kind_from_labels(issue)
+                created = issue.get("created_at", "")[:10]
+                title = issue.get("title", "")[:60]
+                kind_tag = f"[{issue_kind[:4]}] " if not kind else ""
+                lines.append(f"{idx}. {kind_tag}[{status}] [{priority}] {title} ({created}) #{issue['number']}")
+            return "\n".join(lines)
+
+        # Local fallback
+        memories_dir = BRAIN_DIR / "memories"
+        files = sorted(memories_dir.glob("feature-request-*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+        results = []
+        for f in files:
+            fm = self._parse_frontmatter(f)
+            if fm.get("type") != "feature_request":
+                continue
+            item_status = fm.get("status", "new")
+            item_kind = fm.get("kind", "feature")
+            if kind and item_kind != kind:
+                continue
+            if not show_all and item_status in ("done", "wont-do"):
+                continue
+            results.append((f, fm))
+        self._last_feature_set = [f for f, _ in results]
+        if not results:
+            return "No feature requests found."
+        lines = [f"Feature requests ({len(results)}):"]
+        for i, (f, fm) in enumerate(results, 1):
+            item_status = fm.get("status", "new")
+            priority = fm.get("priority", "medium")
+            title = fm.get("title", f.stem)[:60]
+            created = fm.get("created", "")[:10]
+            item_kind = fm.get("kind", "feature")
+            kind_tag = f"[{item_kind[:4]}] " if not kind else ""
+            lines.append(f"{i}. {kind_tag}[{item_status}] [{priority}] {title} ({created})")
+        return "\n".join(lines)
 
     def _get_memory_text(self, name: str) -> str:
         """Search memories by title or filename and return full file contents.

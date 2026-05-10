@@ -8,6 +8,10 @@ import chat_tools
 def mock_handler():
     """Mock TelegramChatHandler with stub list methods."""
     h = MagicMock()
+    h._list_goals_text.return_value = "goals result"
+    h._list_features_text = AsyncMock(return_value="features result")
+    h._list_todos_text.return_value = "todos result"
+    h._list_actions_text.return_value = "actions result"
     h._list_projects_text.return_value = "projects result"
     h._list_commitments_text.return_value = "commitments result"
     h._list_events_text.return_value = "events result"
@@ -83,6 +87,45 @@ async def test_dispatch_list_commands(mock_handler):
     result = await chat_tools.dispatch("list_commands", {}, mock_handler)
     assert result == "commands text"
     mock_handler._list_commands_text.assert_called_once_with()
+
+
+async def test_dispatch_list_goals(mock_handler):
+    result = await chat_tools.dispatch("list_goals", {}, mock_handler)
+    assert result == "goals result"
+    mock_handler._list_goals_text.assert_called_once_with(category=None, status="active")
+
+
+async def test_dispatch_list_goals_with_filters(mock_handler):
+    await chat_tools.dispatch("list_goals", {"category": "work", "status": "completed"}, mock_handler)
+    mock_handler._list_goals_text.assert_called_once_with(category="work", status="completed")
+
+
+async def test_dispatch_list_features(mock_handler):
+    result = await chat_tools.dispatch("list_features", {}, mock_handler)
+    assert result == "features result"
+    mock_handler._list_features_text.assert_called_once_with(kind=None, show_all=False)
+
+
+async def test_dispatch_list_features_bugs_only(mock_handler):
+    await chat_tools.dispatch("list_features", {"kind": "bug"}, mock_handler)
+    mock_handler._list_features_text.assert_called_once_with(kind="bug", show_all=False)
+
+
+async def test_dispatch_list_todos(mock_handler):
+    result = await chat_tools.dispatch("list_todos", {}, mock_handler)
+    assert result == "todos result"
+    mock_handler._list_todos_text.assert_called_once_with()
+
+
+async def test_dispatch_list_actions(mock_handler):
+    result = await chat_tools.dispatch("list_actions", {}, mock_handler)
+    assert result == "actions result"
+    mock_handler._list_actions_text.assert_called_once_with(filter_status=None)
+
+
+async def test_dispatch_list_actions_with_filter(mock_handler):
+    await chat_tools.dispatch("list_actions", {"filter_status": "all"}, mock_handler)
+    mock_handler._list_actions_text.assert_called_once_with(filter_status="all")
 
 
 async def test_dispatch_unknown_tool_returns_error_string(mock_handler):
@@ -167,6 +210,7 @@ def test_all_tool_names_in_dispatcher():
     """Every tool name in TOOLS is handled by dispatch (checked via no 'unknown tool' return)."""
     # We don't run dispatch here (async) — just verify the names are in the known set
     dispatched_names = {
+        "list_goals", "list_features", "list_todos", "list_actions",
         "list_projects", "list_commitments", "list_events", "list_meetings",
         "list_contacts", "list_comms", "list_readings", "search_memories", "get_memory",
         "list_commands", "deliver_pending_replies", "discard_pending_replies",

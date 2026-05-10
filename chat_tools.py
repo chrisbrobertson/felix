@@ -184,6 +184,88 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "list_goals",
+            "description": (
+                "List the user's goals. Returns active goals by default. "
+                "Call this when the user asks about their goals, objectives, "
+                "aspirations, or targets — e.g. 'what are my goals?', "
+                "'show my work goals', 'which goals are overdue?'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "Optional filter: personal, work, family, learning, other",
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "Status filter (default: active). Options: active, completed, abandoned",
+                        "enum": ["active", "completed", "abandoned"],
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_features",
+            "description": (
+                "List open feature requests and bug reports. Call this when the user "
+                "asks about the backlog, feature requests, open bugs, or 'what's in the queue'. "
+                "Use kind='bug' to show only bugs, kind='feature' for features only."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "description": "Optional filter: 'feature' or 'bug'",
+                        "enum": ["feature", "bug"],
+                    },
+                    "show_all": {
+                        "type": "boolean",
+                        "description": "If true, include done/wont-do items (default: false)",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_todos",
+            "description": (
+                "List active todos and personal commitments as a checklist. "
+                "Call this when the user asks about their tasks, to-dos, or what they need to do."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_actions",
+            "description": (
+                "List pending agent-proposed actions from the goal/project agent. "
+                "Call this when the user asks about pending actions, agent suggestions, "
+                "or 'what actions are proposed?'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filter_status": {
+                        "type": "string",
+                        "description": "Optional filter: 'pending', 'approved', or 'all' (default: pending)",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "add_goal",
             "description": "Create a new goal for the user. Use when the user expresses a desired outcome, aspiration, or target they want to achieve.",
             "parameters": {
@@ -442,6 +524,22 @@ async def _discard_pending(handler) -> str:
 
 async def _call(name: str, arguments: dict, handler):
     """Pure routing from tool name → handler method. Raises on unknown name or missing args."""
+    if name == "list_goals":
+        return handler._list_goals_text(
+            category=arguments.get("category"),
+            status=arguments.get("status", "active"),
+        )
+    if name == "list_features":
+        return await handler._list_features_text(
+            kind=arguments.get("kind"),
+            show_all=bool(arguments.get("show_all", False)),
+        )
+    if name == "list_todos":
+        return handler._list_todos_text()
+    if name == "list_actions":
+        return handler._list_actions_text(
+            filter_status=arguments.get("filter_status"),
+        )
     if name == "list_projects":
         return handler._list_projects_text(
             category=arguments.get("category"),
