@@ -17,7 +17,8 @@ MEMORIES_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/secon
 # detect the case where a timeout fires after a mutation has already landed, so
 # it can warn the user rather than silently suggest they retry.
 MUTATING_TOOLS: frozenset[str] = frozenset(
-    {"add_goal", "add_project", "add_bug", "add_feature", "close_issue", "close_commitment", "deliver_pending_replies"}
+    {"add_goal", "add_project", "add_bug", "add_feature", "close_issue", "close_commitment",
+     "close_goal", "close_project", "deliver_pending_replies"}
 )
 
 TOOLS: list[dict] = [
@@ -457,6 +458,60 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "close_goal",
+            "description": (
+                "Mark a goal as completed or abandoned. Use when the user says something like "
+                "'I achieved my goal of X', 'mark my fitness goal done', 'abandon the learning goal', "
+                "or 'I've completed my goal to Y'. Call list_goals first if you need to confirm "
+                "which goal the user means."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Partial title of the goal to find and update",
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "New status (default: completed)",
+                        "enum": ["completed", "abandoned"],
+                    },
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "close_project",
+            "description": (
+                "Mark a project as completed, abandoned, or on hold. Use when the user says "
+                "'I finished the X project', 'mark the Y project done', 'put the Z project on hold', "
+                "or 'abandon the W project'. Call list_projects first if you need to confirm "
+                "which project the user means."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Partial title of the project to find and update",
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "New status (default: completed)",
+                        "enum": ["completed", "abandoned", "on_hold"],
+                    },
+                },
+                "required": ["title"],
+            },
+        },
+    },
 ]
 
 
@@ -620,6 +675,16 @@ async def _call(name: str, arguments: dict, handler):
         return await handler._close_commitment_text(
             index=arguments.get("index"),
             title=arguments.get("title"),
+            status=arguments.get("status", "completed"),
+        )
+    if name == "close_goal":
+        return handler._close_goal_text(
+            title=arguments["title"],
+            status=arguments.get("status", "completed"),
+        )
+    if name == "close_project":
+        return handler._close_project_text(
+            title=arguments["title"],
             status=arguments.get("status", "completed"),
         )
     if name in ("add_feature", "add_bug"):

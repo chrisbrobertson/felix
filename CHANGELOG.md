@@ -6,6 +6,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `close_goal` and `close_project` LLM tool calls so the chat skill can complete, abandon, or put on hold a goal/project via natural language (e.g. "I achieved my 5K goal", "put the website project on hold"). Title-substring matching with disambiguation when multiple items match. Closes #124; incremental progress on #128, #129.
+
 ### Fixed
 - `/bugs` and `/features` list entries now include the 6-character hash ID (e.g. `[abc123]`) so users can reference items by ID in follow-up commands like `/feature_detail` (#131).
 
