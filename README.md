@@ -104,6 +104,7 @@ graph TB
         CS[Calendar Scanner]
         SS[Slack Scanner]
         PS[Project Scanner]
+        NS[Notes Scanner]
     end
     subgraph DERIVE["🔄 Derivative loops"]
         CT[Commitment Tracker]
@@ -121,7 +122,7 @@ graph TB
 
 ### Watcher node
 
-A watcher machine runs five capture loops: browser history, git repos, email threads, calendar events, and Slack threads. It writes memory files to iCloud; the full node picks them up and indexes them.
+A watcher machine runs six capture loops: browser history, git repos, email threads, calendar events, Slack threads, and Apple Notes. It writes memory files to iCloud; the full node picks them up and indexes them.
 
 ```mermaid
 flowchart LR
@@ -135,10 +136,12 @@ flowchart LR
     MAIL[Apple Mail] --> ES[Email Scanner]
     CAL[Apple Calendar] --> CS[Calendar Scanner]
     SLACK[Slack API] --> SS[Slack Scanner]
+    NOTES[Apple Notes] --> NS[Notes Scanner]
     PS --> CLOUD
     ES --> CLOUD
     CS --> CLOUD
     SS --> CLOUD
+    NS --> CLOUD
     CLOUD -.->|auto-synced| FULL[Full Node picks it up]
 ```
 
@@ -169,6 +172,7 @@ flowchart LR
     GIT[git repos] --> PS[Project Scanner]
     CAL[Apple Calendar] --> CS[Calendar Scanner]
     SLACK[Slack API] --> SS[Slack Scanner]
+    NOTES[Apple Notes] --> NS[Notes Scanner]
 
     BW --> MEM[(memories/)]
     ES --> ET[email-thread-*.md]
@@ -176,12 +180,14 @@ flowchart LR
     PS --> PJ[project-{hostname}-*.md]
     CS --> CE[calendar-event-*.md]
     SS --> ST[slack-thread-*.md]
+    NS --> NT[apple-notes-*.md]
 
     ET --> MEM
     MT --> MEM
     PJ --> MEM
     CE --> MEM
     ST --> MEM
+    NT --> MEM
 
     MEM --> IB[Index Builder]
     IB --> IDX[index.md]
@@ -204,7 +210,7 @@ flowchart LR
     NM --> TG
 ```
 
-**Key design:** iCloud Drive is the shared bus. Watcher nodes write memories (browser history, git repos, email threads, calendar events, Slack threads), full node picks them up and indexes them. Config is shared via iCloud; per-machine role is set via `SECOND_BRAIN_ROLE` env var in the launchd plist (NOT in config.yaml, which would sync everywhere). Project memory files are hostname-scoped (`project-{hostname}-{name}.md`) so the same repo can be tracked on multiple machines without filename collisions.
+**Key design:** iCloud Drive is the shared bus. Watcher nodes write memories (browser history, git repos, email threads, calendar events, Slack threads, Apple Notes), full node picks them up and indexes them. Config is shared via iCloud; per-machine role is set via `SECOND_BRAIN_ROLE` env var in the launchd plist (NOT in config.yaml, which would sync everywhere). Project memory files are hostname-scoped (`project-{hostname}-{name}.md`) so the same repo can be tracked on multiple machines without filename collisions.
 
 **Specialized summarizers.** Felix doesn't use one generic prompt for everything. It classifies each URL into one of five content types (research paper, API docs, code repo, video transcript, or default web page) and routes to a specialized skill — `summarize-paper.md`, `summarize-docs.md`, `summarize-repo.md`, `summarize-transcript.md`, or `summarize-webpage.md`. When a new content type appears that has no matching skill, the daemon can draft one automatically. See *Skill optimization and quality* below.
 
@@ -367,6 +373,11 @@ code_scanner:
 
 /code [N]                # list indexed git repos, sorted by last commit (default 10)
 /code 3                  # show code repo #3 detail: description, languages, commits, README summary
+
+/notes [N]               # list Apple Notes, sorted by modification date (default 20, max 50)
+/notes 3                 # show note #3 detail: folder, content, tags
+/notes todos             # show notes flagged as todo-related
+/notes <folder>          # filter to notes in a specific folder (e.g., /notes Work)
 ```
 
 > **Upgrade note:** If you have existing `project-{hostname}-*.md` memory files from a previous version, they are automatically migrated to `code-{hostname}-*.md` on first daemon startup after upgrading.
@@ -593,6 +604,11 @@ Muted state persists across daemon restarts. `/briefing` works even when muted �
 | `/edit <N> field=value` | Edit a field on candidate N before confirming |
 | **Code repositories** | |
 | `/code [N]` | List indexed repos (default 10, max 50). Sorted by last commit. When the same repo exists on multiple machines, displays `hosts: [hostname1, hostname2]`. |
+| **Apple Notes** | |
+| `/notes [N]` | List Apple Notes, sorted by modification date (default 20, max 50) |
+| `/notes <N>` | Show note detail: folder, content, tags |
+| `/notes todos` | Show notes flagged as todo-related |
+| `/notes <folder>` | Filter to notes in a specific folder (case-insensitive substring match) |
 | **Calendar & meetings** | |
 | `/events [N]` | Calendar events in ±7-day window, sorted by start time (default 10, max 50) |
 | `/event <N>` | Event detail: time, location, attendees, description, related commitments |
@@ -683,7 +699,8 @@ Runtime state (local per machine):
 ├── commitment-accuracy.json        # extraction precision stats per source type
 ├── rejected-candidates.json        # rejected candidate sources to prevent re-proposal
 ├── usage-tracker-state.json        # daily token usage per model (30-day rolling window)
-└── notification-state.json         # chat_id, mute state, sent alerts
+├── notification-state.json         # chat_id, mute state, sent alerts
+└── notes-scanner-state.json        # processed Apple Notes modification timestamps
 
 iCloud (shared across all machines):
 ~/Library/Mobile Documents/com~apple~CloudDocs/second-brain/
@@ -918,12 +935,12 @@ The system supports two roles. Set `SECOND_BRAIN_ROLE` in each machine's launchd
 | Role | What runs | API keys needed |
 |------|-----------|-----------------|
 | `full` | All twelve loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
-| `watcher` | Browser watcher + project/email/calendar/slack scanners | `GEMINI_API_KEY` only |
+| `watcher` | Browser watcher + project/email/calendar/slack/notes scanners | `GEMINI_API_KEY` only |
 
 ```mermaid
 graph LR
     subgraph LAPTOP["💻  MacBook  watcher"]
-        WB[5 capture loops]
+        WB[6 capture loops]
     end
     subgraph STUDIO["🖥️  Mac Studio  full"]
         ALL[All 12 loops]
@@ -937,7 +954,7 @@ graph LR
     STUDIO -- "writes index.md" --> CLOUD
 ```
 
-Run `full` on your always-on machine (Mac Studio / Mac Mini). Run `watcher` on your MacBook — it captures browser history, git repos, email threads, calendar events, and Slack threads while you're mobile, syncing memories to iCloud automatically.
+Run `full` on your always-on machine (Mac Studio / Mac Mini). Run `watcher` on your MacBook — it captures browser history, git repos, email threads, calendar events, Slack threads, and Apple Notes while you're mobile, syncing memories to iCloud automatically.
 
 On the watcher machine, install only the watcher dependencies:
 ```bash

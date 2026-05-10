@@ -140,6 +140,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("code", self.cmd_code))
         self.app.add_handler(CommandHandler("events", self.cmd_events))
         self.app.add_handler(CommandHandler("event", self.cmd_event))
+        self.app.add_handler(CommandHandler("notes", self.cmd_notes))
         self.app.add_handler(CommandHandler("meetings", self.cmd_meetings))
         self.app.add_handler(CommandHandler("meeting", self.cmd_meeting))
         self.app.add_handler(CommandHandler("comms", self.cmd_comms))
@@ -259,6 +260,8 @@ class TelegramChatHandler:
         self._last_project_set: list = []
         # Last /events result set — used by /event <N>.
         self._last_event_set: list = []
+        # Last /notes result set — used by /note <N>.
+        self._last_note_set: list = []
         # Last /meetings result set — used by /meeting <N>.
         self._last_meeting_set: list = []
         # Last /comms result set — used by /comm <N>.
@@ -5110,6 +5113,106 @@ class TelegramChatHandler:
             lines.append(f"Calendar: {cal}")
         lines += [f"Attendees: {parts_str}", "", summary]
         await update.message.reply_text("\n".join(lines))
+
+    # ── /notes and /note commands ─────────────────────────────────────────────
+
+    def _list_notes_text(self, limit: int = 20, folder_filter: Optional[str] = None, todos_only: bool = False) -> str:
+        """Return formatted list of Apple Notes memory files."""
+        limit = max(1, min(limit, 100))
+        files = list((BRAIN_DIR / "memories").glob("apple-notes-*.md"))
+        all_notes = []
+        for f in files:
+            fm = self._parse_frontmatter(f)
+            if fm.get("type") != "apple_notes":
+                continue
+            all_notes.append((f, fm))
+
+        if not all_notes:
+            return "No Apple Notes found. The notes scanner may not have run yet."
+
+        all_notes.sort(key=lambda x: x[1].get("modified") or "", reverse=True)
+
+        if todos_only:
+            all_notes = [(f, fm) for f, fm in all_notes if fm.get("has_todos")]
+        elif folder_filter:
+            ff = folder_filter.lower()
+            all_notes = [(f, fm) for f, fm in all_notes if ff in (fm.get("folder") or "").lower()]
+
+        if not all_notes:
+            hint = " with todos" if todos_only else f" in folder '{folder_filter}'"
+            return f"No Apple Notes found{hint}."
+
+        notes = all_notes[:limit]
+        self._last_note_set = [f for f, _ in notes]
+        self._active_list = self._last_note_set
+
+        filter_note = " (todos only)" if todos_only else (f" in '{folder_filter}'" if folder_filter else "")
+        lines = [f"Apple Notes{filter_note} ({len(notes)} shown of {len(all_notes)}):"]
+        for i, (_, fm) in enumerate(notes, 1):
+            title = (fm.get("source_title") or "(no title)")[:50]
+            folder = fm.get("folder") or ""
+            modified = (fm.get("modified") or "")[:10]
+            has_todos = " [todo]" if fm.get("has_todos") else ""
+            lines.append(f"{i}. [{folder}] {title}{has_todos} — {modified}")
+        lines.append("\nUse /notes <N> for full content.")
+        return "\n".join(lines)
+
+    def _resolve_note_index(self, n: str) -> Optional[Path]:
+        try:
+            idx = int(n) - 1
+        except (ValueError, TypeError):
+            return None
+        if 0 <= idx < len(self._last_note_set):
+            return self._last_note_set[idx]
+        return None
+
+    async def cmd_notes(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List Apple Notes or show detail for note N.
+
+        /notes              — list all notes
+        /notes <N>          — show full content of note N from last list
+        /notes todos        — list notes flagged as containing todos
+        /notes <folder>     — list notes in a specific folder
+        """
+        if not self._check_auth(update):
+            return
+
+        args = list(context.args or [])
+
+        # If first arg is an integer, show detail for that note
+        if args and args[0].isdigit():
+            path = self._resolve_note_index(args[0])
+            if path is None:
+                await update.message.reply_text("Run /notes first to build the list.")
+                return
+            fm = self._parse_frontmatter(path)
+            title = fm.get("source_title") or "(no title)"
+            folder = fm.get("folder") or ""
+            modified = (fm.get("modified") or "")[:10]
+            has_todos = fm.get("has_todos", False)
+            try:
+                content_parts = path.read_text(encoding="utf-8").split("---", 2)
+                body = content_parts[2].strip() if len(content_parts) >= 3 else ""
+            except Exception:
+                body = ""
+            lines = [f"{title}", f"Folder: {folder} | Modified: {modified}"]
+            if has_todos:
+                lines.append("[Contains checklist/todo items]")
+            lines += ["", body[:3500]]
+            await self._send_reply(update, "\n".join(lines))
+            return
+
+        limit = 20
+        folder_filter = None
+        todos_only = False
+        for arg in args:
+            if arg.lower() == "todos":
+                todos_only = True
+            else:
+                folder_filter = arg
+        text = self._list_notes_text(limit, folder_filter=folder_filter, todos_only=todos_only)
+        await self._send_reply(update, text)
+        self._record_command_reply(update.effective_chat.id, "notes", text)
 
     # ── /meetings and /meeting commands ──────────────────────────────────────
 

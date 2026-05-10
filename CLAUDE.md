@@ -187,12 +187,14 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 15. **Quota Scanner** (every 30 min, `full` role only) — tracks Claude.ai Pro and ChatGPT Plus 5-hour rolling-window message quotas. Primary path is manual self-report via `/quota report <platform> <used>/<cap> [reset <min>]`. Optional scraping path (disabled by default; requires `quota.scrape_enabled: true` and cookie file) — WARNING: may violate vendor ToS. Threshold alerts at 75% (warning) and 90% (critical) with per-threshold per-platform 60-min cooldown. Exposes `/quota`, `/quota report`, `/quota reset` Telegram commands. Integrates into daily briefing when `quota.briefing_enabled: true`. State persisted in `DEPLOY_DIR/quota-scanner-state.json`.
 
+16. **Notes Scanner** (every 5 min, all roles) — reads Apple Notes.app via AppleScript, writes `apple-notes-{folder-slug}-{note-slug}-{id}.md` per note. `type: apple_notes` in frontmatter. Notes in todo-style folders (Todos, Tasks, To Do) or with checklist body patterns are flagged `has_todos: true`. Exposes `/notes [N|todos|<folder>]` Telegram command. State persisted in `DEPLOY_DIR/notes-scanner-state.json`. Configurable: `notes_scanner.enabled` (default true), `notes_scanner.skip_folders`, `notes_scanner.interval_seconds`.
+
 **Zoom Scanner** also exposes `/meetings [N]` and `/meeting <N>` Telegram commands for browsing meeting transcripts.
 
 ## Two Deployment Roles
 
-- **`full`** — all fifteen loops. Runs on always-on machine (Mac Studio/Mini). Needs `ANTHROPIC_API_KEY` + `GEMINI_API_KEY`.
-- **`watcher`** — five capture loops (browser watcher + code/email/calendar/slack scanners). Runs on MacBook. Needs only `GEMINI_API_KEY`. Full-node imports (`python-telegram-bot`, etc.) must be deferred inside the `role == "full"` block to avoid crashing on watcher nodes that don't have those packages installed.
+- **`full`** — all sixteen loops. Runs on always-on machine (Mac Studio/Mini). Needs `ANTHROPIC_API_KEY` + `GEMINI_API_KEY`.
+- **`watcher`** — six capture loops (browser watcher + code/email/calendar/notes/slack scanners). Runs on MacBook. Needs only `GEMINI_API_KEY`. Full-node imports (`python-telegram-bot`, etc.) must be deferred inside the `role == "full"` block to avoid crashing on watcher nodes that don't have those packages installed.
 
 ## LLM Routing
 
@@ -234,6 +236,7 @@ All runtime state lives in `~/secondbrain/` — separate from the repo and from 
 ├── zoom-scanner-state.json         # processed meeting UUIDs for zoom scanner
 ├── commitment-scanner-state.json   # processed file mtimes for commitment tracker
 ├── calendar-scanner-state.json     # processed event modification timestamps
+├── notes-scanner-state.json        # processed note modification dates for Apple Notes scanner
 ├── contact-tracker-state.json      # processed file mtimes and interaction timestamps
 ├── slack-scanner-state.json        # processed Slack thread timestamps
 ├── project-inference-state.json    # mtime state for project inference scanner

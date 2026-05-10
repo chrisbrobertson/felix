@@ -6,6 +6,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Apple Notes scanner** (`notes_scanner.py`): new Tier-1 async loop (every 5 min, watcher + full roles) that reads Apple Notes via AppleScript and writes `apple_notes` memory files. Notes in todo-style folders (Todos, Tasks, To Do) or with checklist-pattern bodies are flagged `has_todos: true`. `/notes` command lists scanned notes; `/notes <N>` shows full content; `/notes todos` filters to checklist notes; `/notes <folder>` filters by folder name. State tracked in `DEPLOY_DIR/notes-scanner-state.json` (#117).
+
 ### Fixed
 - `/bugs` and `/features` list entries now include the 6-character hash ID (e.g. `[abc123]`) so users can reference items by ID in follow-up commands like `/feature_detail` (#131).
 

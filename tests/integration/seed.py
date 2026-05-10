@@ -298,6 +298,24 @@ def circle(brain_dir, *, name="Family", icloud_folder="Family Circle") -> Path:
     return path
 
 
+def apple_note(brain_dir, *, title="My Note", folder="Personal", has_todos: bool = False) -> Path:
+    """Write an apple_notes memory file."""
+    memories = brain_dir / "memories"
+    memories.mkdir(exist_ok=True)
+    slug = _slugify(title)
+    import hashlib
+    id_hash = hashlib.sha1(f"{folder}:{title}".encode()).hexdigest()[:6]
+    folder_slug = _slugify(folder)
+    path = memories / f"apple-notes-{folder_slug}-{slug}-{id_hash}.md"
+    path.write_text(
+        f"---\nsource_title: {title}\ntype: apple_notes\nfolder: {folder}\n"
+        f"has_todos: {str(has_todos).lower()}\nmodified: '2026-05-01'\n"
+        f"last_scanned: '2026-05-01T10:00:00'\ntags: [apple-notes]\n"
+        f"---\n\n# {title}\n\nSome note content here.\n"
+    )
+    return path
+
+
 def report_config(deploy_dir, *, name="weekly-digest", schedule="weekly") -> Path:
     """Write a report config file (in deploy_dir, not memories)."""
     reports_dir = deploy_dir / "reports"
