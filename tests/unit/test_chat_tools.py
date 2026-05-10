@@ -216,6 +216,8 @@ def test_all_tool_names_in_dispatcher():
         "list_commands", "deliver_pending_replies", "discard_pending_replies",
         "add_goal", "add_project", "add_feature", "add_bug", "close_issue",
         "close_commitment", "close_goal", "close_project",
+        "add_todo", "get_goal", "get_project", "get_feature", "update_feature",
+        "get_event", "get_meeting", "get_contact", "get_comm", "get_reading", "get_action",
         # Handled in handle_message's tool_dispatch closure (needs chat_id in scope)
         "get_recent_commands",
     }
@@ -582,3 +584,141 @@ async def test_close_commitment_dismissed_status(mock_handler):
         title=None,
         status="dismissed",
     )
+
+
+# --- add_todo tool tests ---
+
+def test_add_todo_tool_in_tools_list():
+    """add_todo is present in TOOLS with required fields."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "add_todo" in names
+
+    tool = next(t for t in chat_tools.TOOLS if t["function"]["name"] == "add_todo")
+    assert tool["function"]["description"]
+    params = tool["function"]["parameters"]
+    assert "description" in params["properties"]
+    assert "description" in params.get("required", [])
+    assert "due_date" in params["properties"]
+    assert "type" in params["properties"]
+
+
+def test_add_todo_in_mutating_tools():
+    """add_todo is listed as a mutating tool."""
+    assert "add_todo" in chat_tools.MUTATING_TOOLS
+
+
+@pytest.mark.asyncio
+async def test_add_todo_basic(mock_handler):
+    """add_todo calls _add_todo_text with description."""
+    mock_handler._add_todo_text.return_value = "✓ Todo added [personal]: Call John"
+
+    result = await chat_tools.dispatch("add_todo", {"description": "Call John"}, mock_handler)
+
+    assert result == "✓ Todo added [personal]: Call John"
+    mock_handler._add_todo_text.assert_called_once_with(
+        description="Call John",
+        due_date=None,
+        todo_type=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_add_todo_with_due_date_and_type(mock_handler):
+    """add_todo passes due_date and type through."""
+    mock_handler._add_todo_text.return_value = "✓ Todo added [waiting_on]: Waiting for Jane — due 2026-05-15"
+
+    result = await chat_tools.dispatch(
+        "add_todo",
+        {"description": "Waiting for Jane", "due_date": "2026-05-15", "type": "waiting_on"},
+        mock_handler,
+    )
+
+    assert "waiting_on" in result or "Waiting for Jane" in result
+    mock_handler._add_todo_text.assert_called_once_with(
+        description="Waiting for Jane",
+        due_date="2026-05-15",
+        todo_type="waiting_on",
+    )
+
+
+# --- get_goal tool tests ---
+
+def test_get_goal_tool_in_tools_list():
+    """get_goal is present in TOOLS with required index field."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "get_goal" in names
+
+    tool = next(t for t in chat_tools.TOOLS if t["function"]["name"] == "get_goal")
+    params = tool["function"]["parameters"]
+    assert "index" in params["properties"]
+    assert "index" in params.get("required", [])
+
+
+@pytest.mark.asyncio
+async def test_get_goal_dispatch(mock_handler):
+    """get_goal dispatches to _get_goal_text with the index."""
+    mock_handler._get_goal_text.return_value = "Run a 5K [fitness] — active\nDue: 2026-06-01"
+
+    result = await chat_tools.dispatch("get_goal", {"index": 2}, mock_handler)
+
+    assert "5K" in result
+    mock_handler._get_goal_text.assert_called_once_with(2)
+
+
+# --- get_project tool tests ---
+
+def test_get_project_tool_in_tools_list():
+    """get_project is present in TOOLS with required index field."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "get_project" in names
+
+    tool = next(t for t in chat_tools.TOOLS if t["function"]["name"] == "get_project")
+    params = tool["function"]["parameters"]
+    assert "index" in params["properties"]
+    assert "index" in params.get("required", [])
+
+
+@pytest.mark.asyncio
+async def test_get_project_dispatch(mock_handler):
+    """get_project dispatches to _get_project_text with the index."""
+    mock_handler._get_project_text.return_value = "Website redesign [work] — active"
+
+    result = await chat_tools.dispatch("get_project", {"index": 1}, mock_handler)
+
+    assert "Website" in result
+    mock_handler._get_project_text.assert_called_once_with(1)
+
+
+# --- get_feature tool tests ---
+
+def test_get_feature_tool_in_tools_list():
+    """get_feature is present in TOOLS with required index_or_id field."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "get_feature" in names
+
+    tool = next(t for t in chat_tools.TOOLS if t["function"]["name"] == "get_feature")
+    params = tool["function"]["parameters"]
+    assert "index_or_id" in params["properties"]
+    assert "index_or_id" in params.get("required", [])
+
+
+@pytest.mark.asyncio
+async def test_get_feature_dispatch_by_index(mock_handler):
+    """get_feature dispatches to _get_feature_text with the index string."""
+    mock_handler._get_feature_text = AsyncMock(return_value="**Dark mode** — Status: new")
+
+    result = await chat_tools.dispatch("get_feature", {"index_or_id": "3"}, mock_handler)
+
+    assert "Dark mode" in result
+    mock_handler._get_feature_text.assert_called_once_with("3")
+
+
+@pytest.mark.asyncio
+async def test_get_feature_dispatch_by_short_id(mock_handler):
+    """get_feature dispatches to _get_feature_text with the short_id string."""
+    mock_handler._get_feature_text = AsyncMock(return_value="**Some bug** — Status: new | Kind: bug")
+
+    result = await chat_tools.dispatch("get_feature", {"index_or_id": "ab12cd"}, mock_handler)
+
+    assert "Some bug" in result
+    mock_handler._get_feature_text.assert_called_once_with("ab12cd")

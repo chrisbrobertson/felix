@@ -18,7 +18,7 @@ MEMORIES_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/secon
 # it can warn the user rather than silently suggest they retry.
 MUTATING_TOOLS: frozenset[str] = frozenset(
     {"add_goal", "add_project", "add_bug", "add_feature", "close_issue", "close_commitment",
-     "close_goal", "close_project", "deliver_pending_replies"}
+     "close_goal", "close_project", "deliver_pending_replies", "add_todo"}
 )
 
 TOOLS: list[dict] = [
@@ -512,6 +512,263 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_todo",
+            "description": (
+                "Create a personal todo item. Use when the user says things like "
+                "'remind me to call John', 'add a todo to send the report', "
+                "'I need to follow up with Jane', or 'create a task to review the doc'. "
+                "For waiting-on items ('waiting for John to reply') set type to waiting_on."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": "What needs to be done",
+                    },
+                    "due_date": {
+                        "type": "string",
+                        "description": "Optional due date in YYYY-MM-DD format",
+                    },
+                    "type": {
+                        "type": "string",
+                        "description": "Todo type (default: personal)",
+                        "enum": ["personal", "waiting_on", "outbound"],
+                    },
+                },
+                "required": ["description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_goal",
+            "description": (
+                "Get full detail for a specific goal by its list index. "
+                "Call list_goals first to get the numbered list, then use "
+                "get_goal with the index number to see due date, priority, "
+                "linked projects, and notes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_goals result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_project",
+            "description": (
+                "Get full detail for a specific project by its list index. "
+                "Call list_projects first to get the numbered list, then use "
+                "get_project with the index number to see due date, priority, "
+                "linked goal, and milestones."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_projects result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_feature",
+            "description": (
+                "Get full detail for a specific feature request or bug report. "
+                "Accepts a 1-based list index (from list_features), a GitHub issue "
+                "number (e.g. '#42' or '42'), or a 6-char short_id hash. "
+                "Returns title, status, priority, description, and notes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index_or_id": {
+                        "type": "string",
+                        "description": "List index (e.g. '2'), GitHub issue number (e.g. '42' or '#42'), or 6-char short_id",
+                    },
+                },
+                "required": ["index_or_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_feature",
+            "description": (
+                "Update the priority or status of a feature request or bug. "
+                "Useful when the user wants to change metadata without closing the issue. "
+                "Provide either short_id or title substring to identify the target."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "short_id": {
+                        "type": "string",
+                        "description": "6-character hash ID shown in /features or /bugs listings",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Partial title to search for when short_id is unknown",
+                    },
+                    "priority": {
+                        "type": "string",
+                        "description": "New priority level",
+                        "enum": ["low", "medium", "high", "critical"],
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "New status",
+                        "enum": ["new", "in_progress", "blocked", "done", "wont_do"],
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_event",
+            "description": (
+                "Get full detail for a specific calendar event by its list index. "
+                "Call list_events first to get the numbered list, then use get_event "
+                "with the index number to see location, participants, notes, and summary."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_events result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_meeting",
+            "description": (
+                "Get full detail for a specific meeting transcript by its list index. "
+                "Call list_meetings first to get the numbered list, then use get_meeting "
+                "with the index number to see participants, summary, and transcript."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_meetings result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_contact",
+            "description": (
+                "Get full detail for a specific contact by their list index. "
+                "Call list_contacts first to get the numbered list, then use get_contact "
+                "with the index number to see email, relationship score, and recent interactions."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_contacts result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_comm",
+            "description": (
+                "Get full detail for a specific email or Slack thread by its list index. "
+                "Call list_comms first to get the numbered list, then use get_comm "
+                "with the index number to see participants, messages, and full thread content."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_comms result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_reading",
+            "description": (
+                "Get full detail for a specific captured web page by its list index. "
+                "Call list_readings first to get the numbered list, then use get_reading "
+                "with the index number to see URL, full summary, key points, and tags."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_readings result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_action",
+            "description": (
+                "Get full detail for a specific agent-proposed action by its list index. "
+                "Call list_actions first to get the numbered list, then use get_action "
+                "with the index number to see source goal/project, rationale, and proposed steps."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_actions result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
 ]
 
 
@@ -687,6 +944,37 @@ async def _call(name: str, arguments: dict, handler):
             title=arguments["title"],
             status=arguments.get("status", "completed"),
         )
+    if name == "add_todo":
+        return handler._add_todo_text(
+            description=arguments["description"],
+            due_date=arguments.get("due_date"),
+            todo_type=arguments.get("type"),
+        )
+    if name == "get_goal":
+        return handler._get_goal_text(int(arguments["index"]))
+    if name == "get_project":
+        return handler._get_project_text(int(arguments["index"]))
+    if name == "get_feature":
+        return await handler._get_feature_text(str(arguments["index_or_id"]))
+    if name == "update_feature":
+        return await handler._update_feature_text(
+            short_id=arguments.get("short_id"),
+            title=arguments.get("title"),
+            priority=arguments.get("priority"),
+            status=arguments.get("status"),
+        )
+    if name == "get_event":
+        return await handler._get_event_text(int(arguments["index"]))
+    if name == "get_meeting":
+        return await handler._get_meeting_text(int(arguments["index"]))
+    if name == "get_contact":
+        return await handler._get_contact_text(int(arguments["index"]))
+    if name == "get_comm":
+        return await handler._get_comm_text(int(arguments["index"]))
+    if name == "get_reading":
+        return await handler._get_reading_text(int(arguments["index"]))
+    if name == "get_action":
+        return await handler._get_action_text(int(arguments["index"]))
     if name in ("add_feature", "add_bug"):
         import hashlib, os, re, yaml
         from datetime import datetime

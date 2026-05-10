@@ -1957,6 +1957,292 @@ class TelegramChatHandler:
         except ValueError as e:
             return f"Error: {e}"
 
+    def _add_todo_text(self, description: str, due_date: str = None, todo_type: str = None) -> str:
+        """Add a personal todo via CommitmentTracker. Used by add_todo tool."""
+        from commitment_tracker import CommitmentTracker
+        tracker = CommitmentTracker(
+            MEMORIES_DIR,
+            self._cache,
+            SECOND_BRAIN_DIR / "commitment-scanner-state.json",
+        )
+        try:
+            path = tracker.create_todo(description, due_date=due_date, todo_type=todo_type)
+            due_str = f" — due {due_date}" if due_date else ""
+            type_str = f" [{todo_type}]" if todo_type else " [personal]"
+            return f"✓ Todo added{type_str}: {description}{due_str}"
+        except Exception as e:
+            return f"Error creating todo: {e}"
+
+    def _get_goal_text(self, index: int) -> str:
+        """Get full detail for a goal by list index. Used by get_goal tool."""
+        if not self._last_goal_set:
+            return "No goals listed yet. Call list_goals first."
+        if index < 1 or index > len(self._last_goal_set):
+            return f"Index {index} out of range (1-{len(self._last_goal_set)})."
+        path = self._last_goal_set[index - 1]
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title", path.stem)
+        category = fm.get("category", "?")
+        status = fm.get("status", "?")
+        due = fm.get("due_date", "none")
+        priority = fm.get("priority", "medium")
+        linked_projects = fm.get("linked_projects", [])
+        lines = [
+            f"**{title}** [{category}] — {status}",
+            f"Priority: {priority}",
+            f"Due: {due}",
+        ]
+        if linked_projects:
+            lines.append(f"Linked projects: {', '.join(linked_projects)}")
+        content = path.read_text()
+        notes_match = re.search(r"## Notes\n(.*)", content, re.DOTALL)
+        if notes_match and notes_match.group(1).strip():
+            lines.append(f"\n{notes_match.group(1).strip()[:500]}")
+        return "\n".join(lines)
+
+    def _get_project_text(self, index: int) -> str:
+        """Get full detail for a project by list index. Used by get_project tool."""
+        if not self._last_project_set:
+            return "No projects listed yet. Call list_projects first."
+        if index < 1 or index > len(self._last_project_set):
+            return f"Index {index} out of range (1-{len(self._last_project_set)})."
+        path = self._last_project_set[index - 1]
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title", path.stem)
+        category = fm.get("category", "?")
+        status = fm.get("status", "?")
+        due = fm.get("due_date", "none")
+        priority = fm.get("priority", "medium")
+        linked_goal = fm.get("linked_goal")
+        milestones = fm.get("milestones", [])
+        lines = [
+            f"**{title}** [{category}] — {status}",
+            f"Priority: {priority}",
+            f"Due: {due}",
+        ]
+        if linked_goal:
+            lines.append(f"Linked goal: {linked_goal}")
+        if milestones:
+            done_count = sum(1 for m in milestones if m.get("completed"))
+            lines.append(f"Milestones: {done_count}/{len(milestones)} completed")
+        content = path.read_text()
+        notes_match = re.search(r"## Notes\n(.*)", content, re.DOTALL)
+        if notes_match and notes_match.group(1).strip():
+            lines.append(f"\n{notes_match.group(1).strip()[:500]}")
+        return "\n".join(lines)
+
+    async def _get_feature_text(self, index_or_id: str) -> str:
+        """Get full detail for a feature/bug by index, short_id, or GH issue number. Used by get_feature tool."""
+        # Try to parse as integer index first
+        try:
+            index = int(index_or_id)
+            if not self._last_feature_set:
+                return "No features/bugs listed yet. Call list_features first."
+            if index < 1 or index > len(self._last_feature_set):
+                return f"Index {index} out of range (1-{len(self._last_feature_set)})."
+            path = self._last_feature_set[index - 1]
+        except ValueError:
+            # Try short_id or GitHub issue number
+            id_str = index_or_id.lstrip("#")
+            features = list(MEMORIES_DIR.glob("feature-request-*.md"))
+            hits = [
+                f for f in features
+                if self._parse_frontmatter(f).get("short_id") == id_str
+                or str(self._parse_frontmatter(f).get("github_issue_number")) == id_str
+            ]
+            if not hits:
+                return f"No feature/bug found with ID '{index_or_id}'."
+            path = hits[0]
+
+        fm = self._parse_frontmatter(path)
+        title = fm.get("title", path.stem)
+        kind = fm.get("kind", "feature")
+        status = fm.get("status", "new")
+        priority = fm.get("priority", "medium")
+        short_id = fm.get("short_id", "?")
+        gh_issue = fm.get("github_issue_number")
+        lines = [
+            f"**{title}** — [{short_id}]",
+            f"Kind: {kind}  |  Status: {status}  |  Priority: {priority}",
+        ]
+        if gh_issue:
+            lines.append(f"GitHub: #{gh_issue}")
+        content = path.read_text()
+        body_start = content.find("---\n\n") + 5 if "---\n\n" in content else 0
+        lines.append(f"\n{content[body_start:body_start + 500]}")
+        return "\n".join(lines)
+
+    async def _update_feature_text(
+        self, short_id: str = None, title: str = None, priority: str = None, status: str = None
+    ) -> str:
+        """Update priority or status of a feature/bug. Used by update_feature tool."""
+        if not short_id and not title:
+            return "Error: provide either short_id or title."
+        features = list(MEMORIES_DIR.glob("feature-request-*.md"))
+        if short_id:
+            hits = [f for f in features if self._parse_frontmatter(f).get("short_id") == short_id]
+        else:
+            hits = [
+                f for f in features
+                if title.lower() in (self._parse_frontmatter(f).get("title") or "").lower()
+            ]
+        if not hits:
+            return f"No feature/bug found matching '{short_id or title}'."
+        if len(hits) > 1:
+            return f"Multiple matches — be more specific. Found {len(hits)} items."
+        path = hits[0]
+        fm = self._parse_frontmatter(path)
+        if priority:
+            fm["priority"] = priority
+        if status:
+            fm["status"] = status
+        import yaml
+        content = path.read_text()
+        body_start = content.find("---\n\n") + 5 if "---\n\n" in content else 0
+        body = content[body_start:]
+        new_content = f"---\n{yaml.dump(fm, sort_keys=False, allow_unicode=True)}---\n\n{body}"
+        path.write_text(new_content)
+        return f"Updated [{fm.get('short_id')}] {fm.get('title')}: status={fm.get('status')}, priority={fm.get('priority')}"
+
+    async def _get_event_text(self, index: int) -> str:
+        """Get full detail for a calendar event by list index. Used by get_event tool."""
+        if not self._last_event_set:
+            return "No events listed yet. Call list_events first."
+        if index < 1 or index > len(self._last_event_set):
+            return f"Index {index} out of range (1-{len(self._last_event_set)})."
+        path = self._last_event_set[index - 1]
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title", path.stem)
+        start = fm.get("start_time", "?")
+        location = fm.get("location", "none")
+        participants = fm.get("participants", [])
+        summary = fm.get("summary", "")
+        lines = [
+            f"**{title}**",
+            f"Start: {start}",
+            f"Location: {location}",
+        ]
+        if participants:
+            lines.append(f"Participants: {', '.join(participants[:5])}")
+        if summary:
+            lines.append(f"\n{summary}")
+        return "\n".join(lines)
+
+    async def _get_meeting_text(self, index: int) -> str:
+        """Get full detail for a meeting transcript by list index. Used by get_meeting tool."""
+        if not self._last_meeting_set:
+            return "No meetings listed yet. Call list_meetings first."
+        if index < 1 or index > len(self._last_meeting_set):
+            return f"Index {index} out of range (1-{len(self._last_meeting_set)})."
+        path = self._last_meeting_set[index - 1]
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title", path.stem)
+        date = fm.get("date", "?")
+        participants = fm.get("participants", [])
+        summary = fm.get("summary", "")
+        lines = [
+            f"**{title}** — {date}",
+        ]
+        if participants:
+            lines.append(f"Participants: {', '.join(participants[:5])}")
+        if summary:
+            lines.append(f"\n{summary[:500]}")
+        return "\n".join(lines)
+
+    async def _get_contact_text(self, index: int) -> str:
+        """Get full detail for a contact by list index. Used by get_contact tool."""
+        if not self._last_contact_set:
+            return "No contacts listed yet. Call list_contacts first."
+        if index < 1 or index > len(self._last_contact_set):
+            return f"Index {index} out of range (1-{len(self._last_contact_set)})."
+        path = self._last_contact_set[index - 1]
+        fm = self._parse_frontmatter(path)
+        name = fm.get("name", path.stem)
+        email = fm.get("email", "none")
+        score = fm.get("relationship_score", 0.0)
+        interactions = fm.get("interaction_count", 0)
+        last_contact = fm.get("last_contact_date", "unknown")
+        lines = [
+            f"**{name}**",
+            f"Email: {email}",
+            f"Relationship score: {score:.2f}",
+            f"Interactions: {interactions}",
+            f"Last contact: {last_contact}",
+        ]
+        return "\n".join(lines)
+
+    async def _get_comm_text(self, index: int) -> str:
+        """Get full detail for an email/Slack thread by list index. Used by get_comm tool."""
+        if not self._last_comms_set:
+            return "No comms listed yet. Call list_comms first."
+        if index < 1 or index > len(self._last_comms_set):
+            return f"Index {index} out of range (1-{len(self._last_comms_set)})."
+        path = self._last_comms_set[index - 1]
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title", path.stem)
+        thread_type = fm.get("type", "?")
+        participants = fm.get("participants", [])
+        message_count = fm.get("message_count", 0)
+        summary = fm.get("summary", "")
+        lines = [
+            f"**{title}** — {thread_type}",
+            f"Participants: {', '.join(participants[:5])}",
+            f"Messages: {message_count}",
+        ]
+        if summary:
+            lines.append(f"\n{summary[:500]}")
+        return "\n".join(lines)
+
+    async def _get_reading_text(self, index: int) -> str:
+        """Get full detail for a web page capture by list index. Used by get_reading tool."""
+        if not self._last_readings_set:
+            return "No readings listed yet. Call list_readings first."
+        if index < 1 or index > len(self._last_readings_set):
+            return f"Index {index} out of range (1-{len(self._last_readings_set)})."
+        path = self._last_readings_set[index - 1]
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title", path.stem)
+        url = fm.get("source_url", "?")
+        summary = fm.get("summary", "")
+        key_points = fm.get("key_points", [])
+        tags = fm.get("tags", [])
+        lines = [
+            f"**{title}**",
+            f"URL: {url}",
+        ]
+        if summary:
+            lines.append(f"\n{summary}")
+        if key_points:
+            lines.append("\nKey points:")
+            lines.extend(f"• {p}" for p in key_points[:5])
+        if tags:
+            lines.append(f"\nTags: {', '.join(tags[:10])}")
+        return "\n".join(lines)
+
+    async def _get_action_text(self, index: int) -> str:
+        """Get full detail for an agent-proposed action by list index. Used by get_action tool."""
+        if not self._last_actions_set:
+            return "No actions listed yet. Call list_actions first."
+        if index < 1 or index > len(self._last_actions_set):
+            return f"Index {index} out of range (1-{len(self._last_actions_set)})."
+        path = self._last_actions_set[index - 1]
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title", path.stem)
+        source = fm.get("source_goal_or_project", "?")
+        status = fm.get("status", "pending")
+        rationale = fm.get("rationale", "")
+        steps = fm.get("proposed_steps", [])
+        lines = [
+            f"**{title}** — {status}",
+            f"Source: {source}",
+        ]
+        if rationale:
+            lines.append(f"\nRationale: {rationale[:300]}")
+        if steps:
+            lines.append("\nProposed steps:")
+            lines.extend(f"{i}. {s}" for i, s in enumerate(steps[:5], 1))
+        return "\n".join(lines)
+
     async def cmd_commitments(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
