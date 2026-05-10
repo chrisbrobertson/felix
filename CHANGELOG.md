@@ -6,6 +6,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- `/bugs` and `/features` list entries now include the 6-character hash ID (e.g. `[abc123]`) so users can reference items by ID in follow-up commands like `/feature_detail` (#131).
+
 ## [1.14.0] — 2026-05-10
 
 ### Added

@@ -1910,6 +1910,7 @@ async def test_features_kind_filter_bug(handler, brain_dir):
     reply = update.message.reply_text.call_args[0][0]
     assert len(handler._last_feature_set) == 1
     assert handler._last_feature_set[0] == bug_path
+    assert "aaa111" in reply
 
 
 async def test_features_kind_filter_feature(handler, brain_dir):
@@ -1952,6 +1953,34 @@ async def test_bugs_alias_lists_bugs_only(handler, brain_dir):
     await handler.cmd_bugs(update, ctx)
     assert len(handler._last_feature_set) == 1
     assert handler._last_feature_set[0] == bug_path
+
+
+async def test_bugs_list_includes_short_id(handler, brain_dir):
+    """Each entry in /bugs output must include the 6-character hash ID."""
+    m = brain_dir / "memories"
+    (m / "feature-request-crash-abc123.md").write_text(
+        "---\ntitle: Crash on startup\ntype: feature_request\nkind: bug\n"
+        "status: new\npriority: high\ncreated: '2026-05-01T09:00:00'\n"
+        "tags: []\nshort_id: abc123\n---\n\n## Bug\nApp crashes"
+    )
+    update, ctx = _make_update(12345)
+    await handler.cmd_bugs(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "abc123" in reply
+
+
+async def test_features_list_includes_short_id(handler, brain_dir):
+    """Each entry in /features output must include the 6-character hash ID."""
+    m = brain_dir / "memories"
+    (m / "feature-request-dark-mode-def456.md").write_text(
+        "---\ntitle: Dark mode support\ntype: feature_request\nkind: feature\n"
+        "status: new\npriority: medium\ncreated: '2026-05-01T09:00:00'\n"
+        "tags: []\nshort_id: def456\n---\n\n## Request\nAdd dark mode"
+    )
+    update, ctx = _make_update(12345)
+    await handler.cmd_features(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "def456" in reply
 
 
 # ── GitHub client tests ────────────────────────────────────────────────────────

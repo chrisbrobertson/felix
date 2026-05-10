@@ -5447,7 +5447,9 @@ class TelegramChatHandler:
             created = fm.get("created", "")[:10]
             item_kind = fm.get("kind", "feature")
             kind_tag = f"[{item_kind[:4]}] " if not kind else ""
-            lines.append(f"{i}. {kind_tag}[{item_status}] [{priority}] {title} ({created})")
+            short_id = fm.get("short_id", "")
+            id_suffix = f" [{short_id}]" if short_id else ""
+            lines.append(f"{i}. {kind_tag}[{item_status}] [{priority}] {title} ({created}){id_suffix}")
         return "\n".join(lines)
 
     def _get_memory_text(self, name: str) -> str:
@@ -6079,7 +6081,9 @@ class TelegramChatHandler:
             created = fm.get("created", "")[:10]
             item_kind = fm.get("kind", "feature")
             kind_tag = f"[{item_kind[:4]}] " if not kind_filter else ""
-            lines.append(f"{i}. {kind_tag}[{status}] [{priority}] {title} ({created})")
+            short_id = fm.get("short_id", "")
+            id_suffix = f" [{short_id}]" if short_id else ""
+            lines.append(f"{i}. {kind_tag}[{status}] [{priority}] {title} ({created}){id_suffix}")
 
         await self._send_reply(update, "\n".join(lines))
 
