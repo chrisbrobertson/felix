@@ -924,6 +924,7 @@ Key log lines to watch for:
 - `[calendar-scanner] INFO Calendar scan complete — N event(s) updated`
 - `[email-scanner] WARNING Envelope Index unavailable — falling back to AppleScript`
 - `[code-scanner] INFO Code scan complete — 29 repos processed`
+- `[notes-scanner] INFO Notes scan complete — N note(s) updated`
 - `[notification-manager] INFO Daily briefing sent`
 
 ---
@@ -1236,6 +1237,29 @@ Every email thread is automatically classified into one of five content buckets:
 Downstream consumers (`contact_tracker`, `commitment_tracker`) skip `marketing` and `automated` emails by default. The `/comms email` command hides marketing and automated threads unless you run `/comms email all`, which shows everything with classification labels (`[tx]`, `[mkt]`, `[auto]`).
 
 To disable classification, set `email_scanner.classification_enabled: false` in `config.yaml`.
+
+### Apple Notes Scanner
+
+The Notes Scanner reads Apple Notes via AppleScript and writes one `apple-notes-*.md` memory file per note. It runs every 5 minutes on both watcher and full roles.
+
+**No special permissions required** — AppleScript access to Notes.app is allowed by default. Notes.app does not need to be running for the scanner to work.
+
+**Configuration:** Configure folder filtering in `config.yaml`:
+
+```yaml
+notes_scanner:
+  enabled: true               # master switch
+  interval_seconds: 300       # scan every 5 minutes
+  skip_folders:               # exclude these folders (case-insensitive substring match)
+    - Archive
+    - Trash
+```
+
+**Note detection:**
+- Notes in folders named "Todos", "Tasks", "Action Items", "To Do", "Checklist", or similar are flagged `has_todos: true`
+- Notes containing checklist patterns (`[ ]`, `- [ ]`, `☐`) are also flagged as todos
+
+Skipped folders are checked via case-insensitive substring match — "archive" in `skip_folders` will skip folders like "Archive 2025" or "Old Archive".
 
 ---
 
