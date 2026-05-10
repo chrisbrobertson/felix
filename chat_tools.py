@@ -18,7 +18,7 @@ MEMORIES_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/secon
 # it can warn the user rather than silently suggest they retry.
 MUTATING_TOOLS: frozenset[str] = frozenset(
     {"add_goal", "add_project", "add_bug", "add_feature", "close_issue", "close_commitment",
-     "deliver_pending_replies", "add_todo"}
+     "deliver_pending_replies", "add_todo", "update_feature"}
 )
 
 TOOLS: list[dict] = [
@@ -555,6 +555,165 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_event",
+            "description": (
+                "Get full detail for a specific calendar event by 1-based index from the last list_events call. "
+                "Returns title, time, location, calendar, attendees, and summary. "
+                "Auto-loads the event list if needed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based index from the list_events result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_meeting",
+            "description": (
+                "Get full detail for a specific meeting transcript by 1-based index from the last list_meetings call. "
+                "Returns title, date, attendees, and full summary. "
+                "Auto-loads the meeting list if needed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based index from the list_meetings result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_contact",
+            "description": (
+                "Get full detail for a contact by 1-based index or by name substring. "
+                "Returns name, email, relationship score, open commitments, and recent interaction summary. "
+                "Auto-loads the contact list if needed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name_or_index": {
+                        "type": "string",
+                        "description": "Contact name (or substring) or 1-based index from list_contacts",
+                    },
+                },
+                "required": ["name_or_index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_comm",
+            "description": (
+                "Get full detail for a communication (email thread, Slack thread, or AI chat) "
+                "by 1-based index from the last list_comms call. "
+                "Returns type, participants, date, and summary. "
+                "Auto-loads the comms list if needed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based index from the list_comms result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_reading",
+            "description": (
+                "Get full detail for a specific web reading/memory by 1-based index from the last list_readings call. "
+                "Returns title, URL, date, tags, and full summary. "
+                "Auto-loads the readings list if needed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based index from the list_readings result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_action",
+            "description": (
+                "Get full detail for a specific agent-proposed action by 1-based index from the last list_actions call. "
+                "Returns action type, target, confidence, rationale, evidence, and status. "
+                "Auto-loads the action list if needed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based index from the list_actions result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_feature",
+            "description": (
+                "Update a feature request or bug report's status, priority, or add a note. "
+                "Actions: 'plan' (mark as planned), 'start' (mark in-progress), "
+                "'done' (close as completed), 'wont_do' (close as won't do), "
+                "'priority' (update priority), 'note' (append a note). "
+                "Accepts a 1-based index, GitHub issue number, or 6-char short_id."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index_or_id": {
+                        "type": "string",
+                        "description": "List index, GitHub issue number (e.g. '42' or '#42'), or 6-char short_id",
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["plan", "start", "done", "wont_do", "priority", "note"],
+                        "description": "Action to perform on the feature/bug",
+                    },
+                    "note_or_priority": {
+                        "type": "string",
+                        "description": "For 'note': the note text. For 'priority': low/medium/high/critical. For 'done'/'wont_do': optional closing note.",
+                    },
+                },
+                "required": ["index_or_id", "action"],
+            },
+        },
+    },
 ]
 
 
@@ -732,6 +891,24 @@ async def _call(name: str, arguments: dict, handler):
         return handler._get_project_text(int(arguments["index"]))
     if name == "get_feature":
         return await handler._get_feature_text(str(arguments["index_or_id"]))
+    if name == "get_event":
+        return handler._get_event_text(int(arguments["index"]))
+    if name == "get_meeting":
+        return handler._get_meeting_text(int(arguments["index"]))
+    if name == "get_contact":
+        return handler._get_contact_text(str(arguments["name_or_index"]))
+    if name == "get_comm":
+        return handler._get_comm_text(int(arguments["index"]))
+    if name == "get_reading":
+        return handler._get_reading_text(int(arguments["index"]))
+    if name == "get_action":
+        return handler._get_action_text(int(arguments["index"]))
+    if name == "update_feature":
+        return await handler._update_feature_text(
+            index_or_id=str(arguments["index_or_id"]),
+            action=str(arguments["action"]),
+            note_or_priority=arguments.get("note_or_priority"),
+        )
     if name in ("add_feature", "add_bug"):
         import hashlib, os, re, yaml
         from datetime import datetime

@@ -7,7 +7,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
-- Four new LLM tool calls so the chat skill can operate on individual items it previously could only list: `add_todo` (create a personal/waiting_on/outbound todo via CommitmentTracker), `get_goal` (fetch full goal detail by list index), `get_project` (fetch full project detail by list index), `get_feature` (fetch full feature/bug detail by index, short_id, or GitHub issue number). Closes #128, #129.
+- Seven new LLM tools completing the list→detail pattern and feature management: `get_event`, `get_meeting`, `get_contact`, `get_comm`, `get_reading`, `get_action` (fetch full detail by index, auto-loading the list if needed), and `update_feature` (set status to plan/start/done/wont_do, update priority, or add a note — GitHub-backed or local). Closes #128, #129.
+- Four new LLM tool calls so the chat skill can operate on individual items it previously could only list: `add_todo` (create a personal/waiting_on/outbound todo via CommitmentTracker), `get_goal` (fetch full goal detail by list index), `get_project` (fetch full project detail by list index), `get_feature` (fetch full feature/bug detail by index, short_id, or GitHub issue number).
 
 ### Fixed
 - `/bugs` and `/features` list entries now include the 6-character hash ID (e.g. `[abc123]`) so users can reference items by ID in follow-up commands like `/feature_detail` (#131).

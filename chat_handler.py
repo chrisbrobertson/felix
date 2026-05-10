@@ -1323,6 +1323,23 @@ class TelegramChatHandler:
             lines.append(self._fmt_memory_line(i, fm))
         return "\n".join(lines)
 
+    def _get_reading_text(self, n: int) -> str:
+        """Return formatted reading detail for index n. Called by get_reading tool."""
+        if not self._active_list:
+            self._list_readings_text()
+        path = self._resolve_index(str(n))
+        if path is None:
+            return f"Index {n} out of range. Use list_readings first."
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title") or "(no title)"
+        url = fm.get("source_url") or ""
+        date = (fm.get("created") or "")[:10]
+        summary = fm.get("summary") or ""
+        tags = fm.get("tags") or []
+        tag_str = f"\nTags: {', '.join(tags)}" if tags else ""
+        lines = [title, url, f"Date: {date}{tag_str}", "", summary]
+        return "\n".join(lines)
+
     async def cmd_readings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
@@ -2498,6 +2515,40 @@ class TelegramChatHandler:
             lines.append(f"{i}. [{action_type}] {target} — {rationale}")
         lines.append("")
         lines.append("Use /action N for details, /run N to approve and execute.")
+        return "\n".join(lines)
+
+    def _get_action_text(self, n: int) -> str:
+        """Return formatted action detail for index n. Called by get_action tool."""
+        if not self._last_action_set:
+            self._list_actions_text()
+        idx = n - 1
+        if idx < 0 or idx >= len(self._last_action_set):
+            return f"Index {n} out of range. Use list_actions first."
+        path, fm = self._last_action_set[idx]
+        action_type = fm.get("action_type", "")
+        target = fm.get("target") or "none"
+        args = fm.get("args") or {}
+        confidence = fm.get("confidence", 0)
+        rationale = fm.get("rationale", "")
+        evidence = fm.get("evidence") or []
+        proposed_at = fm.get("proposed_at", "")
+        source_goal = fm.get("source_goal", "")
+        defer_until = fm.get("defer_until")
+        lines = [
+            f"Action {n}:",
+            f"Type: {action_type}",
+            f"Target: {target}",
+            f"Args: {args}",
+            f"Confidence: {confidence:.2f}",
+            f"Rationale: {rationale}",
+            f"Evidence: {', '.join(evidence) if evidence else 'none'}",
+            f"Proposed: {proposed_at}",
+            f"Source: {source_goal}",
+        ]
+        if defer_until:
+            lines.append(f"Deferred until: {defer_until}")
+        lines.append("")
+        lines.append("Use /run N to approve and execute, /drop N to reject, /defer N [hours] to snooze.")
         return "\n".join(lines)
 
     def _load_action_set(self, filter_status: Optional[str] = None, update_last_set: bool = True) -> list:
@@ -3788,6 +3839,64 @@ class TelegramChatHandler:
                 return f, fm
 
         return None, None
+
+    def _get_contact_text(self, name_or_n: str) -> str:
+        """Return formatted contact detail by index or name. Called by get_contact tool."""
+        path = self._resolve_contact_index(name_or_n)
+        if path:
+            fm = self._parse_frontmatter(path)
+        else:
+            if not self._last_contact_set:
+                self._list_contacts_text()
+            path, fm = self._find_contact_by_name(name_or_n)
+            if not path:
+                return f"No contact found for '{name_or_n}'. Use list_contacts to browse."
+
+        name = fm.get("name", "(no name)")
+        emails = fm.get("emails", [])
+        email_str = ", ".join(emails) if emails else "no email"
+        score = fm.get("relationship_score", 0.0)
+        interaction_count = fm.get("interaction_count", 0)
+        lines = [
+            f"{name} ({email_str})",
+            f"Relationship score: {score} | {interaction_count} interactions",
+            "",
+        ]
+
+        commitment_files = list((BRAIN_DIR / "memories").glob("commitment-*.md"))
+        open_commitments = []
+        for cf in commitment_files:
+            cfm = self._parse_frontmatter(cf)
+            if cfm.get("status") != "active":
+                continue
+            owner = cfm.get("owner", "")
+            recipient = cfm.get("recipient", "")
+            owner_email = cfm.get("owner_email", "")
+            if name in (owner, recipient) or (emails and owner_email in emails):
+                open_commitments.append(cfm)
+
+        if open_commitments:
+            lines.append("Open commitments:")
+            for cfm in open_commitments[:5]:
+                ct = cfm.get("commitment_type", "outbound")
+                desc = (cfm.get("source_title") or "")[:60]
+                due = cfm.get("due_date")
+                due_str = f"due {due}" if due else "due unknown"
+                direction = "outbound" if ct == "outbound" else "waiting_on"
+                lines.append(f"• [{direction}] {desc} — {due_str}")
+            lines.append("")
+
+        try:
+            content = path.read_text()
+            m = re.search(r'## Recent Interactions\n\n(.*?)(?=\n\n##|\Z)', content, re.DOTALL)
+            if m:
+                summary = m.group(1).strip()[:400]
+                lines.append("Summary:")
+                lines.append(summary)
+        except Exception:
+            pass
+
+        return "\n".join(lines)
 
     async def cmd_contact(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -5134,6 +5243,41 @@ class TelegramChatHandler:
         lines.append("\nUse /event <N> for details.")
         return "\n".join(lines)
 
+    def _get_event_text(self, n: int) -> str:
+        """Return formatted event detail for index n. Called by get_event tool."""
+        if not self._last_event_set:
+            self._list_events_text()
+        path = self._resolve_event_index(str(n))
+        if path is None:
+            return f"Index {n} out of range. Use list_events first."
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title") or "(no title)"
+        start = fm.get("start_time") or ""
+        end = fm.get("end_time") or ""
+        all_day = fm.get("all_day", False)
+        location = fm.get("location") or ""
+        cal_raw = fm.get("calendar_names", fm.get("calendar_name", ""))
+        cal = ", ".join(cal_raw) if isinstance(cal_raw, list) else (cal_raw or "")
+        participants = fm.get("participants") or []
+        summary = fm.get("summary") or ""
+
+        if all_day:
+            time_str = "All day"
+        else:
+            start_fmt = self._fmt_datetime(start)
+            end_fmt = self._fmt_datetime(end)
+            duration = self._fmt_duration(start, end)
+            dur_str = f" ({duration})" if duration else ""
+            time_str = f"{start_fmt} – {end_fmt}{dur_str}"
+        parts_str = ", ".join(participants[:10]) if participants else "none listed"
+        lines = [title, f"When: {time_str}"]
+        if location:
+            lines.append(f"Where: {location}")
+        if cal:
+            lines.append(f"Calendar: {cal}")
+        lines += [f"Attendees: {parts_str}", "", summary]
+        return "\n".join(lines)
+
     async def cmd_events(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
@@ -5229,6 +5373,22 @@ class TelegramChatHandler:
             n_parts = len(participants)
             lines.append(f"{i}. [{date}] {title} — {n_parts} participant{'s' if n_parts != 1 else ''}")
         lines.append("\nUse /meeting <N> for details.")
+        return "\n".join(lines)
+
+    def _get_meeting_text(self, n: int) -> str:
+        """Return formatted meeting detail for index n. Called by get_meeting tool."""
+        if not self._last_meeting_set:
+            self._list_meetings_text()
+        path = self._resolve_meeting_index(str(n))
+        if path is None:
+            return f"Index {n} out of range. Use list_meetings first."
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title") or "(no title)"
+        date = (str(fm.get("start_time") or fm.get("created") or ""))[:10]
+        participants = fm.get("participants") or []
+        summary = fm.get("summary") or ""
+        parts_str = ", ".join(str(p) for p in participants[:10]) if participants else "none listed"
+        lines = [title, f"Date: {date}", f"Attendees: {parts_str}", "", summary]
         return "\n".join(lines)
 
     async def cmd_meetings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5687,6 +5847,35 @@ class TelegramChatHandler:
                 date = (fm.get("created") or "")[:10]
                 lines.append(f"{i}. {source_tag} {title} ({date})")
         lines.append("\nUse /comm <N> for details.")
+        return "\n".join(lines)
+
+    def _get_comm_text(self, n: int) -> str:
+        """Return formatted comm detail for index n. Called by get_comm tool."""
+        if not self._last_comms_set:
+            self._list_comms_text()
+        path = self._resolve_comm_index(str(n))
+        if path is None:
+            return f"Index {n} out of range. Use list_comms first."
+        fm = self._parse_frontmatter(path)
+        mem_type = fm.get("type")
+        title = fm.get("source_title") or "(no title)"
+        participants = fm.get("participants") or []
+        parts_str = ", ".join(str(p) for p in participants[:8]) if participants else "none listed"
+        summary = fm.get("summary") or ""
+
+        if mem_type == "email_thread":
+            date = (fm.get("last_message") or "")[:10]
+            lines = [f"[email] {title}", f"Participants: {parts_str}", f"Last message: {date}", "", summary]
+        elif mem_type == "slack_thread":
+            channel = fm.get("channel") or title
+            date = (fm.get("last_reply") or fm.get("created") or "")[:10]
+            lines = [f"[slack] #{channel}", f"Participants: {parts_str}", f"Last reply: {date}", "", summary]
+        else:
+            platform = fm.get("platform", "llm")
+            date = (fm.get("created") or "")[:10]
+            topics = fm.get("topics", [])
+            topics_str = ", ".join(topics[:5]) if topics else "none"
+            lines = [f"[{platform}] {title}", f"Date: {date}", f"Topics: {topics_str}", "", summary]
         return "\n".join(lines)
 
     async def cmd_comms(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -6294,6 +6483,70 @@ class TelegramChatHandler:
             body[:1500],
         ]
         await self._send_reply(update, "\n".join(lines))
+
+    async def _update_feature_text(
+        self, index_or_id: str, action: str, note_or_priority: str = None
+    ) -> str:
+        """Update a feature/bug status, priority, or add a note. Called by update_feature tool."""
+        target = self._resolve_feature_index([index_or_id], None)
+        if target is None:
+            return f"Feature '{index_or_id}' not found. Use list_features to browse."
+
+        action = action.lower().replace("-", "_")
+        valid_actions = ("plan", "start", "done", "wont_do", "priority", "note")
+        if action not in valid_actions:
+            return f"Invalid action '{action}'. Use one of: {', '.join(valid_actions)}"
+
+        if isinstance(target, int):
+            # GitHub-backed issue
+            if action == "plan":
+                await self._gh_set_status(target, "planned")
+            elif action == "start":
+                await self._gh_set_status(target, "in-progress")
+            elif action == "done":
+                await self._gh_set_status(target, "done")
+                if note_or_priority:
+                    await self.github.add_comment(target, note_or_priority)
+            elif action == "wont_do":
+                await self._gh_set_status(target, "wont-do")
+                if note_or_priority:
+                    await self.github.add_comment(target, f"Won't do: {note_or_priority}")
+            elif action == "priority":
+                if not note_or_priority or note_or_priority not in ("low", "medium", "high", "critical"):
+                    return "Priority must be one of: low, medium, high, critical"
+                await self._gh_set_priority(target, note_or_priority)
+            elif action == "note":
+                if not note_or_priority:
+                    return "Note text is required."
+                await self.github.add_comment(target, note_or_priority)
+            await self._rewrite_features_index_snapshot()
+            title = await self._gh_title(target)
+            return f"Feature '{title[:60]}' updated: {action}."
+        else:
+            # Local file
+            fm = self._parse_frontmatter(target)
+            title = fm.get("title", "?")[:60]
+            if action == "plan":
+                self._rewrite_feature_frontmatter(target, {"status": "planned"})
+            elif action == "start":
+                self._rewrite_feature_frontmatter(target, {"status": "in-progress"})
+            elif action == "done":
+                self._rewrite_feature_frontmatter(target, {"status": "done"})
+                if note_or_priority:
+                    self._append_feature_note(target, note_or_priority)
+            elif action == "wont_do":
+                self._rewrite_feature_frontmatter(target, {"status": "wont-do"})
+                if note_or_priority:
+                    self._append_feature_note(target, f"Won't do: {note_or_priority}")
+            elif action == "priority":
+                if not note_or_priority or note_or_priority not in ("low", "medium", "high", "critical"):
+                    return "Priority must be one of: low, medium, high, critical"
+                self._rewrite_feature_frontmatter(target, {"priority": note_or_priority})
+            elif action == "note":
+                if not note_or_priority:
+                    return "Note text is required."
+                self._append_feature_note(target, note_or_priority)
+            return f"Feature '{title}' updated: {action}."
 
     async def cmd_feature_plan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
