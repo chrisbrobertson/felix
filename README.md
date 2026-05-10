@@ -48,7 +48,7 @@
 
 ## What you can do with it
 
-Felix is a personal knowledge system that automatically captures everything you interact with — web pages, emails, meetings, calendar events, Slack threads, code projects — summarizes it all with LLMs, and stores it as searchable flat files in iCloud Drive. A Telegram bot gives you instant access.
+Felix is a personal knowledge system that automatically captures everything you interact with — web pages, emails, meetings, calendar events, Slack threads, Apple Notes, code projects — summarizes it all with LLMs, and stores it as searchable flat files in iCloud Drive. A Telegram bot gives you instant access.
 
 **Philosophy:** No vector DB, no embeddings, no graph. Files + LLM = database.
 
@@ -60,7 +60,7 @@ Felix is a personal knowledge system that automatically captures everything you 
 
 **Track commitments automatically.** The system extracts action items from meetings and emails, writes them as structured memory files, and surfaces them via `/commitments`. Mark them `/complete` or `/dismiss` as you work through them. Get accuracy stats with `/accuracy`.
 
-**Build a living contact graph.** Every participant in every email, meeting, calendar event, or Slack thread becomes a contact with a relationship score, interaction history, and links to related threads. Search with `/contacts` or `/contact <name>`.
+**Build a living contact graph.** Every participant in every email, meeting, calendar event, Slack thread, or shared Apple Note becomes a contact with a relationship score, interaction history, and links to related threads. Search with `/contacts` or `/contact <name>`.
 
 **Control what gets captured.** Skip noisy domains with `/skip reddit.com`, purge unwanted memories with `/purge <domain>`, and manage your ignore list with `/skiplist` and `/unskip`.
 
@@ -70,7 +70,7 @@ Felix is a personal knowledge system that automatically captures everything you 
 
 ## Architecture
 
-Felix runs on two kinds of machines: a **full node** (always-on Mac like a Mac Studio or Mac Mini) that runs all the processing, and optional **watcher nodes** (laptops) that capture browser history, git repos, email, calendar, and Slack while you're traveling. Both sync through iCloud Drive.
+Felix runs on two kinds of machines: a **full node** (always-on Mac like a Mac Studio or Mac Mini) that runs all the processing, and optional **watcher nodes** (laptops) that capture browser history, git repos, email, calendar, Slack, and Apple Notes while you're traveling. Both sync through iCloud Drive.
 
 ### Deployment topology
 
