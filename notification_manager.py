@@ -455,6 +455,33 @@ class NotificationManager:
                 due_date_str = fm.get("due_date")
                 lines.append(f"• [{ct}] {desc} — was due {due_date_str}")
 
+        # Personal todos (no due date — would be invisible elsewhere in briefing)
+        personal_todos = []
+        entries = await self._cache.query_by_type("commitment", status="active")
+        for entry in entries:
+            try:
+                fm = _safe_frontmatter(entry["frontmatter"])
+            except (json.JSONDecodeError, TypeError):
+                log.warning("briefing: malformed frontmatter in %s — skipping", entry["filename"])
+                continue
+            if fm.get("commitment_type") != "personal":
+                continue
+            if fm.get("due_date"):
+                continue  # already shown in "due today" or "overdue" sections
+            personal_todos.append(fm)
+
+        if personal_todos:
+            lines.append(f"\nPersonal todos ({len(personal_todos)}):")
+            for fm in personal_todos[:10]:
+                desc = (
+                    fm.get("source_title")
+                    or fm.get("summary")
+                    or "(untitled todo)"
+                )[:60]
+                lines.append(f"• {desc}")
+            if len(personal_todos) > 10:
+                lines.append(f"  …and {len(personal_todos) - 10} more. Use /todos to see all.")
+
         # Stale waiting-ons
         config = self._notification_config()
         stale_days = config.get("stale_waiting_on_days", 7)

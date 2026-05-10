@@ -6,6 +6,11 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.15.0] — 2026-05-10
+
+### Added
+- Morning briefing now includes a "Personal todos" section showing `commitment_type=personal` items with no due date — previously these were invisible at briefing time since only commitments with explicit due dates were shown. Personal todos with a due date continue to appear under "Commitments due today" or "Overdue" and are not double-counted (#120).
+
 ### Fixed
 - `/bugs` and `/features` list entries now include the 6-character hash ID (e.g. `[abc123]`) so users can reference items by ID in follow-up commands like `/feature_detail` (#131).
 

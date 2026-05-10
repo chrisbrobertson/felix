@@ -3166,3 +3166,65 @@ async def test_commitment_checkpoint_no_resend_after_restart(tmp_path):
     assert bot_mock.send_message.call_count == 1, (
         "checkpoint must not be resent after restart when state was persisted before send"
     )
+
+
+# ── Personal Todos in Briefing ────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_briefing_includes_personal_todos_without_due_date(tmp_path):
+    """Personal todos with no due_date appear in the briefing."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+
+    make_commitment(
+        memories_dir, "todo001", "Clean my desk",
+        commitment_type="personal", due_date=None,
+    )
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "MEMORIES_DIR", memories_dir):
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
+            with patch.object(mgr, "_get_local_now", return_value=now):
+                briefing = await mgr._assemble_briefing()
+
+    assert "Personal todos" in briefing
+    assert "Clean my desk" in briefing
+
+
+@pytest.mark.asyncio
+async def test_briefing_personal_todo_with_due_date_not_double_counted(tmp_path):
+    """Personal todos that have a due_date are shown in 'due today'/'overdue', NOT in 'Personal todos'."""
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("user:\n  timezone: America/Los_Angeles\n")
+
+    now = datetime(2026, 4, 11, 7, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    today_str = now.date().isoformat()
+
+    make_commitment(
+        memories_dir, "todo002", "File taxes",
+        commitment_type="personal", due_date=today_str,
+    )
+
+    with patch.object(nm, "CONFIG_PATH", config_file):
+        with patch.object(nm, "MEMORIES_DIR", memories_dir):
+            mgr = NotificationManager(cache=_make_cache(memories_dir))
+            with patch.object(mgr, "_get_local_now", return_value=now):
+                briefing = await mgr._assemble_briefing()
+
+    # Should appear in "due today" section
+    assert "File taxes" in briefing
+    # Must NOT also appear in the separate "Personal todos" section
+    personal_section_start = briefing.find("Personal todos")
+    assert personal_section_start == -1 or "File taxes" not in briefing[personal_section_start:]
