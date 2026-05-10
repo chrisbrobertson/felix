@@ -459,7 +459,11 @@ Felix includes a lightweight feature/bug tracker accessible via Telegram. You ca
 ```
 /feature Implement search by date range #enhancement
 /bug Login fails on Safari #auth
-/features                  # list all active items
+/feature for:myapp Fix login button     # tag to a specific project
+/bug for:my-app Crash on startup        # project names can include hyphens
+/features                               # list all active items
+/features project:myapp                 # filter to one project
+/features bug project:myapp             # combined: bugs for myapp only
 /feature-detail 1          # show full detail
 /feature-plan 1            # mark as planned
 /feature-start 1           # mark in-progress
@@ -480,6 +484,7 @@ Set `GITHUB_PAT` (a Personal Access Token with `repo` scope) and `GITHUB_REPO` (
 - `kind:feature` / `kind:bug` — type
 - `status:planned` / `status:in-progress` — intermediate states (open issues only)
 - `priority:low|medium|high|critical` — urgency
+- `project:<name>` — project tag (set via `for:<project>` in the capture command)
 - Hashtags in the description become plain labels (e.g., `#auth`, `#enhancement`)
 
 **Direct issue references:**
@@ -636,9 +641,9 @@ Muted state persists across daemon restarts. `/briefing` works even when muted �
 | **Scanner management** | |
 | `/backfill <type> [days] [hostname]` | Force historical reprocessing without manual state file deletion. Types: `readings`, `email`, `zoom`, `calendar`, `slack`, `code`. Days default to 30 (90 max for readings/email/slack, 180 max for zoom/calendar, N/A for code). Optional hostname arg — if given and doesn't match current node, returns "cross-node not yet implemented". Derivative scanners (commitment_tracker, contact_tracker, project_inference_scanner) re-run automatically on next cycle due to updated mtimes. Full-role only. |
 | **Feature & bug tracking** | |
-| `/feature <description>` | Capture a new feature request (hashtags become labels) |
-| `/bug <description>` | Capture a new bug report (hashtags become labels) |
-| `/features [bug\|feature\|<status>] [N]` | List feature/bug backlog. Filters: `bug`, `feature`, `all`, `new`, `planned`, `in-progress`, `done`, `wont-do`. Default: new + planned + in-progress. |
+| `/feature <description>` | Capture a new feature request. Use `for:<project>` to tag a project (e.g. `/feature for:myapp Fix login`). Hashtags become labels. |
+| `/bug <description>` | Capture a new bug report. Use `for:<project>` to tag a project (e.g. `/bug for:myapp Crash on login`). Hashtags become labels. |
+| `/features [bug\|feature\|<status>] [project:<name>]` | List feature/bug backlog. Filters: `bug`, `feature`, `all`, `new`, `planned`, `in-progress`, `done`, `wont-do`, `project:<name>`. Filters can be combined. Default: new + planned + in-progress. |
 | `/bugs` | Alias for `/features bug` |
 | `/feature-detail <N\|#issue>` | Show full detail for feature N from last list, or GitHub issue #N |
 | `/feature-plan <N\|#issue>` | Mark as planned |

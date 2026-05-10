@@ -5286,9 +5286,15 @@ class TelegramChatHandler:
         return "feature"
 
     def _tags_from_labels(self, issue: dict) -> list[str]:
-        reserved_prefixes = ("kind:", "status:", "priority:")
+        reserved_prefixes = ("kind:", "status:", "priority:", "project:")
         return [lb["name"] for lb in issue.get("labels", [])
                 if not any(lb["name"].startswith(p) for p in reserved_prefixes)]
+
+    def _project_from_labels(self, issue: dict) -> str:
+        for lb in issue.get("labels", []):
+            if lb["name"].startswith("project:"):
+                return lb["name"].split(":", 1)[1]
+        return ""
 
     async def _gh_ensure_labels(self) -> None:
         if not self._labels_bootstrapped:
@@ -5362,13 +5368,16 @@ class TelegramChatHandler:
         tmp.write_text(content)
         _os.rename(tmp, target)
 
-    async def _list_features_from_github(self, update, kind_filter, status_filter, show_all) -> None:
+    async def _list_features_from_github(self, update, kind_filter, status_filter, show_all,
+                                          project_filter: Optional[str] = None) -> None:
         state = "all" if show_all or status_filter in ("done", "wont-do") else "open"
         labels = []
         if kind_filter:
             labels.append(f"kind:{kind_filter}")
         if status_filter in ("planned", "in-progress"):
             labels.append(f"status:{status_filter}")
+        if project_filter:
+            labels.append(f"project:{project_filter}")
         try:
             issues = await self.github.list_issues(state=state, labels=labels or None)
         except Exception as e:
@@ -5392,17 +5401,25 @@ class TelegramChatHandler:
             created = issue.get("created_at", "")[:10]
             title = issue.get("title", "")[:60]
             kind_tag = f"[{kind[:4]}] " if not kind_filter else ""
-            lines.append(f"{idx}. {kind_tag}[{status}] [{priority}] {title} ({created}) #{issue['number']}")
+            proj = self._project_from_labels(issue)
+            proj_tag = f" [{proj}]" if proj and not project_filter else ""
+            lines.append(f"{idx}. {kind_tag}[{status}] [{priority}] {title}{proj_tag} ({created}) #{issue['number']}")
         await self._send_reply(update, "\n".join(lines))
 
-    async def _list_features_text(self, kind: Optional[str] = None, show_all: bool = False) -> str:
+    async def _list_features_text(self, kind: Optional[str] = None, show_all: bool = False,
+                                   project: Optional[str] = None) -> str:
         """Return formatted features/bugs list text. Called by cmd_features and tool dispatch.
-        kind: 'feature', 'bug', or None for both. show_all includes done/wont-do."""
+        kind: 'feature', 'bug', or None for both. show_all includes done/wont-do.
+        project: optional project name to filter by."""
         if self.github.enabled:
-            labels = [f"kind:{kind}"] if kind else None
+            labels: list = []
+            if kind:
+                labels.append(f"kind:{kind}")
+            if project:
+                labels.append(f"project:{project}")
             state = "all" if show_all else "open"
             try:
-                issues = await self.github.list_issues(state=state, labels=labels)
+                issues = await self.github.list_issues(state=state, labels=labels or None)
             except Exception as e:
                 return f"GitHub error: {e}"
             if not show_all:
@@ -5418,7 +5435,9 @@ class TelegramChatHandler:
                 created = issue.get("created_at", "")[:10]
                 title = issue.get("title", "")[:60]
                 kind_tag = f"[{issue_kind[:4]}] " if not kind else ""
-                lines.append(f"{idx}. {kind_tag}[{status}] [{priority}] {title} ({created}) #{issue['number']}")
+                proj = self._project_from_labels(issue)
+                proj_tag = f" [{proj}]" if proj and not project else ""
+                lines.append(f"{idx}. {kind_tag}[{status}] [{priority}] {title}{proj_tag} ({created}) #{issue['number']}")
             return "\n".join(lines)
 
         # Local fallback
@@ -5431,7 +5450,10 @@ class TelegramChatHandler:
                 continue
             item_status = fm.get("status", "new")
             item_kind = fm.get("kind", "feature")
+            item_project = fm.get("project", "")
             if kind and item_kind != kind:
+                continue
+            if project and item_project.lower() != project.lower():
                 continue
             if not show_all and item_status in ("done", "wont-do"):
                 continue
@@ -5446,10 +5468,12 @@ class TelegramChatHandler:
             title = fm.get("title", f.stem)[:60]
             created = fm.get("created", "")[:10]
             item_kind = fm.get("kind", "feature")
+            item_project = fm.get("project", "")
             kind_tag = f"[{item_kind[:4]}] " if not kind else ""
+            proj_tag = f" [{item_project}]" if item_project and not project else ""
             short_id = fm.get("short_id", "")
             id_suffix = f" [{short_id}]" if short_id else ""
-            lines.append(f"{i}. {kind_tag}[{item_status}] [{priority}] {title} ({created}){id_suffix}")
+            lines.append(f"{i}. {kind_tag}[{item_status}] [{priority}] {title}{proj_tag} ({created}){id_suffix}")
         return "\n".join(lines)
 
     def _get_memory_text(self, name: str) -> str:
@@ -5874,9 +5898,11 @@ class TelegramChatHandler:
             return
 
         description = " ".join(context.args)
-        # Extract #hashtags as tags
+        # Extract #hashtags as tags and for:<project> specifier
         tags = [t[1:].lower() for t in re.findall(r'#\w+', description)]
+        project = next((m[4:] for m in re.findall(r'\bfor:[\w-]+', description, re.IGNORECASE)), "")
         clean_desc = re.sub(r'#\w+', '', description).strip()
+        clean_desc = re.sub(r'\bfor:[\w-]+\s*', '', clean_desc, flags=re.IGNORECASE).strip()
         title = " ".join(clean_desc.split()[:8])  # first 8 words as title
 
         import hashlib, os
@@ -5895,12 +5921,14 @@ class TelegramChatHandler:
                 f"## Notes\n\n"
             )
             labels = ["kind:feature", "priority:medium"] + tags
+            if project:
+                labels.append(f"project:{project.lower()}")
             try:
                 issue = await self.github.create_issue(title, body, labels)
             except Exception as e:
                 await self._send_reply(update, f"GitHub error: {e}")
                 return
-            fm = {
+            fm: dict = {
                 "title": clean_desc[:100],
                 "type": "feature_request",
                 "kind": "feature",
@@ -5911,14 +5939,17 @@ class TelegramChatHandler:
                 "short_id": id_hash,
                 "github_issue_number": issue["number"],
             }
+            if project:
+                fm["project"] = project.lower()
             content = f"---\n{yaml.dump(fm, sort_keys=False, allow_unicode=True)}---\n\n{body}"
             target = memories_dir / filename
             tmp = target.with_suffix(".tmp")
             tmp.write_text(content)
             os.rename(tmp, target)
             await self._rewrite_features_index_snapshot()
+            proj_note = f" [{project}]" if project else ""
             await self._send_reply(update,
-                f"Feature captured: '{clean_desc[:60]}' (#{issue['number']})\n{issue['html_url']}")
+                f"Feature captured{proj_note}: '{clean_desc[:60]}' (#{issue['number']})\n{issue['html_url']}")
             return
 
         # --- local fallback ---
@@ -5932,6 +5963,8 @@ class TelegramChatHandler:
             "tags": tags,
             "short_id": id_hash,
         }
+        if project:
+            fm["project"] = project.lower()
         body = f"## Request\n\n{clean_desc}\n\n## Context\n\nCaptured via /feature command at {datetime.now().strftime('%Y-%m-%d %H:%M')}.\n\n## Notes\n\n"
         content = f"---\n{yaml.dump(fm, sort_keys=False, allow_unicode=True)}---\n\n{body}"
 
@@ -5940,7 +5973,8 @@ class TelegramChatHandler:
         tmp.write_text(content)
         os.rename(tmp, target)
 
-        await self._send_reply(update, f"Feature captured: '{clean_desc[:60]}' (ID: {id_hash})\nUse /features to view all.")
+        proj_note = f" [{project}]" if project else ""
+        await self._send_reply(update, f"Feature captured{proj_note}: '{clean_desc[:60]}' (ID: {id_hash})\nUse /features to view all.")
 
     async def cmd_bug(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -5951,7 +5985,9 @@ class TelegramChatHandler:
 
         description = " ".join(context.args)
         tags = [t[1:].lower() for t in re.findall(r'#\w+', description)]
+        project = next((m[4:] for m in re.findall(r'\bfor:[\w-]+', description, re.IGNORECASE)), "")
         clean_desc = re.sub(r'#\w+', '', description).strip()
+        clean_desc = re.sub(r'\bfor:[\w-]+\s*', '', clean_desc, flags=re.IGNORECASE).strip()
         title = " ".join(clean_desc.split()[:8])
 
         import hashlib, os
@@ -5972,12 +6008,14 @@ class TelegramChatHandler:
         if self.github.enabled:
             await self._gh_ensure_labels()
             labels = ["kind:bug", "priority:medium"] + tags
+            if project:
+                labels.append(f"project:{project.lower()}")
             try:
                 issue = await self.github.create_issue(title, body, labels)
             except Exception as e:
                 await self._send_reply(update, f"GitHub error: {e}")
                 return
-            fm = {
+            fm: dict = {
                 "title":    clean_desc[:100],
                 "type":     "feature_request",
                 "kind":     "bug",
@@ -5988,14 +6026,17 @@ class TelegramChatHandler:
                 "short_id": id_hash,
                 "github_issue_number": issue["number"],
             }
+            if project:
+                fm["project"] = project.lower()
             content = f"---\n{yaml.dump(fm, sort_keys=False, allow_unicode=True)}---\n\n{body}"
             target = memories_dir / filename
             tmp = target.with_suffix(".tmp")
             tmp.write_text(content)
             os.rename(tmp, target)
             await self._rewrite_features_index_snapshot()
+            proj_note = f" [{project}]" if project else ""
             await self._send_reply(update,
-                f"Bug captured: '{clean_desc[:60]}' (#{issue['number']})\n{issue['html_url']}")
+                f"Bug captured{proj_note}: '{clean_desc[:60]}' (#{issue['number']})\n{issue['html_url']}")
             return
 
         # --- local fallback ---
@@ -6009,12 +6050,15 @@ class TelegramChatHandler:
             "tags":     tags,
             "short_id": id_hash,
         }
+        if project:
+            fm["project"] = project.lower()
         content = f"---\n{yaml.dump(fm, sort_keys=False, allow_unicode=True)}---\n\n{body}"
         target = memories_dir / filename
         tmp = target.with_suffix(".tmp")
         tmp.write_text(content)
         os.rename(tmp, target)
-        await self._send_reply(update, f"Bug captured: '{clean_desc[:60]}' (ID: {id_hash})\nUse /features bug to view all.")
+        proj_note = f" [{project}]" if project else ""
+        await self._send_reply(update, f"Bug captured{proj_note}: '{clean_desc[:60]}' (ID: {id_hash})\nUse /features bug to view all.")
 
     async def cmd_bugs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Alias for /features bug."""
@@ -6025,21 +6069,26 @@ class TelegramChatHandler:
         if not self._check_auth(update):
             return
 
-        arg = context.args[0].lower() if context.args else None
+        args = [a.lower() for a in (context.args or [])]
         kind_filter: Optional[str] = None
         status_filter: Optional[str] = None
+        project_filter: Optional[str] = None
         show_all = False
-        if arg in ("bug", "bugs"):
-            kind_filter = "bug"
-        elif arg in ("feature", "features"):
-            kind_filter = "feature"
-        elif arg == "all":
-            show_all = True
-        elif arg:
-            status_filter = arg
+        for arg in args:
+            if arg.startswith("project:"):
+                project_filter = arg[len("project:"):]
+            elif arg in ("bug", "bugs"):
+                kind_filter = "bug"
+            elif arg in ("feature", "features"):
+                kind_filter = "feature"
+            elif arg == "all":
+                show_all = True
+            elif arg:
+                status_filter = arg
 
         if self.github.enabled:
-            await self._list_features_from_github(update, kind_filter, status_filter, show_all)
+            await self._list_features_from_github(update, kind_filter, status_filter, show_all,
+                                                   project_filter=project_filter)
             return
 
         # --- local fallback ---
@@ -6053,8 +6102,12 @@ class TelegramChatHandler:
                 continue
             status = fm.get("status", "new")
             item_kind = fm.get("kind", "feature")
+            item_project = fm.get("project", "")
             # Kind filter
             if kind_filter and item_kind != kind_filter:
+                continue
+            # Project filter
+            if project_filter and item_project.lower() != project_filter.lower():
                 continue
             # Status filter
             if not show_all:
@@ -6080,10 +6133,12 @@ class TelegramChatHandler:
             title = fm.get("title", f.stem)[:60]
             created = fm.get("created", "")[:10]
             item_kind = fm.get("kind", "feature")
+            item_project = fm.get("project", "")
             kind_tag = f"[{item_kind[:4]}] " if not kind_filter else ""
+            proj_tag = f" [{item_project}]" if item_project and not project_filter else ""
             short_id = fm.get("short_id", "")
             id_suffix = f" [{short_id}]" if short_id else ""
-            lines.append(f"{i}. {kind_tag}[{status}] [{priority}] {title} ({created}){id_suffix}")
+            lines.append(f"{i}. {kind_tag}[{status}] [{priority}] {title}{proj_tag} ({created}){id_suffix}")
 
         await self._send_reply(update, "\n".join(lines))
 

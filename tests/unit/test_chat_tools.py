@@ -582,3 +582,58 @@ async def test_close_commitment_dismissed_status(mock_handler):
         title=None,
         status="dismissed",
     )
+
+
+@pytest.mark.asyncio
+async def test_add_feature_with_project(mock_handler, tmp_path):
+    """add_feature stores project field when project param is provided."""
+    from unittest.mock import patch
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    with patch.object(chat_tools, "MEMORIES_DIR", memories_dir):
+        result = await chat_tools.dispatch(
+            "add_feature", {"description": "add login page", "project": "myapp"}, mock_handler
+        )
+        assert "Feature captured" in result
+        assert "[myapp]" in result
+        files = list(memories_dir.glob("feature-request-*.md"))
+        assert len(files) == 1
+        content = files[0].read_text()
+        assert "project: myapp" in content
+        assert "kind: feature" in content
+
+
+@pytest.mark.asyncio
+async def test_add_bug_with_project(mock_handler, tmp_path):
+    """add_bug stores project field when project param is provided."""
+    from unittest.mock import patch
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    with patch.object(chat_tools, "MEMORIES_DIR", memories_dir):
+        result = await chat_tools.dispatch(
+            "add_bug", {"description": "crash on login", "project": "myapp"}, mock_handler
+        )
+        assert "Bug captured" in result
+        assert "[myapp]" in result
+        files = list(memories_dir.glob("feature-request-*.md"))
+        assert len(files) == 1
+        content = files[0].read_text()
+        assert "project: myapp" in content
+        assert "kind: bug" in content
+
+
+@pytest.mark.asyncio
+async def test_add_feature_no_project(mock_handler, tmp_path):
+    """add_feature without project omits project field from frontmatter."""
+    from unittest.mock import patch
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    with patch.object(chat_tools, "MEMORIES_DIR", memories_dir):
+        result = await chat_tools.dispatch(
+            "add_feature", {"description": "add dark theme"}, mock_handler
+        )
+        assert "Feature captured" in result
+        assert "[" not in result or "captured" in result  # no project tag in output
+        files = list(memories_dir.glob("feature-request-*.md"))
+        content = files[0].read_text()
+        assert "project:" not in content

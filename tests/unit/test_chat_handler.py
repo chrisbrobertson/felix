@@ -6497,3 +6497,139 @@ async def test_tool_dispatch_get_recent_commands(handler):
     result = handler._recent_commands_text(chat_id, limit=5)
     assert "/todos" in result
     assert "Fix bug" in result
+
+
+# ── Multi-project feature tracking (#122) ────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_feature_for_project_stored_in_frontmatter(handler, brain_dir):
+    """/feature for:myapp <desc> stores project: myapp in frontmatter (local fallback)."""
+    update, ctx = _make_update(12345, ["for:myapp", "add", "login", "page"])
+    await handler.cmd_feature(update, ctx)
+    files = list((brain_dir / "memories").glob("feature-request-*.md"))
+    assert len(files) == 1
+    fm = _parse_fm(files[0])
+    assert fm.get("project") == "myapp"
+    assert fm.get("kind") == "feature"
+    # for: specifier should be stripped from the title
+    assert "for:myapp" not in fm.get("title", "")
+    reply = update.message.reply_text.call_args[0][0]
+    assert "[myapp]" in reply
+
+
+@pytest.mark.asyncio
+async def test_bug_for_project_stored_in_frontmatter(handler, brain_dir):
+    """/bug for:myapp <desc> stores project: myapp in frontmatter (local fallback)."""
+    update, ctx = _make_update(12345, ["for:myapp", "crash", "on", "login"])
+    await handler.cmd_bug(update, ctx)
+    files = list((brain_dir / "memories").glob("feature-request-*.md"))
+    assert len(files) == 1
+    fm = _parse_fm(files[0])
+    assert fm.get("project") == "myapp"
+    assert fm.get("kind") == "bug"
+    reply = update.message.reply_text.call_args[0][0]
+    assert "[myapp]" in reply
+
+
+@pytest.mark.asyncio
+async def test_feature_no_project_omits_field(handler, brain_dir):
+    """/feature without for: does not write project field."""
+    update, ctx = _make_update(12345, ["add", "dark", "mode"])
+    await handler.cmd_feature(update, ctx)
+    files = list((brain_dir / "memories").glob("feature-request-*.md"))
+    fm = _parse_fm(files[0])
+    assert "project" not in fm
+
+
+@pytest.mark.asyncio
+async def test_features_project_filter_local(handler, brain_dir):
+    """/features project:myapp returns only items tagged with that project."""
+    m = brain_dir / "memories"
+    (m / "feature-request-a-aaa111.md").write_text(
+        "---\ntitle: Login page\ntype: feature_request\nkind: feature\n"
+        "status: new\npriority: medium\ncreated: '2026-05-01T09:00:00'\n"
+        "tags: []\nshort_id: aaa111\nproject: myapp\n---\n\n## Request\nAdd login"
+    )
+    (m / "feature-request-b-bbb222.md").write_text(
+        "---\ntitle: Dark mode\ntype: feature_request\nkind: feature\n"
+        "status: new\npriority: medium\ncreated: '2026-05-01T09:00:00'\n"
+        "tags: []\nshort_id: bbb222\n---\n\n## Request\nDark mode"
+    )
+    update, ctx = _make_update(12345, ["project:myapp"])
+    await handler.cmd_features(update, ctx)
+    assert len(handler._last_feature_set) == 1
+    assert handler._last_feature_set[0].name == "feature-request-a-aaa111.md"
+    reply = update.message.reply_text.call_args[0][0]
+    assert "aaa111" in reply
+    assert "bbb222" not in reply
+
+
+@pytest.mark.asyncio
+async def test_features_project_filter_combined_with_kind(handler, brain_dir):
+    """/features bug project:myapp filters by both kind and project."""
+    m = brain_dir / "memories"
+    (m / "feature-request-crash-aaa111.md").write_text(
+        "---\ntitle: Crash on login\ntype: feature_request\nkind: bug\n"
+        "status: new\npriority: medium\ncreated: '2026-05-01T09:00:00'\n"
+        "tags: []\nshort_id: aaa111\nproject: myapp\n---\n\n## Bug\nCrash"
+    )
+    (m / "feature-request-feat-bbb222.md").write_text(
+        "---\ntitle: Login page\ntype: feature_request\nkind: feature\n"
+        "status: new\npriority: medium\ncreated: '2026-05-01T09:00:00'\n"
+        "tags: []\nshort_id: bbb222\nproject: myapp\n---\n\n## Request\nLogin"
+    )
+    (m / "feature-request-other-ccc333.md").write_text(
+        "---\ntitle: Felix bug\ntype: feature_request\nkind: bug\n"
+        "status: new\npriority: medium\ncreated: '2026-05-01T09:00:00'\n"
+        "tags: []\nshort_id: ccc333\n---\n\n## Bug\nFelix thing"
+    )
+    update, ctx = _make_update(12345, ["bug", "project:myapp"])
+    await handler.cmd_features(update, ctx)
+    assert len(handler._last_feature_set) == 1
+    assert handler._last_feature_set[0].name == "feature-request-crash-aaa111.md"
+
+
+@pytest.mark.asyncio
+async def test_feature_github_with_project_adds_label(handler, brain_dir):
+    """/feature for:myapp with GitHub enabled adds project:myapp label."""
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.create_issue = AsyncMock(return_value={
+        "number": 55, "html_url": "https://github.com/owner/repo/issues/55"
+    })
+    mock_gh.ensure_labels = AsyncMock()
+    mock_gh.list_issues = AsyncMock(return_value=[])
+    handler.github = mock_gh
+    update, ctx = _make_update(12345, ["for:myapp", "fix", "the", "login"])
+    await handler.cmd_feature(update, ctx)
+    call = mock_gh.create_issue.call_args
+    labels = call.kwargs.get("labels") or call.args[2]
+    assert "project:myapp" in labels
+    assert "kind:feature" in labels
+    reply = update.message.reply_text.call_args[0][0]
+    assert "[myapp]" in reply
+    # Local file should have project field
+    files = list((brain_dir / "memories").glob("feature-request-*.md"))
+    fm = _parse_fm(files[0])
+    assert fm.get("project") == "myapp"
+
+
+@pytest.mark.asyncio
+async def test_features_shows_project_tag_when_mixed(handler, brain_dir):
+    """List output shows [project] tag when items have different projects."""
+    m = brain_dir / "memories"
+    (m / "feature-request-a-aaa111.md").write_text(
+        "---\ntitle: Login page\ntype: feature_request\nkind: feature\n"
+        "status: new\npriority: medium\ncreated: '2026-05-01T09:00:00'\n"
+        "tags: []\nshort_id: aaa111\nproject: myapp\n---\n\n## Request\nAdd login"
+    )
+    (m / "feature-request-b-bbb222.md").write_text(
+        "---\ntitle: Dark mode\ntype: feature_request\nkind: feature\n"
+        "status: new\npriority: medium\ncreated: '2026-05-01T09:00:00'\n"
+        "tags: []\nshort_id: bbb222\n---\n\n## Request\nDark mode"
+    )
+    update, ctx = _make_update(12345)
+    await handler.cmd_features(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    # Item with project should show [myapp], item without should not
+    assert "[myapp]" in reply

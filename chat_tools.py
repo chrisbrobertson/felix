@@ -344,7 +344,12 @@ TOOLS: list[dict] = [
                     "description": {
                         "type": "string",
                         "description": "Clear description of the feature request",
-                    }
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Optional project name this feature belongs to (e.g. 'myapp'). "
+                                       "Omit for the default Felix project.",
+                    },
                 },
                 "required": ["description"],
             },
@@ -364,7 +369,12 @@ TOOLS: list[dict] = [
                     "description": {
                         "type": "string",
                         "description": "Clear description of the bug — what happened vs what was expected",
-                    }
+                    },
+                    "project": {
+                        "type": "string",
+                        "description": "Optional project name this bug belongs to (e.g. 'myapp'). "
+                                       "Omit for the default Felix project.",
+                    },
                 },
                 "required": ["description"],
             },
@@ -629,6 +639,7 @@ async def _call(name: str, arguments: dict, handler):
         description = arguments.get("description", "").strip()
         if not description:
             return "Error: description is required."
+        project = (arguments.get("project") or "").strip().lower()
         kind = "bug" if name == "add_bug" else "feature"
         tags = [t[1:].lower() for t in re.findall(r'#\w+', description)]
         clean_desc = re.sub(r'#\w+', '', description).strip()
@@ -636,7 +647,7 @@ async def _call(name: str, arguments: dict, handler):
         slug = re.sub(r'[^a-z0-9]+', '-', title.lower())[:40].strip('-')
         id_hash = hashlib.sha1(f"{description}{datetime.now().isoformat()}".encode()).hexdigest()[:6]
         filename = f"feature-request-{slug}-{id_hash}.md"
-        fm = {
+        fm: dict = {
             "title": clean_desc[:100],
             "type": "feature_request",
             "kind": kind,
@@ -646,6 +657,8 @@ async def _call(name: str, arguments: dict, handler):
             "tags": tags,
             "short_id": id_hash,
         }
+        if project:
+            fm["project"] = project
         if kind == "bug":
             body = (
                 f"## Bug\n\n{clean_desc}\n\n"
@@ -669,7 +682,8 @@ async def _call(name: str, arguments: dict, handler):
         # NOTE: This write bypasses memory_writer, so cache won't auto-invalidate.
         # The 60s sweep loop will catch it.
         label = "Bug" if kind == "bug" else "Feature"
-        return f"{label} captured: '{clean_desc[:60]}' (ID: {id_hash})"
+        proj_note = f" [{project}]" if project else ""
+        return f"{label} captured{proj_note}: '{clean_desc[:60]}' (ID: {id_hash})"
     raise ValueError(f"unknown tool {name!r}")
 
 
