@@ -17,7 +17,8 @@ MEMORIES_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/secon
 # detect the case where a timeout fires after a mutation has already landed, so
 # it can warn the user rather than silently suggest they retry.
 MUTATING_TOOLS: frozenset[str] = frozenset(
-    {"add_goal", "add_project", "add_bug", "add_feature", "close_issue", "close_commitment", "deliver_pending_replies"}
+    {"add_goal", "add_project", "add_bug", "add_feature", "close_issue", "close_commitment",
+     "deliver_pending_replies", "add_todo"}
 )
 
 TOOLS: list[dict] = [
@@ -457,6 +458,103 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_todo",
+            "description": (
+                "Create a personal todo item. Use when the user says things like "
+                "'remind me to call John', 'add a todo to send the report', "
+                "'I need to follow up with Jane', or 'create a task to review the doc'. "
+                "For waiting-on items ('waiting for John to reply') set type to waiting_on."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": "What needs to be done",
+                    },
+                    "due_date": {
+                        "type": "string",
+                        "description": "Optional due date in YYYY-MM-DD format",
+                    },
+                    "type": {
+                        "type": "string",
+                        "description": "Todo type (default: personal)",
+                        "enum": ["personal", "waiting_on", "outbound"],
+                    },
+                },
+                "required": ["description"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_goal",
+            "description": (
+                "Get full detail for a specific goal by its list index. "
+                "Call list_goals first to get the numbered list, then use "
+                "get_goal with the index number to see due date, priority, "
+                "linked projects, and notes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_goals result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_project",
+            "description": (
+                "Get full detail for a specific project by its list index. "
+                "Call list_projects first to get the numbered list, then use "
+                "get_project with the index number to see due date, priority, "
+                "linked goal, and milestones."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_projects result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_feature",
+            "description": (
+                "Get full detail for a specific feature request or bug report. "
+                "Accepts a 1-based list index (from list_features), a GitHub issue "
+                "number (e.g. '#42' or '42'), or a 6-char short_id hash. "
+                "Returns title, status, priority, description, and notes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index_or_id": {
+                        "type": "string",
+                        "description": "List index (e.g. '2'), GitHub issue number (e.g. '42' or '#42'), or 6-char short_id",
+                    },
+                },
+                "required": ["index_or_id"],
+            },
+        },
+    },
 ]
 
 
@@ -622,6 +720,18 @@ async def _call(name: str, arguments: dict, handler):
             title=arguments.get("title"),
             status=arguments.get("status", "completed"),
         )
+    if name == "add_todo":
+        return handler._add_todo_text(
+            description=arguments["description"],
+            due_date=arguments.get("due_date"),
+            todo_type=arguments.get("type"),
+        )
+    if name == "get_goal":
+        return handler._get_goal_text(int(arguments["index"]))
+    if name == "get_project":
+        return handler._get_project_text(int(arguments["index"]))
+    if name == "get_feature":
+        return await handler._get_feature_text(str(arguments["index_or_id"]))
     if name in ("add_feature", "add_bug"):
         import hashlib, os, re, yaml
         from datetime import datetime

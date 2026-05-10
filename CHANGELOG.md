@@ -6,6 +6,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Four new LLM tool calls so the chat skill can operate on individual items it previously could only list: `add_todo` (create a personal/waiting_on/outbound todo via CommitmentTracker), `get_goal` (fetch full goal detail by list index), `get_project` (fetch full project detail by list index), `get_feature` (fetch full feature/bug detail by index, short_id, or GitHub issue number). Closes #128, #129.
+
 ### Fixed
 - `/bugs` and `/features` list entries now include the 6-character hash ID (e.g. `[abc123]`) so users can reference items by ID in follow-up commands like `/feature_detail` (#131).
 

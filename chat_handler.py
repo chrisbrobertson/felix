@@ -2338,6 +2338,35 @@ class TelegramChatHandler:
         except Exception as e:
             await update.message.reply_text(f"Error creating todo: {_safe_error(e)}")
 
+    def _add_todo_text(
+        self, description: str, due_date: Optional[str] = None, todo_type: Optional[str] = None
+    ) -> str:
+        """Create a manual todo/commitment. Called by add_todo tool."""
+        from commitment_tracker import CommitmentTracker
+        commitment_type = todo_type or self._classify_todo(description)
+        recipient = self._extract_todo_recipient(description)
+        if commitment_type == "waiting_on":
+            owner = recipient or "unknown"
+            todo_recipient = "self"
+        else:
+            owner = "self"
+            todo_recipient = recipient
+        try:
+            tracker = CommitmentTracker()
+            tracker.create_manual_commitment(
+                commitment_type=commitment_type,
+                description=description,
+                owner=owner,
+                due_date=due_date,
+                source_note="Created via add_todo tool",
+                force_unique=True,
+                recipient=todo_recipient,
+            )
+            due_str = f" — due {due_date}" if due_date else ""
+            return f"✓ Todo added [{commitment_type}]: {description}{due_str}"
+        except Exception as e:
+            return f"Error creating todo: {_safe_error(e)}"
+
     # ── /accuracy command (FR-14) ─────────────────────────────────────────────
 
     async def cmd_accuracy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2950,6 +2979,29 @@ class TelegramChatHandler:
 
         return "\n".join(lines)
 
+    def _get_goal_text(self, n: int) -> str:
+        """Return formatted goal detail for index n. Called by get_goal tool."""
+        path, err = self._resolve_goal_index(str(n))
+        if path is None:
+            return err
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title", "")
+        category = fm.get("category", "")
+        status = fm.get("status", "")
+        due_date = fm.get("due_date") or "none"
+        priority = fm.get("priority", "medium")
+        linked_projects = fm.get("linked_projects", [])
+        notes = fm.get("notes", "")
+        linked_str = ", ".join(linked_projects) if linked_projects else "none"
+        lines = [
+            f"{title} [{category}] — {status}",
+            f"Due: {due_date} · Priority: {priority}",
+            f"Linked projects: {linked_str}",
+            "",
+            f"Notes: {notes or '—'}",
+        ]
+        return "\n".join(lines)
+
     async def cmd_goals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
@@ -3357,6 +3409,34 @@ class TelegramChatHandler:
         except Exception as e:
             log.exception("Error in cmd_project")
             await update.message.reply_text(f"Error showing project: {_safe_error(e)}")
+
+    def _get_project_text(self, n: int) -> str:
+        """Return formatted project detail for index n. Called by get_project tool."""
+        path, err = self._resolve_project_index(str(n))
+        if path is None:
+            return err
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title", "")
+        category = fm.get("category", "")
+        status = fm.get("status", "")
+        due_date = fm.get("due_date") or "none"
+        priority = fm.get("priority", "medium")
+        linked_goal = fm.get("linked_goal") or "none"
+        milestones = fm.get("milestones", [])
+        lines = [
+            f"{title} [{category}] — {status}",
+            f"Due: {due_date} · Priority: {priority}",
+            f"Linked goal: {linked_goal}",
+            "",
+        ]
+        if milestones:
+            lines.append("Milestones:")
+            for m in milestones:
+                check = "✓" if m.get("done") else "○"
+                lines.append(f"  {check} {m.get('text', '')}")
+        else:
+            lines.append("No milestones.")
+        return "\n".join(lines)
 
     async def cmd_completeproject(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -5450,6 +5530,57 @@ class TelegramChatHandler:
             short_id = fm.get("short_id", "")
             id_suffix = f" [{short_id}]" if short_id else ""
             lines.append(f"{i}. {kind_tag}[{item_status}] [{priority}] {title} ({created}){id_suffix}")
+        return "\n".join(lines)
+
+    async def _get_feature_text(self, index_or_id: str) -> str:
+        """Return formatted feature/bug detail. Called by get_feature tool.
+        Accepts 1-based list index, GitHub issue number (#N or N), or short_id hash."""
+        # Lazy-populate feature set so index-based lookup works without a prior list call
+        if not self._last_feature_set:
+            await self._list_features_text()
+        target = self._resolve_feature_index([index_or_id], None)
+        if target is None:
+            return f"Feature/bug not found: {index_or_id!r}. Use list_features to see available items."
+        if isinstance(target, int):
+            try:
+                issue = await self.github.get_issue(target)
+                comments = await self.github.get_comments(target)
+            except Exception as e:
+                return f"GitHub error: {e}"
+            status = self._status_from_labels(issue)
+            priority = self._priority_from_labels(issue)
+            kind = self._kind_from_labels(issue)
+            tags = self._tags_from_labels(issue)
+            created = issue.get("created_at", "")[:10]
+            body = issue.get("body", "")[:1500]
+            lines = [
+                f"**{issue.get('title', '?')}** — #{target}",
+                f"Status: {status} | Priority: {priority} | Kind: {kind}",
+                f"Created: {created}",
+                f"Tags: {', '.join(tags) if tags else 'none'}",
+                "",
+                body,
+            ]
+            if comments:
+                lines.append("")
+                lines.append(f"## Notes ({len(comments)} comments)")
+                for c in comments[-5:]:
+                    lines.append(f"- {c.get('created_at','')[:10]}: {c.get('body','')[:150]}")
+            return "\n".join(lines)
+        fm = self._parse_frontmatter(target)
+        text = _safe_read_text(target)
+        if text is None:
+            return "Feature file temporarily unavailable — try again in a moment."
+        parts = text.split("---", 2)
+        body = parts[2].strip() if len(parts) >= 3 else text
+        lines = [
+            f"**{fm.get('title', target.stem)}**",
+            f"Status: {fm.get('status', '?')} | Priority: {fm.get('priority', '?')} | Kind: {fm.get('kind', '?')}",
+            f"Created: {fm.get('created', '?')[:16]}",
+            f"Tags: {', '.join(fm.get('tags', []))}",
+            "",
+            body[:1500],
+        ]
         return "\n".join(lines)
 
     def _get_memory_text(self, name: str) -> str:
