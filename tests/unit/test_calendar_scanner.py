@@ -559,6 +559,67 @@ def test_skip_calendars_filtered(tmp_path):
     assert len(events) == 0
 
 
+def test_null_modified_date_stable(tmp_path):
+    """NULL ZMODIFIEDDATE → stable modified_time of datetime(2001,1,1), not datetime.now().
+
+    When ZMODIFIEDDATE is NULL (as is common for all-day and recurring events),
+    _cd_to_datetime returns datetime(2001,1,1) — a fixed epoch. The old code
+    used datetime.now() as fallback, which caused events to be re-processed
+    every scan cycle because the stored modified_str never matched the next
+    cycle's datetime.now() value (#126).
+    """
+    db_path = tmp_path / "Calendar Cache"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE ZCALENDAR (Z_PK INTEGER PRIMARY KEY, ZTITLE TEXT)")
+    conn.execute("""
+        CREATE TABLE ZCALENDARITEM (
+            Z_PK INTEGER PRIMARY KEY,
+            ZTITLE TEXT,
+            ZSTARTDATE REAL,
+            ZENDDATE REAL,
+            ZMODIFIEDDATE REAL,
+            ZLOCATION TEXT,
+            ZNOTES TEXT,
+            ZISALLDAY INTEGER,
+            ZHASRECURRENCERULES INTEGER,
+            ZMYATTENDEESTATUS INTEGER,
+            ZEXTERNALIDENTIFIER TEXT,
+            ZCALENDAR INTEGER
+        )
+    """)
+    conn.execute("CREATE TABLE ZATTENDEE (ZCOMMONNAME TEXT, ZADDRESS TEXT, ZCALENDARITEM INTEGER)")
+    conn.execute("INSERT INTO ZCALENDAR (Z_PK, ZTITLE) VALUES (1, 'Work')")
+
+    now = datetime.now()
+    event_start = now + timedelta(days=1)
+    start_cd = _datetime_to_cd(event_start)
+    end_cd = _datetime_to_cd(event_start + timedelta(hours=1))
+
+    # Insert event with NULL ZMODIFIEDDATE (None → SQLite NULL)
+    conn.execute(
+        "INSERT INTO ZCALENDARITEM VALUES (1, 'All Day Event', ?, ?, NULL, '', '', 1, 0, 0, 'ext1', 1)",
+        (start_cd, end_cd)
+    )
+    conn.commit()
+    conn.close()
+
+    # Make a copy so the finally block in get_events can delete it without losing the DB
+    db_copy = tmp_path / "Calendar Cache Copy"
+    import shutil as _shutil
+    _shutil.copy2(str(db_path), str(db_copy))
+
+    source = CalendarCacheSource(db_copy)
+    start_date = now - timedelta(days=7)
+    end_date = now + timedelta(days=7)
+
+    with patch.object(source, '_copy_db', return_value=(db_copy, [])):
+        events = source.get_events(start_date, end_date, set())
+
+    assert len(events) == 1
+    # modified_time must be the stable epoch date, not near-current time
+    assert events[0]["modified_time"] == datetime(2001, 1, 1)
+
+
 # ── Change detection ──────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
