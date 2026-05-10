@@ -2320,6 +2320,65 @@ class TelegramChatHandler:
             lines.extend(f"{i}. {s}" for i, s in enumerate(steps[:5], 1))
         return "\n".join(lines)
 
+
+    async def _update_issue_priority_text(self, short_id=None, title=None, priority="medium") -> str:
+        """Update the priority of a bug/feature request. Used by update_issue_priority tool."""
+        if priority not in ("low", "medium", "high", "critical"):
+            return f"Invalid priority '{priority}'. Must be: low, medium, high, or critical."
+        memories = list((BRAIN_DIR / "memories").glob("feature-request-*.md"))
+        match = None
+
+        if short_id:
+            for f in memories:
+                fm = self._parse_frontmatter(f)
+                if fm.get("short_id") == short_id:
+                    match = f
+                    break
+            if not match:
+                return f"No issue found with ID '{short_id}'."
+
+        elif title:
+            hits = [
+                f for f in memories
+                if title.lower() in (self._parse_frontmatter(f).get("title") or "").lower()
+            ]
+            if not hits:
+                return f"No issue found matching '{title}'."
+            if len(hits) > 1:
+                lines = ["Multiple matches — be more specific:"]
+                for h in hits[:5]:
+                    fm = self._parse_frontmatter(h)
+                    lines.append(f"• [{fm.get('short_id')}] {(fm.get('title') or '')[:60]}")
+                return "\n".join(lines)
+            match = hits[0]
+        else:
+            return "Provide either short_id or title."
+
+        fm = self._parse_frontmatter(match)
+        old_priority = fm.get("priority", "medium")
+
+        gh_number = fm.get("github_issue_number")
+        if gh_number:
+            if not self.github.enabled:
+                return (
+                    f"Cannot update GitHub issue #{gh_number}: "
+                    "GitHub integration not configured (GITHUB_PAT / GITHUB_REPO missing)"
+                )
+            try:
+                await self._gh_set_priority(gh_number, priority)
+                await self._rewrite_features_index_snapshot()
+            except Exception as gh_e:
+                return f"GitHub sync failed for #{gh_number}: {gh_e}"
+
+        try:
+            self._rewrite_feature_frontmatter(match, {"priority": priority})
+            return (
+                f"Priority updated: [{fm.get('short_id')}] "
+                f"{(fm.get('title') or '')[:60]} → {old_priority} → {priority}"
+            )
+        except Exception as e:
+            return f"Error updating issue: {e}"
+
     async def cmd_commitments(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return

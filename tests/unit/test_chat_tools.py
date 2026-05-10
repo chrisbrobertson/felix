@@ -301,6 +301,7 @@ def test_all_tool_names_in_dispatcher():
         "close_commitment", "close_goal", "close_project",
         "add_todo", "get_goal", "get_project", "get_feature", "update_feature",
         "get_event", "get_meeting", "get_contact", "get_comm", "get_reading", "get_action",
+        "update_issue_priority",
         # Handled in handle_message's tool_dispatch closure (needs chat_id in scope)
         "get_recent_commands",
     }
@@ -588,6 +589,70 @@ async def test_close_issue_custom_status(mock_handler, tmp_path):
         short_id="ghi789",
         title=None,
         status="wont_do"
+    )
+
+
+# --- update_issue_priority tool tests ---
+
+def test_update_issue_priority_tool_in_tools_list():
+    """update_issue_priority is present in TOOLS with required fields."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "update_issue_priority" in names
+
+    tool = next(t for t in chat_tools.TOOLS if t["function"]["name"] == "update_issue_priority")
+    assert tool["function"]["description"]
+    params = tool["function"]["parameters"]
+    assert "short_id" in params["properties"]
+    assert "title" in params["properties"]
+    assert "priority" in params["properties"]
+    assert params["properties"]["priority"]["enum"] == ["low", "medium", "high", "critical"]
+    assert params["required"] == ["priority"]
+
+
+def test_update_issue_priority_in_mutating_tools():
+    """update_issue_priority is listed as a mutating tool."""
+    assert "update_issue_priority" in chat_tools.MUTATING_TOOLS
+
+
+@pytest.mark.asyncio
+async def test_update_issue_priority_dispatch_by_short_id(mock_handler):
+    """update_issue_priority by short_id calls _update_issue_priority_text correctly."""
+    mock_handler._update_issue_priority_text = AsyncMock(
+        return_value="Priority updated: [abc123] PDF export broken → medium → high"
+    )
+
+    result = await chat_tools.dispatch(
+        "update_issue_priority",
+        {"short_id": "abc123", "priority": "high"},
+        mock_handler,
+    )
+
+    assert "high" in result
+    mock_handler._update_issue_priority_text.assert_called_once_with(
+        short_id="abc123",
+        title=None,
+        priority="high",
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_issue_priority_dispatch_by_title(mock_handler):
+    """update_issue_priority by title calls _update_issue_priority_text correctly."""
+    mock_handler._update_issue_priority_text = AsyncMock(
+        return_value="Priority updated: [def456] Dark mode → low → critical"
+    )
+
+    result = await chat_tools.dispatch(
+        "update_issue_priority",
+        {"title": "dark mode", "priority": "critical"},
+        mock_handler,
+    )
+
+    assert "critical" in result
+    mock_handler._update_issue_priority_text.assert_called_once_with(
+        short_id=None,
+        title="dark mode",
+        priority="critical",
     )
 
 

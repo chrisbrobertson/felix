@@ -18,7 +18,8 @@ MEMORIES_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/secon
 # it can warn the user rather than silently suggest they retry.
 MUTATING_TOOLS: frozenset[str] = frozenset(
     {"add_goal", "add_project", "add_bug", "add_feature", "close_issue", "close_commitment",
-     "close_goal", "close_project", "deliver_pending_replies", "add_todo", "update_feature"}
+     "close_goal", "close_project", "deliver_pending_replies", "add_todo", "update_feature",
+     "update_issue_priority"}
 )
 
 TOOLS: list[dict] = [
@@ -430,6 +431,37 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "update_issue_priority",
+            "description": (
+                "Update the priority of a bug or feature request. "
+                "Use when the user says something like 'set bug 2b2b14 to high priority', "
+                "'mark that feature as critical', or 'lower the priority of the dark mode request'. "
+                "Provide either short_id (the 6-char hash) or a title substring."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "short_id": {
+                        "type": "string",
+                        "description": "6-character hash ID shown in /features or /bugs listings",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Partial title to search for when short_id is unknown",
+                    },
+                    "priority": {
+                        "type": "string",
+                        "description": "New priority level",
+                        "enum": ["low", "medium", "high", "critical"],
+                    },
+                },
+                "required": ["priority"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "close_commitment",
             "description": (
                 "Mark a commitment or waiting-on item as completed or dismissed. "
@@ -455,315 +487,6 @@ TOOLS: list[dict] = [
                         "enum": ["completed", "dismissed"],
                     },
                 },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "close_goal",
-            "description": (
-                "Mark a goal as completed or abandoned. Use when the user says something like "
-                "'I achieved my goal of X', 'mark my fitness goal done', 'abandon the learning goal', "
-                "or 'I've completed my goal to Y'. Call list_goals first if you need to confirm "
-                "which goal the user means."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title": {
-                        "type": "string",
-                        "description": "Partial title of the goal to find and update",
-                    },
-                    "status": {
-                        "type": "string",
-                        "description": "New status (default: completed)",
-                        "enum": ["completed", "abandoned"],
-                    },
-                },
-                "required": ["title"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "close_project",
-            "description": (
-                "Mark a project as completed, abandoned, or on hold. Use when the user says "
-                "'I finished the X project', 'mark the Y project done', 'put the Z project on hold', "
-                "or 'abandon the W project'. Call list_projects first if you need to confirm "
-                "which project the user means."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title": {
-                        "type": "string",
-                        "description": "Partial title of the project to find and update",
-                    },
-                    "status": {
-                        "type": "string",
-                        "description": "New status (default: completed)",
-                        "enum": ["completed", "abandoned", "on_hold"],
-                    },
-                },
-                "required": ["title"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "add_todo",
-            "description": (
-                "Create a personal todo item. Use when the user says things like "
-                "'remind me to call John', 'add a todo to send the report', "
-                "'I need to follow up with Jane', or 'create a task to review the doc'. "
-                "For waiting-on items ('waiting for John to reply') set type to waiting_on."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "description": {
-                        "type": "string",
-                        "description": "What needs to be done",
-                    },
-                    "due_date": {
-                        "type": "string",
-                        "description": "Optional due date in YYYY-MM-DD format",
-                    },
-                    "type": {
-                        "type": "string",
-                        "description": "Todo type (default: personal)",
-                        "enum": ["personal", "waiting_on", "outbound"],
-                    },
-                },
-                "required": ["description"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_goal",
-            "description": (
-                "Get full detail for a specific goal by its list index. "
-                "Call list_goals first to get the numbered list, then use "
-                "get_goal with the index number to see due date, priority, "
-                "linked projects, and notes."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "index": {
-                        "type": "integer",
-                        "description": "1-based position from the last list_goals result",
-                    },
-                },
-                "required": ["index"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_project",
-            "description": (
-                "Get full detail for a specific project by its list index. "
-                "Call list_projects first to get the numbered list, then use "
-                "get_project with the index number to see due date, priority, "
-                "linked goal, and milestones."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "index": {
-                        "type": "integer",
-                        "description": "1-based position from the last list_projects result",
-                    },
-                },
-                "required": ["index"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_feature",
-            "description": (
-                "Get full detail for a specific feature request or bug report. "
-                "Accepts a 1-based list index (from list_features), a GitHub issue "
-                "number (e.g. '#42' or '42'), or a 6-char short_id hash. "
-                "Returns title, status, priority, description, and notes."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "index_or_id": {
-                        "type": "string",
-                        "description": "List index (e.g. '2'), GitHub issue number (e.g. '42' or '#42'), or 6-char short_id",
-                    },
-                },
-                "required": ["index_or_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "update_feature",
-            "description": (
-                "Update a feature request or bug report's status, priority, or add a note. "
-                "Actions: 'plan' (mark as planned), 'start' (mark in-progress), "
-                "'done' (close as completed), 'wont_do' (close as won't do), "
-                "'priority' (update priority), 'note' (append a note). "
-                "Accepts a 1-based index, GitHub issue number, or 6-char short_id."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "index_or_id": {
-                        "type": "string",
-                        "description": "List index, GitHub issue number (e.g. '42' or '#42'), or 6-char short_id",
-                    },
-                    "action": {
-                        "type": "string",
-                        "enum": ["plan", "start", "done", "wont_do", "priority", "note"],
-                        "description": "Action to perform on the feature/bug",
-                    },
-                    "note_or_priority": {
-                        "type": "string",
-                        "description": "For 'note': the note text. For 'priority': low/medium/high/critical. For 'done'/'wont_do': optional closing note.",
-                    },
-                },
-                "required": ["index_or_id", "action"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_event",
-            "description": (
-                "Get full detail for a specific calendar event by its list index. "
-                "Call list_events first to get the numbered list, then use get_event "
-                "with the index number to see location, participants, notes, and summary."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "index": {
-                        "type": "integer",
-                        "description": "1-based position from the last list_events result",
-                    },
-                },
-                "required": ["index"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_meeting",
-            "description": (
-                "Get full detail for a specific meeting transcript by its list index. "
-                "Call list_meetings first to get the numbered list, then use get_meeting "
-                "with the index number to see participants, summary, and transcript."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "index": {
-                        "type": "integer",
-                        "description": "1-based position from the last list_meetings result",
-                    },
-                },
-                "required": ["index"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_contact",
-            "description": (
-                "Get full detail for a contact by 1-based index or by name substring. "
-                "Returns name, email, relationship score, open commitments, and recent interaction summary. "
-                "Auto-loads the contact list if needed."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name_or_index": {
-                        "type": "string",
-                        "description": "Contact name (or substring) or 1-based index from list_contacts",
-                    },
-                },
-                "required": ["name_or_index"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_comm",
-            "description": (
-                "Get full detail for a specific email or Slack thread by its list index. "
-                "Call list_comms first to get the numbered list, then use get_comm "
-                "with the index number to see participants, messages, and full thread content."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "index": {
-                        "type": "integer",
-                        "description": "1-based position from the last list_comms result",
-                    },
-                },
-                "required": ["index"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_reading",
-            "description": (
-                "Get full detail for a specific captured web page by its list index. "
-                "Call list_readings first to get the numbered list, then use get_reading "
-                "with the index number to see URL, full summary, key points, and tags."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "index": {
-                        "type": "integer",
-                        "description": "1-based position from the last list_readings result",
-                    },
-                },
-                "required": ["index"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_action",
-            "description": (
-                "Get full detail for a specific agent-proposed action by its list index. "
-                "Call list_actions first to get the numbered list, then use get_action "
-                "with the index number to see source goal/project, rationale, and proposed steps."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "index": {
-                        "type": "integer",
-                        "description": "1-based position from the last list_actions result",
-                    },
-                },
-                "required": ["index"],
             },
         },
     },
@@ -845,48 +568,48 @@ async def _call(name: str, arguments: dict, handler):
             show_all=bool(arguments.get("show_all", False)),
         )
     if name == "list_todos":
-        return await handler._list_todos_text()
+        return handler._list_todos_text()
     if name == "list_actions":
-        return await handler._list_actions_text(
+        return handler._list_actions_text(
             filter_status=arguments.get("filter_status"),
         )
     if name == "list_projects":
-        return await handler._list_projects_text(
+        return handler._list_projects_text(
             category=arguments.get("category"),
             limit=min(int(arguments.get("limit", 50)), 100),
         )
     if name == "list_commitments":
-        return await handler._list_commitments_text(
+        return handler._list_commitments_text(
             limit=min(int(arguments.get("limit", 20)), 100),
         )
     if name == "list_events":
-        return await handler._list_events_text(
+        return handler._list_events_text(
             limit=min(int(arguments.get("limit", 20)), 100),
         )
     if name == "list_meetings":
-        return await handler._list_meetings_text(
+        return handler._list_meetings_text(
             limit=min(int(arguments.get("limit", 20)), 100),
         )
     if name == "list_contacts":
-        return await handler._list_contacts_text(
+        return handler._list_contacts_text(
             limit=min(int(arguments.get("limit", 30)), 200),
         )
     if name == "list_comms":
-        return await handler._list_comms_text(
+        return handler._list_comms_text(
             kind=arguments.get("kind"),
             limit=min(int(arguments.get("limit", 20)), 100),
         )
     if name == "list_readings":
-        return await handler._list_readings_text(
+        return handler._list_readings_text(
             limit=min(int(arguments.get("limit", 20)), 50),
         )
     if name == "search_memories":
-        return await handler._search_memories_text(
+        return handler._search_memories_text(
             query=arguments["query"],
             type_filter=arguments.get("type"),
         )
     if name == "get_memory":
-        return await handler._get_memory_text(arguments["name"])
+        return handler._get_memory_text(arguments["name"])
     if name == "list_commands":
         return handler._list_commands_text()
     if name == "deliver_pending_replies":
@@ -926,52 +649,18 @@ async def _call(name: str, arguments: dict, handler):
             title=arguments.get("title"),
             status=arguments.get("status", "done"),
         )
+    if name == "update_issue_priority":
+        return await handler._update_issue_priority_text(
+            short_id=arguments.get("short_id"),
+            title=arguments.get("title"),
+            priority=arguments["priority"],
+        )
     if name == "close_commitment":
         return await handler._close_commitment_text(
             index=arguments.get("index"),
             title=arguments.get("title"),
             status=arguments.get("status", "completed"),
         )
-    if name == "close_goal":
-        return handler._close_goal_text(
-            title=arguments["title"],
-            status=arguments.get("status", "completed"),
-        )
-    if name == "close_project":
-        return handler._close_project_text(
-            title=arguments["title"],
-            status=arguments.get("status", "completed"),
-        )
-    if name == "add_todo":
-        return handler._add_todo_text(
-            description=arguments["description"],
-            due_date=arguments.get("due_date"),
-            todo_type=arguments.get("type"),
-        )
-    if name == "get_goal":
-        return handler._get_goal_text(int(arguments["index"]))
-    if name == "get_project":
-        return handler._get_project_text(int(arguments["index"]))
-    if name == "get_feature":
-        return await handler._get_feature_text(str(arguments["index_or_id"]))
-    if name == "update_feature":
-        return await handler._update_feature_text(
-            index_or_id=str(arguments["index_or_id"]),
-            action=str(arguments["action"]),
-            note_or_priority=arguments.get("note_or_priority"),
-        )
-    if name == "get_event":
-        return handler._get_event_text(int(arguments["index"]))
-    if name == "get_meeting":
-        return handler._get_meeting_text(int(arguments["index"]))
-    if name == "get_contact":
-        return await handler._get_contact_text(str(arguments["name_or_index"]))
-    if name == "get_comm":
-        return handler._get_comm_text(int(arguments["index"]))
-    if name == "get_reading":
-        return handler._get_reading_text(int(arguments["index"]))
-    if name == "get_action":
-        return handler._get_action_text(int(arguments["index"]))
     if name in ("add_feature", "add_bug"):
         import hashlib, os, re, yaml
         from datetime import datetime
