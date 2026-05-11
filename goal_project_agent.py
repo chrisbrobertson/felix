@@ -427,7 +427,7 @@ class GoalProjectAgent:
 
     # ── Action execution ──────────────────────────────────────────────────────
 
-    def _execute_action(self, action_path: Path, action_fm: dict) -> str:
+    async def _execute_action(self, action_path: Path, action_fm: dict) -> str:
         """Execute an approved action. Returns success message or raises."""
         action_type = action_fm.get("action_type")
         target_name = action_fm.get("target")
@@ -515,7 +515,7 @@ class GoalProjectAgent:
 
         elif action_type == "create_commitment":
             from commitment_tracker import CommitmentTracker
-            ct = CommitmentTracker(role="full")
+            ct = CommitmentTracker(role="full", cache=self._cache)
             item = {
                 "type": args.get("commitment_type", "outbound"),
                 "description": args.get("description"),
@@ -528,21 +528,22 @@ class GoalProjectAgent:
             }
             source_url = f"agent:{action_fm.get('action_id')}"
             source_title = f"Goal agent action {action_fm.get('action_id')}"
-            ct._write_commitment(item, source_url, source_title, 0.0, "agent_action")
+            await ct._write_commitment(item, source_url, source_title, 0.0, "agent_action")
             return f"Created commitment: {args.get('description')}"
 
         elif action_type == "complete_commitment":
             if not target_name:
                 raise ValueError("complete_commitment requires target")
             target_path = MEMORIES_DIR / target_name
-            if not target_path.exists():
+            target_row = await self._cache.get(target_name)
+            if target_row is None:
                 raise ValueError(f"Target not found: {target_name}")
-            target_fm = _parse_frontmatter(target_path.read_text(encoding="utf-8"))
+            target_fm = _parse_frontmatter(target_row.get("body") or "")
             if target_fm.get("type") != "commitment":
                 raise ValueError(f"Target {target_name} is not a commitment")
             from commitment_tracker import CommitmentTracker
-            ct = CommitmentTracker(role="full")
-            ct.update_commitment_status(target_path, "completed")
+            ct = CommitmentTracker(role="full", cache=self._cache)
+            await ct.update_commitment_status(target_path, "completed")
             return f"Marked {target_name} as completed"
 
         else:

@@ -21,9 +21,15 @@ from commitment_tracker import (
     _slugify,
     NEEDS_REVIEW_THRESHOLD,
 )
+from memory_cache import MemoryCache
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _make_cache(memories_dir: Path) -> MemoryCache:
+    """Pass-through cache pointed at the test's temp memories dir."""
+    return MemoryCache(None, memories_dir, enabled=False)
 
 def make_meeting_memory(memories_dir: Path, filename: str = "meeting-test.md",
                         source_url: str = "zoom:abc123", summary: str = "Test meeting.") -> Path:
@@ -93,11 +99,12 @@ def test_stable_id_case_insensitive():
 
 # ── Confidence filtering ──────────────────────────────────────────────────────
 
-def test_confidence_filter_discards_below_threshold(tmp_path):
+@pytest.mark.asyncio
+async def test_confidence_filter_discards_below_threshold(tmp_path):
     """confidence=0.4 → no file written (below 0.5 default threshold)."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
 
     item = {
         "type": "outbound",
@@ -107,16 +114,17 @@ def test_confidence_filter_discards_below_threshold(tmp_path):
         "extracted_text": "...",
     }
     with patch.object(ct, "MEMORIES_DIR", memories_dir):
-        tracker._write_commitment(item, "zoom:src", "Test Meeting", min_confidence=0.5)
+        await tracker._write_commitment(item, "zoom:src", "Test Meeting", min_confidence=0.5)
 
     assert list(memories_dir.glob("commitment-*.md")) == []
 
 
-def test_confidence_filter_needs_review_tag(tmp_path):
+@pytest.mark.asyncio
+async def test_confidence_filter_needs_review_tag(tmp_path):
     """confidence=0.6 → file written with needs-review tag."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
 
     item = {
         "type": "outbound",
@@ -126,7 +134,7 @@ def test_confidence_filter_needs_review_tag(tmp_path):
         "extracted_text": "Let me look into that",
     }
     with patch.object(ct, "MEMORIES_DIR", memories_dir):
-        tracker._write_commitment(item, "zoom:src", "Test", min_confidence=0.5)
+        await tracker._write_commitment(item, "zoom:src", "Test", min_confidence=0.5)
 
     files = list(memories_dir.glob("commitment-*.md"))
     assert len(files) == 1
@@ -134,11 +142,12 @@ def test_confidence_filter_needs_review_tag(tmp_path):
     assert "needs-review" in (fm.get("tags") or [])
 
 
-def test_confidence_filter_auto_accept(tmp_path):
+@pytest.mark.asyncio
+async def test_confidence_filter_auto_accept(tmp_path):
     """confidence=0.8 → file written without needs-review tag."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
 
     item = {
         "type": "outbound",
@@ -148,7 +157,7 @@ def test_confidence_filter_auto_accept(tmp_path):
         "extracted_text": "I will send the report by Friday",
     }
     with patch.object(ct, "MEMORIES_DIR", memories_dir):
-        tracker._write_commitment(item, "zoom:src", "Test", min_confidence=0.5)
+        await tracker._write_commitment(item, "zoom:src", "Test", min_confidence=0.5)
 
     files = list(memories_dir.glob("commitment-*.md"))
     assert len(files) == 1
@@ -158,11 +167,12 @@ def test_confidence_filter_auto_accept(tmp_path):
 
 # ── File write ────────────────────────────────────────────────────────────────
 
-def test_write_commitment_field_order(tmp_path):
+@pytest.mark.asyncio
+async def test_write_commitment_field_order(tmp_path):
     """source_title must be the first key; type must be 'commitment'."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
 
     item = {
         "type": "outbound",
@@ -176,7 +186,7 @@ def test_write_commitment_field_order(tmp_path):
         "extracted_text": "Can you have revised numbers by Friday?",
     }
     with patch.object(ct, "MEMORIES_DIR", memories_dir):
-        tracker._write_commitment(item, "zoom:meeting-abc", "Q4 Review", min_confidence=0.5)
+        await tracker._write_commitment(item, "zoom:meeting-abc", "Q4 Review", min_confidence=0.5)
 
     files = list(memories_dir.glob("commitment-*.md"))
     assert len(files) == 1
@@ -187,27 +197,29 @@ def test_write_commitment_field_order(tmp_path):
     assert fm["source_url"].startswith("commitment:")
 
 
-def test_write_commitment_atomic(tmp_path):
+@pytest.mark.asyncio
+async def test_write_commitment_atomic(tmp_path):
     """No .tmp file left after write."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
 
     item = {
         "type": "outbound", "description": "Atomic test",
         "owner": "Alice", "confidence": 0.9, "extracted_text": "x",
     }
     with patch.object(ct, "MEMORIES_DIR", memories_dir):
-        tracker._write_commitment(item, "zoom:src", "Test", min_confidence=0.5)
+        await tracker._write_commitment(item, "zoom:src", "Test", min_confidence=0.5)
 
     assert list(memories_dir.glob("*.tmp")) == []
 
 
-def test_write_commitment_preserves_status(tmp_path):
+@pytest.mark.asyncio
+async def test_write_commitment_preserves_status(tmp_path):
     """Re-extraction must not overwrite completed/dismissed status."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
 
     description = "Send the report"
     source_url = "zoom:abc"
@@ -235,7 +247,7 @@ def test_write_commitment_preserves_status(tmp_path):
         "confidence": 0.85, "extracted_text": "I'll send the report.",
     }
     with patch.object(ct, "MEMORIES_DIR", memories_dir):
-        tracker._write_commitment(item, source_url, "Test Meeting", min_confidence=0.5)
+        await tracker._write_commitment(item, source_url, "Test Meeting", min_confidence=0.5)
 
     final_fm = _parse_frontmatter(commitment_path.read_text())
     assert final_fm["status"] == "completed"
@@ -249,7 +261,7 @@ async def test_scan_skips_unchanged_mtime(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
     state_file = tmp_path / "ct-state.json"
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
 
     mem = make_meeting_memory(memories_dir)
     mtime = mem.stat().st_mtime
@@ -276,7 +288,7 @@ async def test_scan_processes_new_mtime(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
     state_file = tmp_path / "ct-state.json"
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
 
     mem = make_meeting_memory(memories_dir)
     old_mtime = mem.stat().st_mtime - 100  # older than actual
@@ -305,7 +317,7 @@ async def test_scan_skips_wrong_type(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
     state_file = tmp_path / "ct-state.json"
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
 
     # Write a webpage memory
     p = memories_dir / "webpage-test.md"
@@ -334,7 +346,7 @@ async def test_extraction_empty_returns_no_files(tmp_path):
     """LLM returning {"commitments": []} must not create any files."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
 
     mem = make_meeting_memory(memories_dir)
     mock_resp = MagicMock()
@@ -355,7 +367,7 @@ async def test_extraction_json_parse_error_logs_warning(tmp_path, caplog):
     import logging
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
 
     mem = make_meeting_memory(memories_dir)
     mock_resp = MagicMock()
@@ -378,7 +390,7 @@ def test_cmd_commitments_returns_active_only(tmp_path):
     """_load_active_commitments excludes completed and dismissed items."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
 
     make_commitment_file(memories_dir, "Active task", status="active")
     make_commitment_file(memories_dir, "Done task", status="completed")
@@ -444,27 +456,29 @@ def test_cmd_commitments_sorted_by_due_date(tmp_path):
 
 # ── Status update ─────────────────────────────────────────────────────────────
 
-def test_cmd_complete_updates_status(tmp_path):
+@pytest.mark.asyncio
+async def test_cmd_complete_updates_status(tmp_path):
     """update_commitment_status sets status to 'completed'."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
     f = make_commitment_file(memories_dir, "Send report", status="active")
 
-    tracker.update_commitment_status(f, "completed")
+    await tracker.update_commitment_status(f, "completed")
 
     fm = _parse_frontmatter(f.read_text())
     assert fm["status"] == "completed"
 
 
-def test_cmd_dismiss_updates_status(tmp_path):
+@pytest.mark.asyncio
+async def test_cmd_dismiss_updates_status(tmp_path):
     """update_commitment_status sets status to 'dismissed'."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
     f = make_commitment_file(memories_dir, "False positive task", status="active")
 
-    tracker.update_commitment_status(f, "dismissed")
+    await tracker.update_commitment_status(f, "dismissed")
 
     fm = _parse_frontmatter(f.read_text())
     assert fm["status"] == "dismissed"
@@ -481,15 +495,16 @@ def test_cmd_complete_invalid_index():
     assert path is None
 
 
-def test_cmd_complete_idempotent(tmp_path):
+@pytest.mark.asyncio
+async def test_cmd_complete_idempotent(tmp_path):
     """Completing an already-completed item does not raise."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
     f = make_commitment_file(memories_dir, "Already done", status="completed")
 
     # Should not raise
-    tracker.update_commitment_status(f, "completed")
+    await tracker.update_commitment_status(f, "completed")
 
     fm = _parse_frontmatter(f.read_text())
     assert fm["status"] == "completed"
@@ -529,7 +544,7 @@ async def test_state_file_persists_across_scans(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
     state_file = tmp_path / "ct-state.json"
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
 
     mem = make_meeting_memory(memories_dir)
     mock_resp = MagicMock()
@@ -558,7 +573,7 @@ async def test_dedup_same_source_two_runs(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
     state_file = tmp_path / "ct-state.json"
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
 
     mem = make_meeting_memory(memories_dir)
     mock_resp = MagicMock()
@@ -603,7 +618,7 @@ async def test_calendar_event_source_type(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
     state_file = tmp_path / "ct-state.json"
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
 
     p = memories_dir / "calendar-event-test.md"
     p.write_text(
@@ -634,7 +649,7 @@ async def test_slack_thread_source_type(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
     state_file = tmp_path / "ct-state.json"
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
 
     p = memories_dir / "slack-thread-test.md"
     p.write_text(
@@ -695,14 +710,15 @@ def test_cmd_wrong_writes_correction(tmp_path):
     assert loaded["description"] == "False positive task"
 
 
-def test_cmd_wrong_sets_dismissed(tmp_path):
+@pytest.mark.asyncio
+async def test_cmd_wrong_sets_dismissed(tmp_path):
     """"/wrong N" sets status to dismissed."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
 
     f = make_commitment_file(memories_dir, "Wrong extraction", status="active")
-    tracker.update_commitment_status(f, "dismissed")
+    await tracker.update_commitment_status(f, "dismissed")
 
     fm = _parse_frontmatter(f.read_text())
     assert fm["status"] == "dismissed"
@@ -736,7 +752,7 @@ def test_cmd_missed_creates_commitment(tmp_path):
     """"/missed" flow creates a commitment file with confidence: 1.0."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
-    tracker = CommitmentTracker()
+    tracker = CommitmentTracker(cache=_make_cache(memories_dir))
 
     with patch.object(ct, "MEMORIES_DIR", memories_dir):
         path = tracker.create_manual_commitment(
@@ -954,7 +970,7 @@ async def test_commitment_tracker_skips_marketing_emails(tmp_path):
          patch("litellm.acompletion", new_callable=AsyncMock) as mock_llm:
 
         (tmp_path / "config.yaml").write_text("commitment_tracker:\n  min_confidence: 0.5\n")
-        tracker = CommitmentTracker()
+        tracker = CommitmentTracker(cache=_make_cache(memories_dir))
         await tracker._run_scan()
 
     # LLM should NOT have been called (marketing email was skipped)
@@ -995,7 +1011,7 @@ async def test_commitment_tracker_skips_transactional_emails(tmp_path):
          patch("litellm.acompletion", new_callable=AsyncMock) as mock_llm:
 
         (tmp_path / "config.yaml").write_text("commitment_tracker:\n  min_confidence: 0.5\n")
-        tracker = CommitmentTracker()
+        tracker = CommitmentTracker(cache=_make_cache(memories_dir))
         await tracker._run_scan()
 
     mock_llm.assert_not_called()
@@ -1051,7 +1067,7 @@ async def test_commitment_tracker_processes_human_forwarded_reminder(tmp_path):
             usage=None,
         )
         (tmp_path / "config.yaml").write_text("commitment_tracker:\n  min_confidence: 0.5\n")
-        tracker = CommitmentTracker()
+        tracker = CommitmentTracker(cache=_make_cache(memories_dir))
         await tracker._run_scan()
 
     # LLM was called because the 'human' classified email was not skipped

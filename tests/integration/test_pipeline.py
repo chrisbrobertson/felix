@@ -890,7 +890,8 @@ async def test_commitment_tracker_extracts_from_meeting_memory(tmp_path):
         }]
     })
 
-    tracker = CommitmentTracker(role="full")
+    from memory_cache import MemoryCache
+    tracker = CommitmentTracker(role="full", cache=MemoryCache(None, memories_dir, enabled=False))
     import yaml as _yaml
 
     with patch.object(ct, "MEMORIES_DIR", memories_dir), \

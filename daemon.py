@@ -189,7 +189,7 @@ async def main():
         optimizer = SkillOptimizer(config)
         indexer = IndexBuilder(cache=cache)
         zoom_scanner = ZoomScanner(role=role)
-        commitment_tracker = CommitmentTracker(role=role)
+        commitment_tracker = CommitmentTracker(role=role, cache=cache)
         contact_tracker = ContactTracker(role=role)
         project_inference_scanner = ProjectInferenceScanner(role=role, cache=cache)
         goal_agent = GoalProjectAgent(role=role, cache=cache)

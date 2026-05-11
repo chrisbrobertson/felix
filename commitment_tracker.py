@@ -12,6 +12,7 @@ from typing import Optional
 import yaml
 
 from llm_routes import resolve
+from memory_cache import MemoryCache
 from usage_tracker import record_usage
 from utils import load_config
 from heartbeat import record_beat
@@ -167,8 +168,9 @@ def _record_missed(source_type: str):
 # ── CommitmentTracker ─────────────────────────────────────────────────────────
 
 class CommitmentTracker:
-    def __init__(self, role: str = "full"):
+    def __init__(self, role: str = "full", cache: Optional[MemoryCache] = None):
         self.role = role
+        self._cache = cache if cache is not None else MemoryCache(None, MEMORIES_DIR, enabled=False)
 
     # ── Config ────────────────────────────────────────────────────────────────
 
@@ -300,7 +302,7 @@ class CommitmentTracker:
         slug = _slugify(description)
         return MEMORIES_DIR / f"commitment-{slug}-{stable_id}.md"
 
-    def _write_commitment(
+    async def _write_commitment(
         self,
         item: dict,
         source_memory_url: str,
@@ -323,10 +325,13 @@ class CommitmentTracker:
         commitment_path = self._commitment_path(description, stable_id)
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
-        # If file already exists, preserve completed/dismissed status
-        if commitment_path.exists():
+        # If file already exists, preserve completed/dismissed status. Look it
+        # up through the cache (pass-through reads from disk; SQLite mode hits
+        # the index) so we honor the Wave-2 invariant.
+        existing_row = await self._cache.get(commitment_path.name)
+        if existing_row is not None:
             try:
-                existing_text = commitment_path.read_text()
+                existing_text = existing_row.get("body") or ""
                 existing_fm = _parse_frontmatter(existing_text)
                 existing_status = existing_fm.get("status", "active")
                 if existing_status in ("completed", "dismissed"):
@@ -340,6 +345,7 @@ class CommitmentTracker:
                         tmp = commitment_path.with_suffix(".tmp")
                         tmp.write_text(new_text, encoding="utf-8")
                         os.rename(str(tmp), str(commitment_path))
+                        await self._cache.invalidate(commitment_path.name)
                     return
             except Exception:
                 pass  # Fall through and rewrite
@@ -386,6 +392,7 @@ class CommitmentTracker:
             tmp_path.write_text(content, encoding="utf-8")
             os.rename(str(tmp_path), str(commitment_path))
             log.debug("Wrote %s", commitment_path.name)
+            await self._cache.invalidate(commitment_path.name)
             # Increment extracted count in accuracy tracking (FR-14)
             if source_type:
                 _increment_extracted_count(source_type)
@@ -398,9 +405,12 @@ class CommitmentTracker:
 
     # ── Status update (used by Telegram commands) ─────────────────────────────
 
-    def update_commitment_status(self, commitment_path: Path, new_status: str):
+    async def update_commitment_status(self, commitment_path: Path, new_status: str):
         """Atomically update status field of a commitment file."""
-        text = commitment_path.read_text()
+        row = await self._cache.get(commitment_path.name)
+        if row is None:
+            raise FileNotFoundError(commitment_path.name)
+        text = row.get("body") or ""
         fm = _parse_frontmatter(text)
         fm["status"] = new_status
         fm["last_scanned"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -415,6 +425,7 @@ class CommitmentTracker:
         tmp = commitment_path.with_suffix(".tmp")
         tmp.write_text(new_content, encoding="utf-8")
         os.rename(str(tmp), str(commitment_path))
+        await self._cache.invalidate(commitment_path.name)
 
     def create_manual_commitment(
         self,
@@ -508,44 +519,37 @@ class CommitmentTracker:
         state = self._load_state()
         processed = state.get("processed", {})
 
-        # Collect candidates: source-type files changed since last processed
-        candidates = []
-        for f in MEMORIES_DIR.glob("*.md"):
-            # Skip commitment files
-            if f.name.startswith("commitment-"):
-                continue
-            try:
-                mtime = f.stat().st_mtime
-            except Exception:
-                continue
+        # Collect candidates per source-type via the cache.
+        candidates = []  # list of (Path, mtime, body, fm)
+        seen_names: set[str] = set()
+        for st in source_types:
+            rows = await self._cache.query_by_type(st)
+            for row in rows:
+                name = row["filename"]
+                if name.startswith("commitment-"):
+                    continue
+                if name in seen_names:
+                    continue
+                seen_names.add(name)
+                mtime = row.get("mtime") or 0.0
 
-            stored_mtime = processed.get(f.name)
-            if stored_mtime is not None and abs(mtime - stored_mtime) < 1.0:
-                continue  # Unchanged since last scan
+                stored_mtime = processed.get(name)
+                if stored_mtime is not None and abs(mtime - stored_mtime) < 1.0:
+                    continue  # Unchanged since last scan
 
-            # Check type field from frontmatter header (avoid full read when possible)
-            try:
-                header = f.read_text(encoding="utf-8")[:500]
-            except Exception:
-                continue
+                body = row.get("body") or ""
+                fm_raw = row.get("frontmatter")
+                try:
+                    fm = json.loads(fm_raw) if fm_raw else _parse_frontmatter(body)
+                except (TypeError, json.JSONDecodeError):
+                    fm = _parse_frontmatter(body)
 
-            fm_type = ""
-            fm_classification = ""
-            for line in header.split("\n"):
-                stripped = line.strip()
-                if stripped.startswith("type:"):
-                    fm_type = stripped[5:].strip().strip('"').strip("'")
-                elif stripped.startswith("classification:"):
-                    fm_classification = stripped[15:].strip().strip('"').strip("'")
+                fm_classification = fm.get("classification") or ""
+                # Skip email threads with marketing/automated/transactional classification
+                if st == "email_thread" and fm_classification in {"marketing", "automated", "transactional"}:
+                    continue
 
-            if fm_type not in source_types:
-                continue
-
-            # Skip email threads with marketing, automated, or transactional classification
-            if fm_type == "email_thread" and fm_classification in {"marketing", "automated", "transactional"}:
-                continue
-
-            candidates.append((f, mtime))
+                candidates.append((MEMORIES_DIR / name, mtime, body, fm))
 
         if not candidates:
             log.debug("No new/updated source files to process for commitments")
@@ -557,17 +561,15 @@ class CommitmentTracker:
         )
 
         processed_count = 0
-        for f, mtime in candidates[:MAX_FILES_PER_CYCLE]:
+        for f, mtime, content, fm in candidates[:MAX_FILES_PER_CYCLE]:
             try:
-                content = f.read_text(encoding="utf-8")
-                fm = _parse_frontmatter(content)
                 source_url = fm.get("source_url") or f"file:{f.name}"
                 source_title = fm.get("source_title") or f.name
                 source_type = fm.get("type", "")
 
                 items = await self._extract_commitments(f, fm, content)
                 for item in items:
-                    self._write_commitment(item, source_url, source_title, min_confidence, source_type)
+                    await self._write_commitment(item, source_url, source_title, min_confidence, source_type)
 
                 # Persist state after each file to survive mid-cycle crashes
                 processed[f.name] = mtime

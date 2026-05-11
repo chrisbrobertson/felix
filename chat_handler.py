@@ -1784,7 +1784,7 @@ class TelegramChatHandler:
         fm = self._parse_frontmatter(path)
         label = (fm.get("source_title") or fm.get("summary") or str(path.name))[:60]
         try:
-            CommitmentTracker().update_commitment_status(path, status)
+            await CommitmentTracker(cache=self._cache).update_commitment_status(path, status)
             mark = "✓" if status == "completed" else "✕"
             return f"{mark} {label} → {status}"
         except Exception as e:
@@ -1977,7 +1977,7 @@ class TelegramChatHandler:
             fm = self._parse_frontmatter(path)
             title = fm.get("source_title") or "todo"
             try:
-                CommitmentTracker().update_commitment_status(path, new_status)
+                await CommitmentTracker(cache=self._cache).update_commitment_status(path, new_status)
                 mark = "✓" if new_status == "completed" else "✕"
                 lines.append(f"{mark} {title}")
             except Exception as e:
@@ -2018,7 +2018,7 @@ class TelegramChatHandler:
             owner = fm.get("owner", "")
             label = f'"{title}"' + (f" ({owner})" if owner else "")
             try:
-                CommitmentTracker().update_commitment_status(path, "completed")
+                await CommitmentTracker(cache=self._cache).update_commitment_status(path, "completed")
                 lines.append(f"\u2713 {label}")
             except Exception as e:
                 lines.append(f"\u2717 {label}: {e}")
@@ -2048,7 +2048,7 @@ class TelegramChatHandler:
             owner = fm.get("owner", "")
             label = f'"{title}"' + (f" ({owner})" if owner else "")
             try:
-                CommitmentTracker().update_commitment_status(path, "dismissed")
+                await CommitmentTracker(cache=self._cache).update_commitment_status(path, "dismissed")
                 lines.append(f"\u2717 {label}")
             except Exception as e:
                 lines.append(f"\u2717 {label}: {e}")
@@ -2098,7 +2098,7 @@ class TelegramChatHandler:
 
         try:
             # Set status to dismissed
-            CommitmentTracker().update_commitment_status(path, "dismissed")
+            await CommitmentTracker(cache=self._cache).update_commitment_status(path, "dismissed")
 
             # Append to corrections JSONL
             correction = {
@@ -2618,9 +2618,9 @@ class TelegramChatHandler:
 
         # Execute
         from goal_project_agent import GoalProjectAgent
-        agent = GoalProjectAgent(role="full")
+        agent = GoalProjectAgent(role="full", cache=self._cache)
         try:
-            msg = agent._execute_action(path, fresh_fm)
+            msg = await agent._execute_action(path, fresh_fm)
             # Mark as executed
             fresh_fm["status"] = "executed"
             fresh_fm["executed_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
