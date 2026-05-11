@@ -16,6 +16,7 @@ from browser_watcher import BrowserWatcher
 from code_scanner import CodeScanner
 from email_scanner import EmailScanner
 from calendar_scanner import CalendarScanner
+from notes_scanner import NotesScanner
 from slack_scanner import SlackScanner
 from memory_cache import MemoryCache
 import heartbeat as hb
@@ -153,6 +154,7 @@ async def main():
     code_scanner = CodeScanner(role=role)
     email_scanner = EmailScanner(role=role)
     calendar_scanner = CalendarScanner(role=role)
+    notes_scanner = NotesScanner(role=role)
     slack_scanner = SlackScanner(role=role)
 
     tasks = [
@@ -160,6 +162,7 @@ async def main():
         code_scanner.run_loop,
         email_scanner.run_loop,
         calendar_scanner.run_loop,
+        notes_scanner.run_loop,
         slack_scanner.run_loop,
     ]
 
@@ -186,8 +189,8 @@ async def main():
         optimizer = SkillOptimizer(config)
         indexer = IndexBuilder(cache=cache)
         zoom_scanner = ZoomScanner(role=role)
-        commitment_tracker = CommitmentTracker(role=role)
-        contact_tracker = ContactTracker(role=role)
+        commitment_tracker = CommitmentTracker(role=role, cache=cache)
+        contact_tracker = ContactTracker(role=role, cache=cache)
         project_inference_scanner = ProjectInferenceScanner(role=role, cache=cache)
         goal_agent = GoalProjectAgent(role=role, cache=cache)
         synthesis_scanner = SynthesisScanner(role=role, cache=cache)
@@ -203,6 +206,7 @@ async def main():
             "email": email_scanner,
             "zoom": zoom_scanner,
             "calendar": calendar_scanner,
+            "notes": notes_scanner,
             "slack": slack_scanner,
             "code": code_scanner,
             "quota_scanner": quota_scanner,
@@ -249,6 +253,7 @@ async def main():
             bot=chat.app.bot,
             chat_id_getter=notification_mgr.get_chat_id,
             deploy_dir=DEPLOY_DIR,
+            cache=cache,
         )
         chat.report_scheduler = report_scheduler
 

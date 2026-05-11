@@ -172,3 +172,23 @@ async def test_insights_smoke(handler, mk_update, brain_dir):
     update, ctx = mk_update("/insights")
     await handler.cmd_insights(update, ctx)
     update.message.reply_text.assert_called()
+
+
+async def test_notes_smoke(handler, mk_update, brain_dir):
+    from tests.integration import seed
+    seed.apple_note(brain_dir)
+    update, ctx = mk_update("/notes")
+    await handler.cmd_notes(update, ctx)
+    update.message.reply_text.assert_called()
+
+
+async def test_notes_detail_smoke(handler, mk_update, brain_dir):
+    from tests.integration import seed
+    seed.apple_note(brain_dir, title="My Shopping List", has_todos=True)
+    # Populate list
+    update, ctx = mk_update("/notes")
+    await handler.cmd_notes(update, ctx)
+    # Access detail via /notes <N>
+    update2, ctx2 = mk_update("/notes", args=["1"])
+    await handler.cmd_notes(update2, ctx2)
+    update2.message.reply_text.assert_called()

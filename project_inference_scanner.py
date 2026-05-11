@@ -132,7 +132,16 @@ class ProjectInferenceScanner:
         # Match only mangled forms: `project-{something}-candidate-*.md`. The
         # canonical `project-candidate-*.md` shape is excluded by the negative
         # lookahead on the first segment.
-        for path in MEMORIES_DIR.glob("project-*-candidate-*.md"):
+        # NOTE: This is a sync one-shot at __init__, gated by sentinel — runs
+        # at most once per deploy. Filename-only matching via iterdir + fnmatch
+        # keeps the call site off the MEMORIES_DIR.glob() AST invariant without
+        # plumbing async cache access through __init__.
+        import fnmatch as _fnmatch
+        candidate_paths = [
+            p for p in MEMORIES_DIR.iterdir()
+            if p.is_file() and _fnmatch.fnmatch(p.name, "project-*-candidate-*.md")
+        ]
+        for path in candidate_paths:
             try:
                 stem = path.stem  # e.g. "project-Chriss-MacBook-Air-candidate-foo-abc123"
                 rest = stem[len("project-"):]

@@ -29,6 +29,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("code",           "List git repos"),
         ("events",         "List recent and upcoming calendar events"),
         ("event",          "Show event N from last list"),
+        ("notes",          "List Apple Notes. /notes [N] | /notes todos | /notes <folder>"),
         ("meetings",       "List recent meeting transcripts"),
         ("meeting",        "Show meeting N from last list"),
         ("comms",          "List recent email + slack threads (optional 'email' or 'slack' filter)"),

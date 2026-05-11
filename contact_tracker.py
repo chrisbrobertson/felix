@@ -12,6 +12,7 @@ import yaml
 
 from utils import load_config
 from heartbeat import record_beat
+from memory_cache import MemoryCache
 
 log = logging.getLogger("contact-tracker")
 
@@ -74,8 +75,9 @@ def _relationship_score(interactions: list) -> float:
 # ── ContactTracker ────────────────────────────────────────────────────────────
 
 class ContactTracker:
-    def __init__(self, role: str = "full"):
+    def __init__(self, role: str = "full", cache: Optional[MemoryCache] = None):
         self.role = role
+        self._cache = cache if cache is not None else MemoryCache(None, MEMORIES_DIR, enabled=False)
 
     # ── Config ────────────────────────────────────────────────────────────────
 
@@ -186,7 +188,7 @@ class ContactTracker:
     def _contact_path(self, slug: str) -> Path:
         return MEMORIES_DIR / f"contact-{slug}.md"
 
-    def _upsert_contact(
+    async def _upsert_contact(
         self,
         slug: str,
         canonical_name: str,
@@ -200,19 +202,17 @@ class ContactTracker:
         contact_path = self._contact_path(slug)
         now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
-        # Load existing contact if it exists
+        # Load existing contact via cache (falls back to disk in pass-through mode)
         existing_fm = {}
         existing_body = ""
-        if contact_path.exists():
+        existing_row = await self._cache.get(contact_path.name)
+        if existing_row is not None:
             try:
-                existing_text = contact_path.read_text()
-                existing_fm = _parse_frontmatter(existing_text)
-                # Extract body (everything after frontmatter)
-                parts = existing_text.split("---", 2)
-                if len(parts) >= 3:
-                    existing_body = parts[2]
+                fm_raw = existing_row.get("frontmatter") or "{}"
+                existing_fm = json.loads(fm_raw) if isinstance(fm_raw, str) else (fm_raw or {})
             except Exception:
-                pass
+                existing_fm = {}
+            existing_body = existing_row.get("body") or ""
 
         # Initialize contact state
         contact_state = state.setdefault("contacts", {}).setdefault(slug, {})
@@ -284,6 +284,10 @@ class ContactTracker:
             tmp_path.write_text(content, encoding="utf-8")
             os.rename(str(tmp_path), str(contact_path))
             log.debug("Wrote contact: %s", contact_path.name)
+            try:
+                await self._cache.invalidate(contact_path.name)
+            except Exception:
+                pass
         except Exception:
             log.exception("Failed to write contact file %s", contact_path.name)
             try:
@@ -320,44 +324,36 @@ class ContactTracker:
         state = self._load_state()
         processed = state.get("processed", {})
 
-        # Collect candidates: source-type files changed since last processed
+        # Collect candidates from the cache, one source-type at a time
         candidates = []
-        for f in MEMORIES_DIR.glob("*.md"):
-            # Skip contact files
-            if f.name.startswith("contact-"):
-                continue
+        for st in source_types:
             try:
-                mtime = f.stat().st_mtime
+                rows = await self._cache.query_by_type(st)
             except Exception:
+                log.exception("Cache query failed for type %s", st)
                 continue
+            for row in rows:
+                filename = row.get("filename")
+                if not filename or filename.startswith("contact-"):
+                    continue
+                mtime = row.get("mtime")
+                if mtime is None:
+                    continue
+                stored_mtime = processed.get(filename)
+                if stored_mtime is not None and abs(mtime - stored_mtime) < 1.0:
+                    continue  # Unchanged since last scan
 
-            stored_mtime = processed.get(f.name)
-            if stored_mtime is not None and abs(mtime - stored_mtime) < 1.0:
-                continue  # Unchanged since last scan
+                fm_raw = row.get("frontmatter") or "{}"
+                try:
+                    fm = json.loads(fm_raw) if isinstance(fm_raw, str) else (fm_raw or {})
+                except Exception:
+                    fm = {}
 
-            # Check type field from frontmatter header (cached)
-            try:
-                header = f.read_text(encoding="utf-8")[:500]
-            except Exception:
-                continue
+                # Skip email threads with marketing, automated, or transactional classification
+                if st == "email_thread" and fm.get("classification") in {"marketing", "automated", "transactional"}:
+                    continue
 
-            fm_type = ""
-            fm_classification = ""
-            for line in header.split("\n"):
-                stripped = line.strip()
-                if stripped.startswith("type:"):
-                    fm_type = stripped[5:].strip().strip('"').strip("'")
-                elif stripped.startswith("classification:"):
-                    fm_classification = stripped[15:].strip().strip('"').strip("'")
-
-            if fm_type not in source_types:
-                continue
-
-            # Skip email threads with marketing, automated, or transactional classification
-            if fm_type == "email_thread" and fm_classification in {"marketing", "automated", "transactional"}:
-                continue
-
-            candidates.append((f, mtime))
+                candidates.append((filename, mtime, fm, st))
 
         if not candidates:
             log.debug("No new/updated source files to process for contacts")
@@ -369,12 +365,8 @@ class ContactTracker:
         )
 
         processed_count = 0
-        for f, mtime in candidates[:MAX_FILES_PER_CYCLE]:
+        for filename, mtime, fm, source_type in candidates[:MAX_FILES_PER_CYCLE]:
             try:
-                content = f.read_text(encoding="utf-8")
-                fm = _parse_frontmatter(content)
-                source_type = fm.get("type", "")
-
                 # Extract interaction timestamp
                 interaction_date = (
                     fm.get("last_message") or
@@ -407,20 +399,20 @@ class ContactTracker:
                         }
 
                     # Upsert contact file
-                    self._upsert_contact(
+                    await self._upsert_contact(
                         slug, canonical_name, email, interaction_date,
-                        {"filename": f.name, "type": source_type}, state
+                        {"filename": filename, "type": source_type}, state
                     )
 
                 # Mark file as processed
-                processed[f.name] = mtime
+                processed[filename] = mtime
                 state["processed"] = processed
                 state["last_scan"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
                 self._save_state(state)
                 processed_count += 1
 
             except Exception:
-                log.exception("Error processing %s for contacts", f.name)
+                log.exception("Error processing %s for contacts", filename)
 
         if processed_count:
             log.info("Contact scan complete — %d source file(s) processed", processed_count)

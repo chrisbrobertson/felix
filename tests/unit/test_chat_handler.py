@@ -1910,6 +1910,7 @@ async def test_features_kind_filter_bug(handler, brain_dir):
     reply = update.message.reply_text.call_args[0][0]
     assert len(handler._last_feature_set) == 1
     assert handler._last_feature_set[0] == bug_path
+    assert "aaa111" in reply
 
 
 async def test_features_kind_filter_feature(handler, brain_dir):
@@ -1952,6 +1953,34 @@ async def test_bugs_alias_lists_bugs_only(handler, brain_dir):
     await handler.cmd_bugs(update, ctx)
     assert len(handler._last_feature_set) == 1
     assert handler._last_feature_set[0] == bug_path
+
+
+async def test_bugs_list_includes_short_id(handler, brain_dir):
+    """Each entry in /bugs output must include the 6-character hash ID."""
+    m = brain_dir / "memories"
+    (m / "feature-request-crash-abc123.md").write_text(
+        "---\ntitle: Crash on startup\ntype: feature_request\nkind: bug\n"
+        "status: new\npriority: high\ncreated: '2026-05-01T09:00:00'\n"
+        "tags: []\nshort_id: abc123\n---\n\n## Bug\nApp crashes"
+    )
+    update, ctx = _make_update(12345)
+    await handler.cmd_bugs(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "abc123" in reply
+
+
+async def test_features_list_includes_short_id(handler, brain_dir):
+    """Each entry in /features output must include the 6-character hash ID."""
+    m = brain_dir / "memories"
+    (m / "feature-request-dark-mode-def456.md").write_text(
+        "---\ntitle: Dark mode support\ntype: feature_request\nkind: feature\n"
+        "status: new\npriority: medium\ncreated: '2026-05-01T09:00:00'\n"
+        "tags: []\nshort_id: def456\n---\n\n## Request\nAdd dark mode"
+    )
+    update, ctx = _make_update(12345)
+    await handler.cmd_features(update, ctx)
+    reply = update.message.reply_text.call_args[0][0]
+    assert "def456" in reply
 
 
 # ── GitHub client tests ────────────────────────────────────────────────────────
@@ -2283,7 +2312,8 @@ def test_error_handler_registered(handler):
 
 # --- /comms email classification filtering (FR-11) ---
 
-def test_comms_email_hides_marketing_by_default(brain_dir, handler):
+@pytest.mark.asyncio
+async def test_comms_email_hides_marketing_by_default(brain_dir, handler):
     """Default /comms email hides marketing and automated threads."""
     mem_dir = brain_dir / "memories"
 
@@ -2310,7 +2340,7 @@ def test_comms_email_hides_marketing_by_default(brain_dir, handler):
         "message_count: 1\n---\n\n## Messages\nNewsletter.\n"
     )
 
-    text = handler._list_comms_text(kind="email", limit=20, show_all=False)
+    text = await handler._list_comms_text(kind="email", limit=20, show_all=False)
 
     # Should show human email
     assert "Project Update" in text
@@ -2318,7 +2348,8 @@ def test_comms_email_hides_marketing_by_default(brain_dir, handler):
     assert "Newsletter" not in text
 
 
-def test_comms_email_all_shows_marketing(brain_dir, handler):
+@pytest.mark.asyncio
+async def test_comms_email_all_shows_marketing(brain_dir, handler):
     """"/comms email all" shows marketing emails with [mkt] suffix."""
     mem_dir = brain_dir / "memories"
 
@@ -2333,14 +2364,15 @@ def test_comms_email_all_shows_marketing(brain_dir, handler):
         "message_count: 1\n---\n\n## Messages\nNewsletter.\n"
     )
 
-    text = handler._list_comms_text(kind="email", limit=20, show_all=True)
+    text = await handler._list_comms_text(kind="email", limit=20, show_all=True)
 
     # Should show marketing email with suffix
     assert "Newsletter" in text
     assert "[mkt]" in text
 
 
-def test_comms_email_missing_classification_treated_as_human(brain_dir, handler):
+@pytest.mark.asyncio
+async def test_comms_email_missing_classification_treated_as_human(brain_dir, handler):
     """Old email file without classification field should appear in default listing."""
     mem_dir = brain_dir / "memories"
 
@@ -2355,7 +2387,7 @@ def test_comms_email_missing_classification_treated_as_human(brain_dir, handler)
         "message_count: 2\n---\n\n## Messages\nOld.\n"
     )
 
-    text = handler._list_comms_text(kind="email", limit=20, show_all=False)
+    text = await handler._list_comms_text(kind="email", limit=20, show_all=False)
 
     # Should show old email (treated as human)
     assert "Old Email" in text
@@ -5011,7 +5043,8 @@ async def test_pending_does_not_clobber_last_action_set(handler, brain_dir):
 
 # ── _resolve_feature_index hash fallback (fix fcfc1f) ─────────────────────────
 
-def test_resolve_feature_by_hash(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_resolve_feature_by_hash(handler, brain_dir):
     """_resolve_feature_index accepts short_id hash (not just numeric index)."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
@@ -5022,19 +5055,21 @@ def test_resolve_feature_by_hash(handler, brain_dir):
         "short_id: abcdef\n---\n\n## Request\nadd dark mode\n"
     )
 
-    result = handler._resolve_feature_index(["abcdef"], MagicMock())
+    result = await handler._resolve_feature_index(["abcdef"], MagicMock())
     assert result == feature_file
 
 
-def test_resolve_feature_by_hash_not_found(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_resolve_feature_by_hash_not_found(handler, brain_dir):
     """_resolve_feature_index returns None when hash matches nothing."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
-    result = handler._resolve_feature_index(["xxxxxx"], MagicMock())
+    result = await handler._resolve_feature_index(["xxxxxx"], MagicMock())
     assert result is None
 
 
-def test_resolve_feature_by_numeric_index_still_works(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_resolve_feature_by_numeric_index_still_works(handler, brain_dir):
     """Numeric index lookup still works after hash-fallback addition."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
@@ -5046,7 +5081,7 @@ def test_resolve_feature_by_numeric_index_still_works(handler, brain_dir):
     )
     handler._last_feature_set = [feature_file]
 
-    result = handler._resolve_feature_index(["1"], MagicMock())
+    result = await handler._resolve_feature_index(["1"], MagicMock())
     assert result == feature_file
 
 
@@ -5981,7 +6016,8 @@ def _write_project_file(memories_dir: Path, slug: str, title: str,
     return path
 
 
-def test_list_projects_text_returns_active_projects(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_list_projects_text_returns_active_projects(handler, brain_dir):
     """_list_projects_text returns numbered list of active projects."""
     m = brain_dir / "memories"
     _write_project_file(m, "work-rollout-abc123", "Q2 Rollout", category="work",
@@ -5989,14 +6025,15 @@ def test_list_projects_text_returns_active_projects(handler, brain_dir):
     _write_project_file(m, "personal-shed-def456", "Garden Shed", category="personal")
     _write_project_file(m, "work-done-ghi789", "Old Project", status="completed")
 
-    text = handler._list_projects_text()
+    text = await handler._list_projects_text()
     assert "Q2 Rollout" in text
     assert "Garden Shed" in text
     assert "Old Project" not in text  # completed, not active
     assert "Active projects" in text
 
 
-def test_list_projects_text_shows_milestone_progress(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_list_projects_text_shows_milestone_progress(handler, brain_dir):
     """_list_projects_text includes milestone done/total counts."""
     m = brain_dir / "memories"
     _write_project_file(
@@ -6004,38 +6041,42 @@ def test_list_projects_text_shows_milestone_progress(handler, brain_dir):
         milestones=[{"text": "Design", "done": True}, {"text": "Build", "done": False}]
     )
 
-    text = handler._list_projects_text()
+    text = await handler._list_projects_text()
     assert "milestones: 1/2 done" in text
 
 
-def test_list_projects_text_empty_when_no_active(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_list_projects_text_empty_when_no_active(handler, brain_dir):
     """_list_projects_text returns 'No active projects' when none exist."""
-    text = handler._list_projects_text()
+    text = await handler._list_projects_text()
     assert "No active projects" in text
 
 
-def test_list_projects_text_respects_limit(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_list_projects_text_respects_limit(handler, brain_dir):
     """_list_projects_text truncates output to limit rows."""
     m = brain_dir / "memories"
     for i in range(5):
         _write_project_file(m, f"work-p{i}-{i:06d}", f"Project {i}")
 
-    text = handler._list_projects_text(limit=3)
+    text = await handler._list_projects_text(limit=3)
     assert "and 2 more" in text
 
 
-def test_list_projects_text_filters_by_category(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_list_projects_text_filters_by_category(handler, brain_dir):
     """_list_projects_text honours category filter when passed."""
     m = brain_dir / "memories"
     _write_project_file(m, "work-thing-abc123", "Work Thing", category="work")
     _write_project_file(m, "personal-thing-def456", "Personal Thing", category="personal")
 
-    text = handler._list_projects_text(category="work")
+    text = await handler._list_projects_text(category="work")
     assert "Work Thing" in text
     assert "Personal Thing" not in text
 
 
-def test_list_projects_text_code_routes_to_code_repos(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_list_projects_text_code_routes_to_code_repos(handler, brain_dir):
     """_list_projects_text(category='code') returns code-repo content, not GoalManager projects."""
     m = brain_dir / "memories"
     # GoalManager project that should NOT appear
@@ -6043,27 +6084,29 @@ def test_list_projects_text_code_routes_to_code_repos(handler, brain_dir):
     # Code repo that SHOULD appear
     write_project_memory(m, "myrepo", category="code", summary="Code repo.")
 
-    text = handler._list_projects_text(category="code")
+    text = await handler._list_projects_text(category="code")
     assert "myrepo" in text
     assert "GoalManager Project" not in text
 
 
-def test_list_projects_text_overdue_shows_was_due(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_list_projects_text_overdue_shows_was_due(handler, brain_dir):
     """_list_projects_text marks past-due active projects with 'was due … OVERDUE'."""
     m = brain_dir / "memories"
     _write_project_file(m, "work-overdue-abc123", "Overdue Project", due_date="2024-01-01")
 
-    text = handler._list_projects_text()
+    text = await handler._list_projects_text()
     assert "was due 2024-01-01" in text
     assert "OVERDUE" in text
 
 
-def test_list_projects_text_future_due_shows_due(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_list_projects_text_future_due_shows_due(handler, brain_dir):
     """_list_projects_text shows plain 'due' for future-dated projects."""
     m = brain_dir / "memories"
     _write_project_file(m, "work-future-abc123", "Future Project", due_date="2099-12-31")
 
-    text = handler._list_projects_text()
+    text = await handler._list_projects_text()
     assert "due 2099-12-31" in text
     assert "OVERDUE" not in text
 
@@ -6295,7 +6338,7 @@ async def test_close_commitment_by_index(handler, brain_dir):
     f = _make_commitment_file(memories_dir, "commitment-send-report-aaa111.md", "Send the quarterly report")
 
     # Populate the index by calling _list_commitments_text
-    handler._list_commitments_text()
+    await handler._list_commitments_text()
 
     result = await handler._close_commitment_text(index=1, status="completed")
 
@@ -6324,7 +6367,7 @@ async def test_close_commitment_dismissed(handler, brain_dir):
     """_close_commitment_text marks status as dismissed when requested."""
     memories_dir = brain_dir / "memories"
     f = _make_commitment_file(memories_dir, "commitment-old-task-ccc333.md", "Old stale task")
-    handler._list_commitments_text()
+    await handler._list_commitments_text()
 
     result = await handler._close_commitment_text(index=1, status="dismissed")
 

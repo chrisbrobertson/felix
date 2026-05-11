@@ -13,6 +13,7 @@ import yaml
 from llm_routes import resolve
 from usage_tracker import record_usage
 from heartbeat import record_beat
+from memory_cache import MemoryCache
 
 if TYPE_CHECKING:
     from telegram import Bot
@@ -137,19 +138,20 @@ def is_due(report: dict, last_sent_date: Optional[str], now: datetime) -> bool:
     return True
 
 
-def _load_memories_for_sources(sources: list[str], window_days: int) -> list[dict]:
+async def _load_memories_for_sources(
+    sources: list[str], window_days: int, cache: MemoryCache
+) -> list[dict]:
     """
     Load memories matching the given sources within the time window.
+
+    Reads via MemoryCache.query_by_type for each target type so the call
+    site does not glob MEMORIES_DIR directly.
 
     Returns list of dicts with keys: path, fm (frontmatter), body_snippet.
     Sorted by created descending, capped at 100 files.
     """
-    if not MEMORIES_DIR.exists():
-        log.warning(f"Memories directory does not exist: {MEMORIES_DIR}")
-        return []
-
     # Collect all type values we need to match
-    target_types = set()
+    target_types: set[str] = set()
     for source in sources:
         target_types.update(SOURCE_TO_TYPES.get(source, set()))
 
@@ -157,17 +159,24 @@ def _load_memories_for_sources(sources: list[str], window_days: int) -> list[dic
         return []
 
     cutoff = datetime.now() - timedelta(days=window_days)
-    memories = []
+    memories: list[dict] = []
 
-    for path in MEMORIES_DIR.glob("*.md"):
+    for mem_type in target_types:
         try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
-            fm = _parse_frontmatter(text)
-
-            # Check type match
-            mem_type = fm.get("type")
-            if mem_type not in target_types:
+            rows = await cache.query_by_type(mem_type)
+        except Exception:
+            log.exception("Cache query failed for type %s", mem_type)
+            continue
+        for row in rows:
+            filename = row.get("filename")
+            if not filename:
                 continue
+
+            fm_raw = row.get("frontmatter") or "{}"
+            try:
+                fm = json.loads(fm_raw) if isinstance(fm_raw, str) else (fm_raw or {})
+            except Exception:
+                fm = {}
 
             # Check created date
             created_str = fm.get("created")
@@ -175,9 +184,7 @@ def _load_memories_for_sources(sources: list[str], window_days: int) -> list[dic
                 continue
 
             try:
-                # Handle ISO datetime parsing
-                created = datetime.fromisoformat(created_str.replace("Z", "+00:00"))
-                # Make timezone-naive for comparison
+                created = datetime.fromisoformat(str(created_str).replace("Z", "+00:00"))
                 if created.tzinfo:
                     created = created.replace(tzinfo=None)
             except Exception:
@@ -186,20 +193,15 @@ def _load_memories_for_sources(sources: list[str], window_days: int) -> list[dic
             if created < cutoff:
                 continue
 
-            # Extract body (everything after second ---)
-            parts = text.split("---", 2)
-            body = parts[2].strip() if len(parts) >= 3 else ""
+            body = row.get("body") or ""
             body_snippet = body[:500]
 
             memories.append({
-                "path": path,
+                "path": MEMORIES_DIR / filename,
                 "fm": fm,
                 "body_snippet": body_snippet,
                 "created": created,
             })
-        except Exception as e:
-            log.debug(f"Error loading memory {path}: {e}")
-            continue
 
     # Sort by created descending, cap at 100
     memories.sort(key=lambda m: m["created"], reverse=True)
@@ -363,12 +365,20 @@ class ReportScheduler:
     via Telegram on user-defined schedules.
     """
 
-    def __init__(self, config: dict, bot: "Bot", chat_id_getter, deploy_dir: Path):
+    def __init__(
+        self,
+        config: dict,
+        bot: "Bot",
+        chat_id_getter,
+        deploy_dir: Path,
+        cache: Optional[MemoryCache] = None,
+    ):
         """
         config: full daemon config dict
         bot: python-telegram-bot Bot instance
         chat_id_getter: callable() -> Optional[int] (reads from notification state)
         deploy_dir: Path to DEPLOY_DIR
+        cache: MemoryCache for memory lookups (pass-through fallback for tests)
         """
         self.config = config
         self.bot = bot
@@ -376,6 +386,7 @@ class ReportScheduler:
         self.state_file = deploy_dir / "reports-state.json"
         self.digest_gen = DigestGenerator()
         self.analysis_gen = AnalysisGenerator()
+        self._cache = cache if cache is not None else MemoryCache(None, MEMORIES_DIR, enabled=False)
         self._last_report_set: list[dict] = []  # For /report N command
 
     async def run_loop(self, stop_event: asyncio.Event):
@@ -454,7 +465,7 @@ class ReportScheduler:
         sources = defn.get("sources", ["memories"])
         window_days = defn.get("window_days", 7)
 
-        memories = _load_memories_for_sources(sources, window_days)
+        memories = await _load_memories_for_sources(sources, window_days, self._cache)
 
         report_type = defn.get("type", "digest")
 

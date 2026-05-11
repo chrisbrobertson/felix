@@ -22,6 +22,12 @@ from contact_tracker import (
     _relationship_score,
     MAX_INTERACTION_TIMESTAMPS,
 )
+from memory_cache import MemoryCache
+
+
+def _make_cache(memories_dir: Path) -> MemoryCache:
+    """Pass-through cache scoped to the test's tmp memories dir."""
+    return MemoryCache(None, memories_dir, enabled=False)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -166,8 +172,7 @@ def test_email_dedup_same_email_different_name(mock_config, mock_state_file, moc
         [{"name": "Sarah Chen", "email": "sarah.chen@acme.com"}]
     )
 
-    tracker = ContactTracker()
-
+    tracker = ContactTracker(cache=_make_cache(memories_dir))
     async def run():
         await tracker._run_scan()
 
@@ -211,8 +216,7 @@ def test_collision_handling(mock_config, mock_state_file, mock_memories, tmp_pat
     make_email_memory(memories_dir, "email-1.md", ["John Smith"])
     make_email_memory(memories_dir, "email-2.md", ["John Smith"])
 
-    tracker = ContactTracker()
-
+    tracker = ContactTracker(cache=_make_cache(memories_dir))
     async def run():
         await tracker._run_scan()
 
@@ -303,8 +307,7 @@ def test_interaction_timestamps_capped_at_100(mock_config, mock_state_file, mock
         last_message=(now + timedelta(days=1)).isoformat()
     )
 
-    tracker = ContactTracker()
-
+    tracker = ContactTracker(cache=_make_cache(memories_dir))
     async def run():
         await tracker._run_scan()
 
@@ -342,8 +345,7 @@ def test_contact_file_type(mock_config, mock_state_file, mock_memories, tmp_path
 
     make_email_memory(memories_dir, "email-1.md", ["alice@acme.com"])
 
-    tracker = ContactTracker()
-
+    tracker = ContactTracker(cache=_make_cache(memories_dir))
     async def run():
         await tracker._run_scan()
 
@@ -379,8 +381,7 @@ def test_contact_file_field_order(mock_config, mock_state_file, mock_memories, t
 
     make_email_memory(memories_dir, "email-1.md", ["alice@acme.com"])
 
-    tracker = ContactTracker()
-
+    tracker = ContactTracker(cache=_make_cache(memories_dir))
     async def run():
         await tracker._run_scan()
 
@@ -417,8 +418,7 @@ def test_source_url_scheme(mock_config, mock_state_file, mock_memories, tmp_path
 
     make_email_memory(memories_dir, "email-1.md", ["alice@acme.com"])
 
-    tracker = ContactTracker()
-
+    tracker = ContactTracker(cache=_make_cache(memories_dir))
     async def run():
         await tracker._run_scan()
 
@@ -453,8 +453,7 @@ def test_contact_file_atomic_write(mock_config, mock_state_file, mock_memories, 
 
     make_email_memory(memories_dir, "email-1.md", ["alice@acme.com"])
 
-    tracker = ContactTracker()
-
+    tracker = ContactTracker(cache=_make_cache(memories_dir))
     async def run():
         await tracker._run_scan()
 
@@ -490,8 +489,7 @@ def test_email_participant_extraction(mock_config, mock_state_file, mock_memorie
 
     make_email_memory(memories_dir, "email-1.md", ["alice@acme.com", "bob@acme.com"])
 
-    tracker = ContactTracker()
-
+    tracker = ContactTracker(cache=_make_cache(memories_dir))
     async def run():
         await tracker._run_scan()
 
@@ -528,8 +526,7 @@ def test_calendar_participant_extraction(mock_config, mock_state_file, mock_memo
         [{"name": "Alice Chen", "email": "alice@acme.com"}]
     )
 
-    tracker = ContactTracker()
-
+    tracker = ContactTracker(cache=_make_cache(memories_dir))
     async def run():
         await tracker._run_scan()
 
@@ -566,8 +563,7 @@ def test_slack_participant_extraction(mock_config, mock_state_file, mock_memorie
         [{"name": "Alice Chen", "slack_id": "U12345"}]
     )
 
-    tracker = ContactTracker()
-
+    tracker = ContactTracker(cache=_make_cache(memories_dir))
     async def run():
         await tracker._run_scan()
 
@@ -603,8 +599,7 @@ def test_skip_non_source_types(mock_config, mock_state_file, mock_memories, tmp_
 
     make_webpage_memory(memories_dir, "webpage-1.md")
 
-    tracker = ContactTracker()
-
+    tracker = ContactTracker(cache=_make_cache(memories_dir))
     async def run():
         await tracker._run_scan()
 
@@ -640,8 +635,7 @@ def test_state_file_persists(mock_config, mock_state_file, mock_memories, tmp_pa
 
     email_file = make_email_memory(memories_dir, "email-1.md", ["alice@acme.com"])
 
-    tracker = ContactTracker()
-
+    tracker = ContactTracker(cache=_make_cache(memories_dir))
     async def run():
         await tracker._run_scan()
 
@@ -681,8 +675,7 @@ def test_upsert_creates_new_contact(mock_config, mock_state_file, mock_memories,
 
     make_email_memory(memories_dir, "email-1.md", ["alice@acme.com"])
 
-    tracker = ContactTracker()
-
+    tracker = ContactTracker(cache=_make_cache(memories_dir))
     async def run():
         await tracker._run_scan()
 
@@ -717,8 +710,7 @@ def test_upsert_updates_existing_contact(mock_config, mock_state_file, mock_memo
     # First interaction
     make_email_memory(memories_dir, "email-1.md", ["alice@acme.com"], "2026-04-10T10:00:00")
 
-    tracker = ContactTracker()
-
+    tracker = ContactTracker(cache=_make_cache(memories_dir))
     async def run():
         await tracker._run_scan()
 
@@ -773,8 +765,7 @@ def test_contact_tracker_skips_marketing_emails(tmp_path):
          patch.object(ct, "STATE_FILE", state_file), \
          patch.object(ct, "CONFIG_PATH", tmp_path / "config.yaml"):
         (tmp_path / "config.yaml").write_text("contact_tracker:\n  interval_seconds: 300\n")
-        tracker = ContactTracker()
-
+        tracker = ContactTracker(cache=_make_cache(memories_dir))
         async def run():
             await tracker._run_scan()
 

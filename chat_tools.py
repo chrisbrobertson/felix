@@ -535,48 +535,48 @@ async def _call(name: str, arguments: dict, handler):
             show_all=bool(arguments.get("show_all", False)),
         )
     if name == "list_todos":
-        return handler._list_todos_text()
+        return await handler._list_todos_text()
     if name == "list_actions":
-        return handler._list_actions_text(
+        return await handler._list_actions_text(
             filter_status=arguments.get("filter_status"),
         )
     if name == "list_projects":
-        return handler._list_projects_text(
+        return await handler._list_projects_text(
             category=arguments.get("category"),
             limit=min(int(arguments.get("limit", 50)), 100),
         )
     if name == "list_commitments":
-        return handler._list_commitments_text(
+        return await handler._list_commitments_text(
             limit=min(int(arguments.get("limit", 20)), 100),
         )
     if name == "list_events":
-        return handler._list_events_text(
+        return await handler._list_events_text(
             limit=min(int(arguments.get("limit", 20)), 100),
         )
     if name == "list_meetings":
-        return handler._list_meetings_text(
+        return await handler._list_meetings_text(
             limit=min(int(arguments.get("limit", 20)), 100),
         )
     if name == "list_contacts":
-        return handler._list_contacts_text(
+        return await handler._list_contacts_text(
             limit=min(int(arguments.get("limit", 30)), 200),
         )
     if name == "list_comms":
-        return handler._list_comms_text(
+        return await handler._list_comms_text(
             kind=arguments.get("kind"),
             limit=min(int(arguments.get("limit", 20)), 100),
         )
     if name == "list_readings":
-        return handler._list_readings_text(
+        return await handler._list_readings_text(
             limit=min(int(arguments.get("limit", 20)), 50),
         )
     if name == "search_memories":
-        return handler._search_memories_text(
+        return await handler._search_memories_text(
             query=arguments["query"],
             type_filter=arguments.get("type"),
         )
     if name == "get_memory":
-        return handler._get_memory_text(arguments["name"])
+        return await handler._get_memory_text(arguments["name"])
     if name == "list_commands":
         return handler._list_commands_text()
     if name == "deliver_pending_replies":

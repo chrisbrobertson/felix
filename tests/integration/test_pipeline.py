@@ -85,10 +85,11 @@ def chat_handler_instance(infra):
     mock_builder.token.return_value = mock_builder
     mock_builder.build.return_value = mock_app
 
+    from memory_cache import MemoryCache
     with patch.object(ch, "BRAIN_DIR", infra["root"]), \
          patch("chat_handler.ApplicationBuilder", return_value=mock_builder), \
          patch("chat_handler.SkillExecutor"):
-        handler = ch.TelegramChatHandler()
+        handler = ch.TelegramChatHandler(cache=MemoryCache(None, infra["memories"], enabled=False))
         handler.allowed_user_id = 12345
         yield handler
 
@@ -890,7 +891,8 @@ async def test_commitment_tracker_extracts_from_meeting_memory(tmp_path):
         }]
     })
 
-    tracker = CommitmentTracker(role="full")
+    from memory_cache import MemoryCache
+    tracker = CommitmentTracker(role="full", cache=MemoryCache(None, memories_dir, enabled=False))
     import yaml as _yaml
 
     with patch.object(ct, "MEMORIES_DIR", memories_dir), \

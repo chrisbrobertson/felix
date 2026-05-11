@@ -187,12 +187,14 @@ Config is read from `config.yaml` on startup; `SECOND_BRAIN_ROLE` env var overri
 
 15. **Quota Scanner** (every 30 min, `full` role only) — tracks Claude.ai Pro and ChatGPT Plus 5-hour rolling-window message quotas. Primary path is manual self-report via `/quota report <platform> <used>/<cap> [reset <min>]`. Optional scraping path (disabled by default; requires `quota.scrape_enabled: true` and cookie file) — WARNING: may violate vendor ToS. Threshold alerts at 75% (warning) and 90% (critical) with per-threshold per-platform 60-min cooldown. Exposes `/quota`, `/quota report`, `/quota reset` Telegram commands. Integrates into daily briefing when `quota.briefing_enabled: true`. State persisted in `DEPLOY_DIR/quota-scanner-state.json`.
 
+16. **Notes Scanner** (every 5 min, all roles) — reads Apple Notes.app via AppleScript, writes `apple-notes-{folder-slug}-{note-slug}-{id}.md` per note. `type: apple_notes` in frontmatter. Notes in todo-style folders (Todos, Tasks, To Do) or with checklist body patterns are flagged `has_todos: true`. Exposes `/notes [N|todos|<folder>]` Telegram command. State persisted in `DEPLOY_DIR/notes-scanner-state.json`. Configurable: `notes_scanner.enabled` (default true), `notes_scanner.skip_folders`, `notes_scanner.interval_seconds`.
+
 **Zoom Scanner** also exposes `/meetings [N]` and `/meeting <N>` Telegram commands for browsing meeting transcripts.
 
 ## Two Deployment Roles
 
-- **`full`** — all fifteen loops. Runs on always-on machine (Mac Studio/Mini). Needs `ANTHROPIC_API_KEY` + `GEMINI_API_KEY`.
-- **`watcher`** — five capture loops (browser watcher + code/email/calendar/slack scanners). Runs on MacBook. Needs only `GEMINI_API_KEY`. Full-node imports (`python-telegram-bot`, etc.) must be deferred inside the `role == "full"` block to avoid crashing on watcher nodes that don't have those packages installed.
+- **`full`** — all sixteen loops. Runs on always-on machine (Mac Studio/Mini). Needs `ANTHROPIC_API_KEY` + `GEMINI_API_KEY`.
+- **`watcher`** — six capture loops (browser watcher + code/email/calendar/notes/slack scanners). Runs on MacBook. Needs only `GEMINI_API_KEY`. Full-node imports (`python-telegram-bot`, etc.) must be deferred inside the `role == "full"` block to avoid crashing on watcher nodes that don't have those packages installed.
 
 ## LLM Routing
 
@@ -217,6 +219,7 @@ Config lives at `~/.litellm/config.yaml`. API keys come from env vars (`GEMINI_A
 - **Code repo namespace:** Code repo memories use `type: code` (was `type: code_project` before v1.1.0, then `type: project` + `category: code` before v1.2.0). `CodeScanner.__init__` migrates legacy files automatically. Filename prefix evolved from `project-{name}.md` → `project-{hostname}-{name}.md` → `code-{hostname}-{name}.md`. Module renamed from `project_scanner.py` → `code_scanner.py`. Telegram command renamed from `/projects` → `/code`.
 - **Goals and projects namespace:** `type: goal` (outcomes) and `type: project` (efforts) are distinct from `type: code` (auto-scanned repositories). Categories for goals/projects are configurable via `goals.categories` in config.yaml. The `code` category is reserved and cannot be used for goals or projects. The rename of `type: project` + `category: code` → `type: code` was completed in April 2026; see the one-shot migration in `CodeScanner.__init__`.
 - **Unified /comms:** Email and Slack threads share `/comms [email|slack]` + `/comm <N>`. No separate `/emails` or `/slack` commands.
+- **MemoryCache is the only read path:** Every loop and Telegram command reads memory files through `memory_cache.MemoryCache.query_*()` / `get()` — never via `MEMORIES_DIR.glob()` + `read_text()`. The cache is a derived SQLite index over the iCloud memories directory, rebuilt automatically, and absorbs iCloud `EDEADLK`/`EAGAIN` storms that would otherwise stack up across 15+ async loops. Write-side scanners (browser_watcher, calendar/code/email/notes/slack/zoom scanners, memory_writer) read their own write namespace and remain pass-through by design. `tests/unit/test_memory_cache_migration.py` enforces this invariant at the AST level — regressions land as test failures. See `specs/feat-memory-cache.md` for the full spec.
 
 ## Deploy directory
 
@@ -234,6 +237,7 @@ All runtime state lives in `~/secondbrain/` — separate from the repo and from 
 ├── zoom-scanner-state.json         # processed meeting UUIDs for zoom scanner
 ├── commitment-scanner-state.json   # processed file mtimes for commitment tracker
 ├── calendar-scanner-state.json     # processed event modification timestamps
+├── notes-scanner-state.json        # processed note modification dates for Apple Notes scanner
 ├── contact-tracker-state.json      # processed file mtimes and interaction timestamps
 ├── slack-scanner-state.json        # processed Slack thread timestamps
 ├── project-inference-state.json    # mtime state for project inference scanner
