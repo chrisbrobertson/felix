@@ -253,6 +253,7 @@ async def main():
             bot=chat.app.bot,
             chat_id_getter=notification_mgr.get_chat_id,
             deploy_dir=DEPLOY_DIR,
+            cache=cache,
         )
         chat.report_scheduler = report_scheduler
 
