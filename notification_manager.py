@@ -132,7 +132,12 @@ class NotificationManager:
         # When set, send_message delivers to each transport instead of (or in addition to)
         # the legacy self.bot. Phase 4 will make this the primary path.
         self._transports: list = transports or []
-        self._cache = cache  # MemoryCache instance for queries
+        # MemoryCache for queries; pass-through fallback keeps unit tests
+        # working without explicit cache injection.
+        if cache is None:
+            from memory_cache import MemoryCache as _MemCache
+            cache = _MemCache(None, MEMORIES_DIR, enabled=False)
+        self._cache = cache
 
     def _load_config(self) -> dict:
         """Read config.yaml via the shared iCloud-resilient loader in utils."""
@@ -228,15 +233,27 @@ class NotificationManager:
         now = self._get_local_now()
         today = now.date()
 
+        # Build one lookup of all commitment frontmatter via the cache so we do
+        # not glob MEMORIES_DIR or re-read each file individually.
+        commitment_rows = await self._cache.query_by_prefix("commitment-")
+        commitment_fm_by_id: dict[str, dict] = {}
+        for row in commitment_rows:
+            try:
+                fm_row = json.loads(row.get("frontmatter") or "{}")
+            except Exception:
+                continue
+            # Filename pattern: commitment-{slug}-{id}.md; pull id from the suffix
+            stem = Path(row["filename"]).stem
+            cid = stem.rsplit("-", 1)[-1] if "-" in stem else stem
+            commitment_fm_by_id[cid] = fm_row
+
         # Prune commitment alerts: remove if due_date is > 1 day in the past
         pruned_commitments = []
         for commitment_id in state.get("sent_commitment_alerts", []):
-            # Find the commitment file
-            commitment_files = list(MEMORIES_DIR.glob(f"commitment-*-{commitment_id}.md"))
-            if not commitment_files:
+            fm = commitment_fm_by_id.get(commitment_id)
+            if fm is None:
                 continue  # File deleted — discard
 
-            fm = _parse_frontmatter(await read_text_with_retry_async(commitment_files[0]))
             due_date_str = fm.get("due_date")
             if not due_date_str:
                 pruned_commitments.append(commitment_id)
@@ -1203,27 +1220,32 @@ class NotificationManager:
 
         return "\n".join(lines)
 
-    def _newest_llm_chat_mtime_by_platform(self) -> dict[str, datetime]:
+    async def _newest_llm_chat_mtime_by_platform(self) -> dict[str, datetime]:
         """Return newest mtime per platform for llm-chat memories.
 
         Parses platform from filename (llm-chat-{platform}-*.md) to avoid
         opening every file. Returns dict[platform, datetime] (timezone-aware).
+        Reads via MemoryCache so we do not glob MEMORIES_DIR directly.
         """
-        by_platform = {}
+        by_platform: dict[str, datetime] = {}
         tz_name = self._user_config().get("timezone", "America/Los_Angeles")
         try:
             tz = ZoneInfo(tz_name)
         except Exception:
             tz = ZoneInfo("UTC")
 
-        for f in MEMORIES_DIR.glob("llm-chat-*.md"):
+        rows = await self._cache.query_by_prefix("llm-chat-")
+        for row in rows:
+            filename = row.get("filename") or ""
             # Filename pattern: llm-chat-{platform}-{date}-{slug}-{id}.md
-            # Extract platform from second segment
-            parts = f.stem.split("-")
+            parts = Path(filename).stem.split("-")
             if len(parts) < 3:
                 continue
             platform = parts[2]  # 0=llm, 1=chat, 2=platform
-            mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=tz)
+            mtime_ts = row.get("mtime")
+            if mtime_ts is None:
+                continue
+            mtime = datetime.fromtimestamp(float(mtime_ts), tz=tz)
             if platform not in by_platform or mtime > by_platform[platform]:
                 by_platform[platform] = mtime
         return by_platform
@@ -1248,7 +1270,7 @@ class NotificationManager:
             except Exception:
                 pass
 
-        newest = self._newest_llm_chat_mtime_by_platform()
+        newest = await self._newest_llm_chat_mtime_by_platform()
         now = self._get_local_now()
         stale = [p for p, t in newest.items() if (now - t).days > interval_days]
         missing = [p for p in ("claude", "chatgpt") if p not in newest]

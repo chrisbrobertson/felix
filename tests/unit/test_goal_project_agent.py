@@ -535,7 +535,8 @@ def test_state_file_persisted_and_loaded(tmp_path):
         assert len(tmp_files) == 0
 
 
-def test_archive_superseded_action(tmp_path):
+@pytest.mark.asyncio
+async def test_archive_superseded_action(tmp_path):
     """Precondition fail → action marked superseded."""
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -565,7 +566,7 @@ def test_archive_superseded_action(tmp_path):
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
          patch.object(gpa, "MEMORIES_DIR", memories_dir):
         agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
-        agent._check_superseded_actions()
+        await agent._check_superseded_actions()
 
         # Action should not be superseded yet (target check is done on execute, not on source_goal)
         # Let's instead test milestone already exists case
@@ -585,7 +586,7 @@ def test_archive_superseded_action(tmp_path):
          patch.object(gpa, "DEPLOY_DIR", tmp_path), \
          patch.object(gpa, "MEMORIES_DIR", memories_dir):
         agent = GoalProjectAgent(role="full", cache=_make_cache(memories_dir))
-        agent._check_superseded_actions()
+        await agent._check_superseded_actions()
 
         # Load action and check status
         fresh_fm = _parse_frontmatter(action_path.read_text())

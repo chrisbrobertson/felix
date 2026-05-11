@@ -551,12 +551,19 @@ class GoalProjectAgent:
 
     # ── Auto-supersede check ──────────────────────────────────────────────────
 
-    def _check_superseded_actions(self) -> None:
+    async def _check_superseded_actions(self) -> None:
         """Mark actions as superseded if their preconditions are no longer met."""
-        for action_path in MEMORIES_DIR.glob("action-*.md"):
+        action_rows = await self._cache.query_by_prefix("action-")
+        for row in action_rows:
+            filename = row.get("filename")
+            if not filename:
+                continue
+            action_path = MEMORIES_DIR / filename
             try:
-                text = action_path.read_text(encoding="utf-8")
-                fm = _parse_frontmatter(text)
+                try:
+                    fm = json.loads(row.get("frontmatter") or "{}")
+                except Exception:
+                    fm = {}
                 if fm.get("status") != "pending":
                     continue
 
@@ -566,16 +573,17 @@ class GoalProjectAgent:
                 args = fm.get("args") or {}
 
                 # Check if source goal still exists
-                source_path = None
                 if source_goal:
                     try:
                         _validate_target_name(source_goal)
-                        source_path = MEMORIES_DIR / source_goal
                     except ValueError:
-                        log.warning("Invalid source_goal in action file %s: %r", action_path.name, source_goal)
-                if source_path and not source_path.exists():
-                    self._mark_superseded(action_path, fm, "Source goal/project no longer exists")
-                    continue
+                        log.warning("Invalid source_goal in action file %s: %r", filename, source_goal)
+                        source_goal = None
+                if source_goal:
+                    source_row = await self._cache.get(source_goal)
+                    if source_row is None:
+                        await self._mark_superseded(action_path, fm, "Source goal/project no longer exists")
+                        continue
 
                 # add_milestone: check if milestone text already in target
                 if action_type == "add_milestone" and target_name:
@@ -583,12 +591,12 @@ class GoalProjectAgent:
                         _validate_target_name(target_name)
                     except ValueError:
                         continue
-                    target_path = MEMORIES_DIR / target_name
-                    if target_path.exists():
-                        target_text = target_path.read_text(encoding="utf-8")
+                    target_row = await self._cache.get(target_name)
+                    if target_row is not None:
+                        target_text = target_row.get("body") or ""
                         milestone_text = args.get("text", "")
                         if milestone_text and milestone_text in target_text:
-                            self._mark_superseded(action_path, fm, "Milestone already exists")
+                            await self._mark_superseded(action_path, fm, "Milestone already exists")
                             continue
 
                 # update_status: check if target already has proposed status
@@ -597,19 +605,26 @@ class GoalProjectAgent:
                         _validate_target_name(target_name)
                     except ValueError:
                         continue
-                    target_path = MEMORIES_DIR / target_name
-                    if target_path.exists():
-                        target_fm = _parse_frontmatter(target_path.read_text(encoding="utf-8"))
+                    target_row = await self._cache.get(target_name)
+                    if target_row is not None:
+                        try:
+                            target_fm = json.loads(target_row.get("frontmatter") or "{}")
+                        except Exception:
+                            target_fm = {}
                         if target_fm.get("status") == args.get("status"):
-                            self._mark_superseded(action_path, fm, "Status already set")
+                            await self._mark_superseded(action_path, fm, "Status already set")
                             continue
 
             except Exception:
-                log.exception("Error checking superseded status for %s", action_path.name)
+                log.exception("Error checking superseded status for %s", filename)
 
-    def _mark_superseded(self, action_path: Path, action_fm: dict, reason: str) -> None:
+    async def _mark_superseded(self, action_path: Path, action_fm: dict, reason: str) -> None:
         """Update action file status to superseded with a note."""
-        text = action_path.read_text(encoding="utf-8")
+        row = await self._cache.get(action_path.name)
+        if row is None:
+            log.warning("Cannot mark superseded — action file not in cache: %s", action_path.name)
+            return
+        text = row.get("body") or ""
         action_fm["status"] = "superseded"
         action_fm["superseded_reason"] = reason
         action_fm["superseded_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -621,6 +636,10 @@ class GoalProjectAgent:
         tmp = action_path.with_suffix(".tmp")
         tmp.write_text(new_content, encoding="utf-8")
         os.rename(str(tmp), str(action_path))
+        try:
+            await self._cache.invalidate(action_path.name)
+        except Exception:
+            pass
         log.info("Marked action %s as superseded: %s", action_path.name, reason)
 
     # ── Process item ──────────────────────────────────────────────────────────
@@ -734,7 +753,7 @@ class GoalProjectAgent:
         self._save_state(state)
 
         # Check superseded actions
-        self._check_superseded_actions()
+        await self._check_superseded_actions()
 
         # Select items
         items = await self._select_items()
