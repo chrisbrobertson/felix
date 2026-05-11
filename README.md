@@ -1192,7 +1192,7 @@ daemon:
     enabled: true                   # SQLite read-cache for memory files (full role only)
 ```
 
-The memory cache (`~/secondbrain/memory-cache.sqlite`) is a derived SQLite database that mirrors all iCloud memory files for fast queries. It eliminates read amplification during chat context loading and notification assembly — query operations that would otherwise glob and parse hundreds of files now run as indexed SQL queries.
+The memory cache (`~/secondbrain/memory-cache.sqlite`) is a derived SQLite database that mirrors all iCloud memory files for fast queries. As of v1.16.0 it is the **only** read path for every async loop and Telegram admin command (chat context loading, notifications, commitment/contact trackers, report scheduler, project inference, goal/project agent, and all `/commitments` `/contacts` `/code` `/events` `/notes` `/meetings` `/comms` `/features` `/bugs` `/aichat` `/readings` `/search` admin queries). Query operations that would otherwise glob and parse hundreds of files now run as indexed SQL queries. Use `/rebuild_cache` to rebuild the index used by all loops.
 
 **Two-layer invalidation:**
 1. Immediate invalidation after local writes (via `memory_writer.py`)

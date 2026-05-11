@@ -6,8 +6,13 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.16.0] — 2026-05-10
+
 ### Added
 - **Apple Notes scanner** (`notes_scanner.py`): new Tier-1 async loop (every 5 min, watcher + full roles) that reads Apple Notes via AppleScript and writes `apple_notes` memory files. Notes in todo-style folders (Todos, Tasks, To Do) or with checklist-pattern bodies are flagged `has_todos: true`. `/notes` command lists scanned notes; `/notes <N>` shows full content; `/notes todos` filters to checklist notes; `/notes <folder>` filters by folder name. State tracked in `DEPLOY_DIR/notes-scanner-state.json` (#117).
+
+### Changed
+- **MemoryCache migration finished** — `commitment_tracker`, `contact_tracker`, `report_scheduler`, and all `chat_handler` admin command sites (commitments, features/bugs, contacts, code, events, notes, meetings, comms, watchlists, search, insights, aichat, etc.) now read through `MemoryCache.query_*()` / `cache.get()`. Residual globs in `notification_manager`, `project_inference_scanner`, and `goal_project_agent` cleaned up. The spec invariant at `specs/feat-memory-cache.md:144` — "No consumer reads MEMORIES_DIR directly except via cache.get() / cache.query_*()" — is now enforced by `tests/unit/test_memory_cache_migration.py`. Eliminates the per-loop EDEADLK retry surface that every async loop (`/commitments` and `/contacts` every 5 min, `notification_manager` every 60 s, every Telegram admin command) previously hit on the live 3,571-file corpus.
 
 ### Fixed
 - `/bugs` and `/features` list entries now include the 6-character hash ID (e.g. `[abc123]`) so users can reference items by ID in follow-up commands like `/feature_detail` (#131).

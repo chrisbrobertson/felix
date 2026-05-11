@@ -1,5 +1,7 @@
 # Local SQLite Memory Cache
 
+**Status:** Implemented. Wave 1 shipped in v1.8.0; Wave 2 (full read-side invariant) shipped in v1.16.0. The Post-Wave-2 invariant below is now enforced by `tests/unit/test_memory_cache_migration.py`.
+
 ## Motivation
 
 The second-brain daemon's 14 async loops all read directly from iCloud Drive with no shared cache layer. Under iCloud sync pressure, individual file reads return `EDEADLK`/`EAGAIN` with multi-second retries, causing cumulative latency spikes on user-visible paths.
