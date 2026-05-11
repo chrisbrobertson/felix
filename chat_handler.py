@@ -2506,9 +2506,9 @@ class TelegramChatHandler:
 
     # ── Agent actions commands ────────────────────────────────────────────────
 
-    def _list_actions_text(self, filter_status: Optional[str] = None) -> str:
+    async def _list_actions_text(self, filter_status: Optional[str] = None) -> str:
         """Return formatted action list text. Called by cmd_actions and tool dispatch."""
-        actions = self._load_action_set(filter_status=filter_status)
+        actions = await self._load_action_set(filter_status=filter_status)
         if not actions:
             msg = "No pending agent actions."
             if filter_status:
@@ -2525,15 +2525,20 @@ class TelegramChatHandler:
         lines.append("Use /action N for details, /run N to approve and execute.")
         return "\n".join(lines)
 
-    def _load_action_set(self, filter_status: Optional[str] = None, update_last_set: bool = True) -> list:
+    async def _load_action_set(self, filter_status: Optional[str] = None, update_last_set: bool = True) -> list:
         """Load action-*.md files and filter by status. Returns list of (path, fm) tuples."""
         actions = []
         now = datetime.now()
         memories_dir = BRAIN_DIR / "memories"
 
-        for path in memories_dir.glob("action-*.md"):
+        rows = await self._cache.query_by_prefix("action-")
+        for row in rows:
             try:
-                fm = self._parse_frontmatter(path)
+                try:
+                    fm = json.loads(row.get("frontmatter") or "{}")
+                except Exception:
+                    fm = {}
+                path = memories_dir / row["filename"]
                 if fm.get("type") != "agent_action":
                     continue
 
@@ -2576,7 +2581,7 @@ class TelegramChatHandler:
             return
 
         filter_arg = context.args[0].lower() if context.args else None
-        actions_text = self._list_actions_text(filter_status=filter_arg)
+        actions_text = await self._list_actions_text(filter_status=filter_arg)
         await update.message.reply_text(actions_text)
         self._record_command_reply(update.effective_chat.id, "actions", actions_text)
 
@@ -3247,12 +3252,12 @@ class TelegramChatHandler:
         finally:
             context.user_data["awaiting_addproject_reply"] = False
 
-    def _list_projects_text(self, category: str = None, limit: int = 50) -> str:
+    async def _list_projects_text(self, category: str = None, limit: int = 50) -> str:
         """Return formatted projects list text (called by cmd_projects and tool dispatch)."""
         limit = max(1, min(limit, 100))
         # "code" maps to code-repo memory files with hostname grouping, not GoalManager
         if category == "code":
-            return self._list_code_text(limit=limit)
+            return await self._list_code_text(limit=limit)
         projects = self._goal_manager.list_projects(category=category, status="active")
         self._last_project_set = projects
         self._active_list = self._last_project_set
@@ -3345,7 +3350,7 @@ class TelegramChatHandler:
                 await update.message.reply_text(projects_text)
                 self._record_command_reply(update.effective_chat.id, "projects", projects_text)
             else:
-                text = self._list_projects_text(category=category, limit=100)
+                text = await self._list_projects_text(category=category, limit=100)
                 await update.message.reply_text(text)
                 self._record_command_reply(update.effective_chat.id, "projects", text)
         except Exception as e:
@@ -3940,7 +3945,7 @@ class TelegramChatHandler:
                 candidate_count += 1
 
         # Agent actions — count only; must not clobber _last_action_set
-        actions = self._load_action_set(update_last_set=False)
+        actions = await self._load_action_set(update_last_set=False)
         action_count = len(actions)
 
         # Skill drafts
@@ -4815,19 +4820,23 @@ class TelegramChatHandler:
             return self._last_code_set[idx]
         return None
 
-    def _list_code_text(self, limit: int = 50) -> str:
+    async def _list_code_text(self, limit: int = 50) -> str:
         """Return formatted code repos list text (called by cmd_code and tool dispatch)."""
         limit = max(1, min(limit, 100))
-        files = list((BRAIN_DIR / "memories").glob("code-*.md"))
-        # Also include legacy project-*.md files that are type:code or type:project+category:code
-        for f in (BRAIN_DIR / "memories").glob("project-*.md"):
-            fm = self._parse_frontmatter(f)
-            if fm.get("type") == "code" or (fm.get("type") == "project" and fm.get("category") == "code"):
-                files.append(f)
+        memories_dir = BRAIN_DIR / "memories"
+        code_rows = await self._cache.query_by_prefix("code-")
+        project_rows = await self._cache.query_by_prefix("project-")
+
+        candidates = []  # list of (path, fm)
+        for row in code_rows + project_rows:
+            try:
+                fm = json.loads(row.get("frontmatter") or "{}")
+            except Exception:
+                continue
+            candidates.append((memories_dir / row["filename"], fm))
 
         code_repos = []
-        for f in files:
-            fm = self._parse_frontmatter(f)
+        for f, fm in candidates:
             if fm.get("type") not in ("code", "project", "code_project"):
                 continue
             # Skip if type:project but category is not code
@@ -4945,7 +4954,7 @@ class TelegramChatHandler:
             except ValueError:
                 pass
 
-        text = self._list_code_text(limit)
+        text = await self._list_code_text(limit)
         await update.message.reply_text(text)
 
     async def _cmd_code_detail(self, update: Update, index_str: str):
@@ -4957,7 +4966,12 @@ class TelegramChatHandler:
 
         # Find all hosts that have the same base repo
         # Extract base name from the selected file
-        fm = self._parse_frontmatter(path)
+        memories_dir = BRAIN_DIR / "memories"
+        row = await self._cache.get(path.name)
+        try:
+            fm = json.loads((row or {}).get("frontmatter") or "{}")
+        except Exception:
+            fm = {}
         stem = path.stem
         hostname = fm.get("hostname", "")
 
@@ -4979,8 +4993,13 @@ class TelegramChatHandler:
 
         # Find all files with this base name (check both code- and project- prefixes)
         all_files = []
-        for f in (BRAIN_DIR / "memories").glob("code-*.md"):
-            f_fm = self._parse_frontmatter(f)
+        code_rows = await self._cache.query_by_prefix("code-")
+        for f_row in code_rows:
+            try:
+                f_fm = json.loads(f_row.get("frontmatter") or "{}")
+            except Exception:
+                continue
+            f = memories_dir / f_row["filename"]
             f_stem = f.stem
             f_hostname = f_fm.get("hostname", "")
             if f_stem.startswith("code-"):
@@ -4993,13 +5012,18 @@ class TelegramChatHandler:
                     all_files.append((f, f_fm, f_hostname or "legacy"))
 
         # Also check legacy project- files
-        for f in (BRAIN_DIR / "memories").glob("project-*.md"):
-            f_fm = self._parse_frontmatter(f)
+        project_rows = await self._cache.query_by_prefix("project-")
+        for f_row in project_rows:
+            try:
+                f_fm = json.loads(f_row.get("frontmatter") or "{}")
+            except Exception:
+                continue
             # Only include if type:code or type:project+category:code
             if f_fm.get("type") not in ("code", "project", "code_project"):
                 continue
             if f_fm.get("type") == "project" and f_fm.get("category") != "code":
                 continue
+            f = memories_dir / f_row["filename"]
             f_stem = f.stem
             f_hostname = f_fm.get("hostname", "")
             if f_stem.startswith("project-"):
@@ -5073,16 +5097,20 @@ class TelegramChatHandler:
             return self._last_event_set[idx]
         return None
 
-    def _list_events_text(self, limit: int = 20, calendar_filter=None) -> str:
+    async def _list_events_text(self, limit: int = 20, calendar_filter=None) -> str:
         """Return formatted events list text (called by cmd_events and tool dispatch)."""
         limit = max(1, min(limit, 100))
-        files = list((BRAIN_DIR / "memories").glob("calendar-event-*.md"))
+        memories_dir = BRAIN_DIR / "memories"
+        rows = await self._cache.query_by_type("calendar_event")
         all_events = []
-        for f in files:
-            fm = self._parse_frontmatter(f)
+        for row in rows:
+            try:
+                fm = json.loads(row.get("frontmatter") or "{}")
+            except Exception:
+                continue
             if fm.get("type") != "calendar_event":
                 continue
-            all_events.append((f, fm))
+            all_events.append((memories_dir / row["filename"], fm))
 
         if not all_events:
             return "No calendar events found."
@@ -5136,7 +5164,7 @@ class TelegramChatHandler:
                 limit = int(arg)
             else:
                 calendar_filter = arg
-        text = self._list_events_text(limit, calendar_filter=calendar_filter)
+        text = await self._list_events_text(limit, calendar_filter=calendar_filter)
         await update.message.reply_text(text)
         self._record_command_reply(update.effective_chat.id, "events", text)
 
@@ -5152,7 +5180,11 @@ class TelegramChatHandler:
             await update.message.reply_text(self._format_group_help("Knowledge listings", "event"))
             return
 
-        fm = self._parse_frontmatter(path)
+        row = await self._cache.get(path.name)
+        try:
+            fm = json.loads((row or {}).get("frontmatter") or "{}")
+        except Exception:
+            fm = {}
         title = fm.get("source_title") or "(no title)"
         start = fm.get("start_time") or ""
         end = fm.get("end_time") or ""
@@ -5185,16 +5217,20 @@ class TelegramChatHandler:
 
     # ── /notes and /note commands ─────────────────────────────────────────────
 
-    def _list_notes_text(self, limit: int = 20, folder_filter: Optional[str] = None, todos_only: bool = False) -> str:
+    async def _list_notes_text(self, limit: int = 20, folder_filter: Optional[str] = None, todos_only: bool = False) -> str:
         """Return formatted list of Apple Notes memory files."""
         limit = max(1, min(limit, 100))
-        files = list((BRAIN_DIR / "memories").glob("apple-notes-*.md"))
+        memories_dir = BRAIN_DIR / "memories"
+        rows = await self._cache.query_by_type("apple_notes")
         all_notes = []
-        for f in files:
-            fm = self._parse_frontmatter(f)
+        for row in rows:
+            try:
+                fm = json.loads(row.get("frontmatter") or "{}")
+            except Exception:
+                continue
             if fm.get("type") != "apple_notes":
                 continue
-            all_notes.append((f, fm))
+            all_notes.append((memories_dir / row["filename"], fm))
 
         if not all_notes:
             return "No Apple Notes found. The notes scanner may not have run yet."
@@ -5254,13 +5290,17 @@ class TelegramChatHandler:
             if path is None:
                 await update.message.reply_text("Run /notes first to build the list.")
                 return
-            fm = self._parse_frontmatter(path)
+            row = await self._cache.get(path.name)
+            try:
+                fm = json.loads((row or {}).get("frontmatter") or "{}")
+            except Exception:
+                fm = {}
             title = fm.get("source_title") or "(no title)"
             folder = fm.get("folder") or ""
             modified = (fm.get("modified") or "")[:10]
             has_todos = fm.get("has_todos", False)
             try:
-                content_parts = path.read_text(encoding="utf-8").split("---", 2)
+                content_parts = ((row or {}).get("body") or "").split("---", 2)
                 body = content_parts[2].strip() if len(content_parts) >= 3 else ""
             except Exception:
                 body = ""
@@ -5279,7 +5319,7 @@ class TelegramChatHandler:
                 todos_only = True
             else:
                 folder_filter = arg
-        text = self._list_notes_text(limit, folder_filter=folder_filter, todos_only=todos_only)
+        text = await self._list_notes_text(limit, folder_filter=folder_filter, todos_only=todos_only)
         await self._send_reply(update, text)
         self._record_command_reply(update.effective_chat.id, "notes", text)
 
@@ -5294,16 +5334,20 @@ class TelegramChatHandler:
             return self._last_meeting_set[idx]
         return None
 
-    def _list_meetings_text(self, limit: int = 20) -> str:
+    async def _list_meetings_text(self, limit: int = 20) -> str:
         """Return formatted meetings list text (called by cmd_meetings and tool dispatch)."""
         limit = max(1, min(limit, 100))
-        files = list((BRAIN_DIR / "memories").glob("meeting-*.md"))
+        memories_dir = BRAIN_DIR / "memories"
+        rows = await self._cache.query_by_type("meeting_transcript")
         meetings = []
-        for f in files:
-            fm = self._parse_frontmatter(f)
+        for row in rows:
+            try:
+                fm = json.loads(row.get("frontmatter") or "{}")
+            except Exception:
+                continue
             if fm.get("type") != "meeting_transcript":
                 continue
-            meetings.append((f, fm))
+            meetings.append((memories_dir / row["filename"], fm))
 
         if not meetings:
             return "No meeting transcripts found."
@@ -5330,7 +5374,7 @@ class TelegramChatHandler:
             limit = int(context.args[0]) if context.args else 10
         except (ValueError, IndexError):
             limit = 10
-        text = self._list_meetings_text(limit)
+        text = await self._list_meetings_text(limit)
         await update.message.reply_text(text)
 
     async def cmd_meeting(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5345,7 +5389,11 @@ class TelegramChatHandler:
             await update.message.reply_text(self._format_group_help("Knowledge listings", "meeting"))
             return
 
-        fm = self._parse_frontmatter(path)
+        row = await self._cache.get(path.name)
+        try:
+            fm = json.loads((row or {}).get("frontmatter") or "{}")
+        except Exception:
+            fm = {}
         title = fm.get("source_title") or "(no title)"
         date = (str(fm.get("start_time") or fm.get("created") or ""))[:10]
         participants = fm.get("participants") or []
@@ -5372,7 +5420,7 @@ class TelegramChatHandler:
             return self._last_comms_set[idx]
         return None
 
-    def _resolve_feature_index(self, args, update: Update):
+    async def _resolve_feature_index(self, args, update: Update):
         """Convert 1-based index, #N issue-number, or short_id hash to a feature, or None."""
         if not args:
             return None
@@ -5389,10 +5437,14 @@ class TelegramChatHandler:
         except (ValueError, TypeError):
             # Not an integer — try matching by short_id hash in feature files
             memories_dir = BRAIN_DIR / "memories"
-            for f in sorted(memories_dir.glob("feature-request-*.md")):
-                fm = self._parse_frontmatter(f)
+            rows = await self._cache.query_by_prefix("feature-request-")
+            for row in sorted(rows, key=lambda r: r["filename"]):
+                try:
+                    fm = json.loads(row.get("frontmatter") or "{}")
+                except Exception:
+                    fm = {}
                 if fm.get("short_id") == arg:
-                    return f
+                    return memories_dir / row["filename"]
             return None
         if 0 <= idx < len(self._last_feature_set):
             return self._last_feature_set[idx]
@@ -5595,10 +5647,14 @@ class TelegramChatHandler:
 
         # Local fallback
         memories_dir = BRAIN_DIR / "memories"
-        files = sorted(memories_dir.glob("feature-request-*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+        rows = await self._cache.query_by_prefix("feature-request-")
+        rows_sorted = sorted(rows, key=lambda r: r.get("mtime") or 0, reverse=True)
         results = []
-        for f in files:
-            fm = self._parse_frontmatter(f)
+        for row in rows_sorted:
+            try:
+                fm = json.loads(row.get("frontmatter") or "{}")
+            except Exception:
+                fm = {}
             if fm.get("type") != "feature_request":
                 continue
             item_status = fm.get("status", "new")
@@ -5607,6 +5663,7 @@ class TelegramChatHandler:
                 continue
             if not show_all and item_status in ("done", "wont-do"):
                 continue
+            f = memories_dir / row["filename"]
             results.append((f, fm))
         self._last_feature_set = [f for f, _ in results]
         if not results:
@@ -5624,27 +5681,33 @@ class TelegramChatHandler:
             lines.append(f"{i}. {kind_tag}[{item_status}] [{priority}] {title} ({created}){id_suffix}")
         return "\n".join(lines)
 
-    def _get_memory_text(self, name: str) -> str:
+    async def _get_memory_text(self, name: str) -> str:
         """Search memories by title or filename and return full file contents.
         Called by tool dispatch for get_memory tool."""
         name_lower = name.lower()
-        files = list((BRAIN_DIR / "memories").glob("*.md"))
+        rows = await self._cache.query_all()
 
-        for f in files:
-            # Check filename match
-            if name_lower in f.stem.lower():
-                text = _safe_read_text(f)
-                return text if text is not None else ""
-            # Check frontmatter source_title match
-            fm = self._parse_frontmatter(f)
+        # First pass: filename match
+        for row in rows:
+            stem = row["filename"][:-3] if row["filename"].endswith(".md") else row["filename"]
+            if name_lower in stem.lower():
+                row_full = await self._cache.get(row["filename"])
+                return (row_full or {}).get("body") or ""
+
+        # Second pass: frontmatter source_title match
+        for row in rows:
+            try:
+                fm = json.loads(row.get("frontmatter") or "{}")
+            except Exception:
+                fm = {}
             source_title = (fm.get("source_title") or "").lower()
             if name_lower in source_title:
-                text = _safe_read_text(f)
-                return text if text is not None else ""
+                row_full = await self._cache.get(row["filename"])
+                return (row_full or {}).get("body") or ""
 
         return f"Memory not found: {name}"
 
-    def _list_comms_text(self, kind: Optional[str] = None, limit: int = 20, show_all: bool = False) -> str:
+    async def _list_comms_text(self, kind: Optional[str] = None, limit: int = 20, show_all: bool = False) -> str:
         """Return formatted comms list text (called by cmd_comms and tool dispatch).
         kind: 'email', 'slack', 'llm', or None for all.
         show_all: if True, show all email threads including marketing/automated."""
@@ -5652,17 +5715,22 @@ class TelegramChatHandler:
         type_map = {"email": "email_thread", "slack": "slack_thread", "llm": "llm_chat"}
         wanted_types = {type_map[kind]} if kind else {"email_thread", "slack_thread", "llm_chat"}
 
+        memories_dir = BRAIN_DIR / "memories"
         comms = []
-        patterns = [
-            ("email-thread-*.md", "email_thread"),
-            ("slack-thread-*.md", "slack_thread"),
-            ("llm-chat-*.md", "llm_chat"),
+        prefix_map = [
+            ("email-thread-", "email_thread"),
+            ("slack-thread-", "slack_thread"),
+            ("llm-chat-", "llm_chat"),
         ]
-        for glob_pattern, mem_type in patterns:
+        for prefix, mem_type in prefix_map:
             if mem_type not in wanted_types:
                 continue
-            for f in (BRAIN_DIR / "memories").glob(glob_pattern):
-                fm = self._parse_frontmatter(f)
+            rows = await self._cache.query_by_prefix(prefix)
+            for row in rows:
+                try:
+                    fm = json.loads(row.get("frontmatter") or "{}")
+                except Exception:
+                    continue
                 if fm.get("type") != mem_type:
                     continue
 
@@ -5672,7 +5740,7 @@ class TelegramChatHandler:
                     if classification in {"marketing", "automated"}:
                         continue
 
-                comms.append((f, fm, mem_type))
+                comms.append((memories_dir / row["filename"], fm, mem_type))
 
         if not comms:
             msg = (f"No {kind} threads found." if kind
@@ -5760,7 +5828,7 @@ class TelegramChatHandler:
                 )
                 return
             # Rebuild the active list for this filter so indices are fresh
-            self._list_comms_text(type_filter, limit=50, show_all=True)
+            await self._list_comms_text(type_filter, limit=50, show_all=True)
             await self._forget_indices(update, forget_args)
             return
 
@@ -5775,7 +5843,7 @@ class TelegramChatHandler:
             except ValueError:
                 pass
 
-        text = self._list_comms_text(type_filter, limit, show_all)
+        text = await self._list_comms_text(type_filter, limit, show_all)
         await update.message.reply_text(text)
 
     async def cmd_comm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5790,7 +5858,11 @@ class TelegramChatHandler:
             await update.message.reply_text(self._format_group_help("Knowledge listings", "comm"))
             return
 
-        fm = self._parse_frontmatter(path)
+        row = await self._cache.get(path.name)
+        try:
+            fm = json.loads((row or {}).get("frontmatter") or "{}")
+        except Exception:
+            fm = {}
         mem_type = fm.get("type")
         title = fm.get("source_title") or "(no title)"
         participants = fm.get("participants") or []
@@ -5835,59 +5907,55 @@ class TelegramChatHandler:
         if not self._check_auth(update):
             return
 
-        memories_dir = BRAIN_DIR / "memories"
-        synthesis_files = []
-        for f in memories_dir.glob("*.md"):
+        rows = await self._cache.query_by_type("synthesis")
+        synthesis = []
+        for row in rows:
             try:
-                header = f.read_text(encoding="utf-8")[:500]
-                if "type: synthesis" in header or "type: 'synthesis'" in header:
-                    fm = self._parse_frontmatter(f)
-                    if fm.get("type") == "synthesis":
-                        synthesis_files.append((f, fm.get("created", "")))
+                fm = json.loads(row.get("frontmatter") or "{}")
             except Exception:
+                fm = {}
+            if fm.get("type") != "synthesis":
                 continue
+            synthesis.append((fm, fm.get("created", "")))
 
-        if not synthesis_files:
+        if not synthesis:
             await update.message.reply_text("No synthesis insights yet.")
             return
 
-        synthesis_files.sort(key=lambda x: x[1], reverse=True)
+        synthesis.sort(key=lambda x: x[1], reverse=True)
         lines = ["Recent synthesis insights:\n"]
-        for i, (f, created) in enumerate(synthesis_files[:10], 1):
-            fm = self._parse_frontmatter(f)
+        for i, (fm, created) in enumerate(synthesis[:10], 1):
             title = fm.get("source_title", "(no title)")
             date = created[:10] if created else "unknown"
             lines.append(f"{i}. {title} — {date}")
 
         await update.message.reply_text("\n".join(lines))
 
-    def _llm_chat_memories(self) -> list[dict]:
+    async def _llm_chat_memories(self) -> list[dict]:
         """Load all llm-chat memories, parse frontmatter, return sorted by most-recent first.
 
         Returns list of dicts with keys: path, platform, title, created, summary, topics, tags, header.
         """
         memories_dir = BRAIN_DIR / "memories"
+        rows = await self._cache.query_by_prefix("llm-chat-")
         chats = []
-        for f in memories_dir.glob("llm-chat-*.md"):
+        for row in rows:
             try:
-                # Get cached header (first 500 chars)
-                header = self._get_header(f)
-                fm = self._parse_frontmatter(f)
-                if fm.get("type") != "llm_chat":
-                    continue
-
-                chats.append({
-                    "path": f,
-                    "platform": fm.get("platform", "unknown"),
-                    "title": fm.get("source_title", "(no title)"),
-                    "created": fm.get("created", ""),
-                    "summary": fm.get("summary", ""),
-                    "topics": fm.get("topics", []),
-                    "tags": fm.get("tags", []),
-                    "header": header,
-                })
+                fm = json.loads(row.get("frontmatter") or "{}")
             except Exception:
+                fm = {}
+            if fm.get("type") != "llm_chat":
                 continue
+            chats.append({
+                "path": memories_dir / row["filename"],
+                "platform": fm.get("platform", "unknown"),
+                "title": fm.get("source_title", "(no title)"),
+                "created": fm.get("created", ""),
+                "summary": fm.get("summary", ""),
+                "topics": fm.get("topics", []),
+                "tags": fm.get("tags", []),
+                "header": row.get("header500") or "",
+            })
 
         # Sort by created timestamp, most recent first
         chats.sort(key=lambda x: x["created"], reverse=True)
@@ -5978,7 +6046,7 @@ class TelegramChatHandler:
             return
 
         args = list(context.args) if context.args else []
-        memories = self._llm_chat_memories()
+        memories = await self._llm_chat_memories()
 
         # Search mode: /aichat search <query>
         if args and args[0].lower() == "search":
@@ -6216,11 +6284,15 @@ class TelegramChatHandler:
 
         # --- local fallback ---
         memories_dir = BRAIN_DIR / "memories"
-        files = sorted(memories_dir.glob("feature-request-*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+        rows = await self._cache.query_by_prefix("feature-request-")
+        rows_sorted = sorted(rows, key=lambda r: r.get("mtime") or 0, reverse=True)
 
         results = []
-        for f in files:
-            fm = self._parse_frontmatter(f)
+        for row in rows_sorted:
+            try:
+                fm = json.loads(row.get("frontmatter") or "{}")
+            except Exception:
+                fm = {}
             if fm.get("type") != "feature_request":
                 continue
             status = fm.get("status", "new")
@@ -6237,6 +6309,7 @@ class TelegramChatHandler:
                     # Default: show new and planned only
                     if status in ("done", "wont-do"):
                         continue
+            f = memories_dir / row["filename"]
             results.append((f, fm))
 
         self._last_feature_set = [f for f, _ in results]
@@ -6279,7 +6352,7 @@ class TelegramChatHandler:
                             return await handler(update, context)
                     # Fall through to _resolve_feature_index which will return None
 
-        target = self._resolve_feature_index(context.args, update)
+        target = await self._resolve_feature_index(context.args, update)
         if target is None:
             await self._send_reply(update, self._format_group_help("Feature Requests") + "\nOr use #<issue>.")
             return
@@ -6339,7 +6412,7 @@ class TelegramChatHandler:
     async def cmd_feature_plan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
-        target = self._resolve_feature_index(context.args, update)
+        target = await self._resolve_feature_index(context.args, update)
         if target is None:
             await self._send_reply(update, self._format_group_help("Feature Requests") + "\nOr use #<issue>.")
             return
@@ -6357,7 +6430,7 @@ class TelegramChatHandler:
     async def cmd_feature_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
-        target = self._resolve_feature_index(context.args, update)
+        target = await self._resolve_feature_index(context.args, update)
         if target is None:
             await self._send_reply(update, self._format_group_help("Feature Requests") + "\nOr use #<issue>.")
             return
@@ -6375,7 +6448,7 @@ class TelegramChatHandler:
     async def cmd_feature_done(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
-        target = self._resolve_feature_index(context.args[:1], update)
+        target = await self._resolve_feature_index(context.args[:1], update)
         if target is None:
             await self._send_reply(update, self._format_group_help("Feature Requests") + "\nOr use #<issue>.")
             return
@@ -6398,7 +6471,7 @@ class TelegramChatHandler:
     async def cmd_feature_wont_do(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
-        target = self._resolve_feature_index(context.args[:1], update)
+        target = await self._resolve_feature_index(context.args[:1], update)
         if target is None:
             await self._send_reply(update, self._format_group_help("Feature Requests") + "\nOr use #<issue>.")
             return
@@ -6424,7 +6497,7 @@ class TelegramChatHandler:
         if len(context.args) < 2:
             await self._send_reply(update, "Usage: /feature-priority <N> <low|medium|high|critical>")
             return
-        target = self._resolve_feature_index(context.args[:1], update)
+        target = await self._resolve_feature_index(context.args[:1], update)
         if target is None:
             await self._send_reply(update, self._format_group_help("Feature Requests") + "\nOr use #<issue>.")
             return
@@ -6449,7 +6522,7 @@ class TelegramChatHandler:
         if len(context.args) < 2:
             await self._send_reply(update, "Usage: /feature-note <N> <text>")
             return
-        target = self._resolve_feature_index(context.args[:1], update)
+        target = await self._resolve_feature_index(context.args[:1], update)
         if target is None:
             await self._send_reply(update, self._format_group_help("Feature Requests") + "\nOr use #<issue>.")
             return
@@ -6472,14 +6545,18 @@ class TelegramChatHandler:
             return
         confirm = bool(context.args and context.args[0].lower() == "confirm")
         memories_dir = BRAIN_DIR / "memories"
-        files = list(memories_dir.glob("feature-request-*.md"))
+        rows = await self._cache.query_by_prefix("feature-request-")
         to_import = []
-        for f in files:
-            fm = self._parse_frontmatter(f)
+        for row in rows:
+            try:
+                fm = json.loads(row.get("frontmatter") or "{}")
+            except Exception:
+                fm = {}
             if fm.get("type") != "feature_request":
                 continue
             if fm.get("github_issue_number"):
                 continue  # already imported
+            f = memories_dir / row["filename"]
             to_import.append((f, fm))
         if not to_import:
             await self._send_reply(update, "No local feature files to import.")

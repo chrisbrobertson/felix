@@ -11,16 +11,16 @@ def mock_handler():
     h._list_goals_text.return_value = "goals result"
     h._list_features_text = AsyncMock(return_value="features result")
     h._list_todos_text = AsyncMock(return_value="todos result")
-    h._list_actions_text.return_value = "actions result"
-    h._list_projects_text.return_value = "projects result"
+    h._list_actions_text = AsyncMock(return_value="actions result")
+    h._list_projects_text = AsyncMock(return_value="projects result")
     h._list_commitments_text = AsyncMock(return_value="commitments result")
-    h._list_events_text.return_value = "events result"
-    h._list_meetings_text.return_value = "meetings result"
+    h._list_events_text = AsyncMock(return_value="events result")
+    h._list_meetings_text = AsyncMock(return_value="meetings result")
     h._list_contacts_text = AsyncMock(return_value="contacts result")
-    h._list_comms_text.return_value = "comms result"
+    h._list_comms_text = AsyncMock(return_value="comms result")
     h._list_readings_text = AsyncMock(return_value="readings result")
     h._search_memories_text = AsyncMock(return_value="search result")
-    h._get_memory_text.return_value = "memory content"
+    h._get_memory_text = AsyncMock(return_value="memory content")
     h._list_commands_text.return_value = "commands text"
     return h
 
