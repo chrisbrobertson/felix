@@ -6324,7 +6324,7 @@ async def test_close_commitment_by_index(handler, brain_dir):
     f = _make_commitment_file(memories_dir, "commitment-send-report-aaa111.md", "Send the quarterly report")
 
     # Populate the index by calling _list_commitments_text
-    handler._list_commitments_text()
+    await handler._list_commitments_text()
 
     result = await handler._close_commitment_text(index=1, status="completed")
 
@@ -6353,7 +6353,7 @@ async def test_close_commitment_dismissed(handler, brain_dir):
     """_close_commitment_text marks status as dismissed when requested."""
     memories_dir = brain_dir / "memories"
     f = _make_commitment_file(memories_dir, "commitment-old-task-ccc333.md", "Old stale task")
-    handler._list_commitments_text()
+    await handler._list_commitments_text()
 
     result = await handler._close_commitment_text(index=1, status="dismissed")
 

@@ -535,7 +535,7 @@ async def _call(name: str, arguments: dict, handler):
             show_all=bool(arguments.get("show_all", False)),
         )
     if name == "list_todos":
-        return handler._list_todos_text()
+        return await handler._list_todos_text()
     if name == "list_actions":
         return handler._list_actions_text(
             filter_status=arguments.get("filter_status"),
@@ -546,7 +546,7 @@ async def _call(name: str, arguments: dict, handler):
             limit=min(int(arguments.get("limit", 50)), 100),
         )
     if name == "list_commitments":
-        return handler._list_commitments_text(
+        return await handler._list_commitments_text(
             limit=min(int(arguments.get("limit", 20)), 100),
         )
     if name == "list_events":
@@ -567,11 +567,11 @@ async def _call(name: str, arguments: dict, handler):
             limit=min(int(arguments.get("limit", 20)), 100),
         )
     if name == "list_readings":
-        return handler._list_readings_text(
+        return await handler._list_readings_text(
             limit=min(int(arguments.get("limit", 20)), 50),
         )
     if name == "search_memories":
-        return handler._search_memories_text(
+        return await handler._search_memories_text(
             query=arguments["query"],
             type_filter=arguments.get("type"),
         )
