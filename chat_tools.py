@@ -558,7 +558,7 @@ async def _call(name: str, arguments: dict, handler):
             limit=min(int(arguments.get("limit", 20)), 100),
         )
     if name == "list_contacts":
-        return handler._list_contacts_text(
+        return await handler._list_contacts_text(
             limit=min(int(arguments.get("limit", 30)), 200),
         )
     if name == "list_comms":

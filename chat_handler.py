@@ -3691,21 +3691,28 @@ class TelegramChatHandler:
 
     # ── /contacts command ─────────────────────────────────────────────────────
 
-    def _list_contacts_text(self, limit: int = 30) -> str:
+    async def _list_contacts_text(self, limit: int = 30) -> str:
         """Return formatted contacts list text (called by cmd_contacts and tool dispatch)."""
         limit = max(1, min(limit, 200))
-        files = list((BRAIN_DIR / "memories").glob("contact-*.md"))
-        if not files:
+        rows = await self._cache.query_by_type("contact")
+        if not rows:
             return "No contacts found."
+
+        memories_dir = BRAIN_DIR / "memories"
 
         # Load frontmatter and sort by last_interaction descending
         contacts = []
-        for f in files:
-            fm = self._parse_frontmatter(f)
+        for row in rows:
+            try:
+                fm = json.loads(row.get("frontmatter") or "{}")
+            except Exception:
+                continue
             if fm.get("type") != "contact":
                 continue
+            f = memories_dir / row["filename"]
             contacts.append((f, fm))
 
+        total = len(contacts)
         contacts.sort(
             key=lambda x: x[1].get("last_interaction") or "",
             reverse=True
@@ -3713,7 +3720,6 @@ class TelegramChatHandler:
         contacts = contacts[:limit]
         self._last_contact_set = [f for f, _ in contacts]
 
-        total = len(list((BRAIN_DIR / "memories").glob("contact-*.md")))
         lines = [f"Contacts ({total} total):"]
 
         for i, (f, fm) in enumerate(contacts, 1):
@@ -3732,7 +3738,7 @@ class TelegramChatHandler:
             limit = int(context.args[0]) if context.args else 20
         except (ValueError, IndexError):
             limit = 20
-        text = self._list_contacts_text(limit)
+        text = await self._list_contacts_text(limit)
         await update.message.reply_text(text)
         self._record_command_reply(update.effective_chat.id, "contacts", text)
 
@@ -3748,18 +3754,22 @@ class TelegramChatHandler:
             return self._last_contact_set[idx]
         return None
 
-    def _find_contact_by_name(self, query: str):
+    async def _find_contact_by_name(self, query: str):
         """Find contact file by case-insensitive substring match on name field."""
         query_lower = query.lower()
-        files = list((BRAIN_DIR / "memories").glob("contact-*.md"))
+        rows = await self._cache.query_by_type("contact")
+        memories_dir = BRAIN_DIR / "memories"
 
-        for f in files:
-            fm = self._parse_frontmatter(f)
+        for row in rows:
+            try:
+                fm = json.loads(row.get("frontmatter") or "{}")
+            except Exception:
+                continue
             if fm.get("type") != "contact":
                 continue
             name = fm.get("name", "")
             if query_lower in name.lower():
-                return f, fm
+                return memories_dir / row["filename"], fm
 
         return None, None
 
@@ -3775,10 +3785,14 @@ class TelegramChatHandler:
         # Try index resolution first
         path = self._resolve_contact_index(arg)
         if path:
-            fm = self._parse_frontmatter(path)
+            row = await self._cache.get(path.name)
+            try:
+                fm = json.loads((row or {}).get("frontmatter") or "{}")
+            except Exception:
+                fm = {}
         else:
             # Try name match
-            path, fm = self._find_contact_by_name(arg)
+            path, fm = await self._find_contact_by_name(arg)
             if not path:
                 await update.message.reply_text(
                     f"No contact found for '{arg}'. Try /contacts to browse."
@@ -3799,10 +3813,13 @@ class TelegramChatHandler:
         ]
 
         # Find open commitments involving this contact
-        commitment_files = list((BRAIN_DIR / "memories").glob("commitment-*.md"))
+        commitment_rows = await self._cache.query_by_prefix("commitment-")
         open_commitments = []
-        for cf in commitment_files:
-            cfm = self._parse_frontmatter(cf)
+        for row in commitment_rows:
+            try:
+                cfm = json.loads(row.get("frontmatter") or "{}")
+            except Exception:
+                continue
             if cfm.get("status") != "active":
                 continue
             # Match by name or email
@@ -3825,7 +3842,8 @@ class TelegramChatHandler:
 
         # Add summary from file body
         try:
-            content = path.read_text()
+            row = await self._cache.get(path.name)
+            content = (row or {}).get("body") or ""
             # Extract summary from Recent Interactions section
             m = re.search(r'## Recent Interactions\n\n(.*?)(?=\n\n##|\Z)', content, re.DOTALL)
             if m:

@@ -16,7 +16,7 @@ def mock_handler():
     h._list_commitments_text = AsyncMock(return_value="commitments result")
     h._list_events_text.return_value = "events result"
     h._list_meetings_text.return_value = "meetings result"
-    h._list_contacts_text.return_value = "contacts result"
+    h._list_contacts_text = AsyncMock(return_value="contacts result")
     h._list_comms_text.return_value = "comms result"
     h._list_readings_text = AsyncMock(return_value="readings result")
     h._search_memories_text = AsyncMock(return_value="search result")
