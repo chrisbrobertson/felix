@@ -281,7 +281,8 @@ async def test_skip_command_persists_and_watcher_ignores_domain(
     entry = {"url": "https://twitter.com/something", "title": "Tweet",
              "visit_count": 1, "browser": "chrome"}
 
-    with patch.object(bw, "SEEN_URLS_FILE", infra["seen"]):
+    with patch.object(bw, "SEEN_URLS_FILE", infra["seen"]), \
+         patch("browser_watcher.SkillExecutor"):
         w = bw.BrowserWatcher(role="full")
         w.seen_urls = {}  # dict, not set (maintains insertion order for FIFO eviction)
         should = w._should_process(entry, config)
@@ -352,13 +353,13 @@ async def test_scanner_writes_memory_for_git_repo(tmp_path):
     with patch.object(cs, "MEMORIES_DIR", memories_dir), \
          patch.object(cs, "CONFIG_PATH", tmp_path / "config.yaml"), \
          patch("code_scanner._hostname", return_value="testhost"), \
-         patch("code_scanner.acompletion", new=AsyncMock(
+         patch("litellm.acompletion", new=AsyncMock(
              return_value=MagicMock(
                  choices=[MagicMock(message=MagicMock(
                      content="SUMMARY: A test project.\nTAGS: python, testing"
                  ))]
              )
-         ), create=True):
+         )):
 
         import yaml as _yaml
         (tmp_path / "config.yaml").write_text(_yaml.dump(config_content))
@@ -414,13 +415,13 @@ async def test_scanner_skips_write_when_no_changes(tmp_path):
     with patch.object(cs, "MEMORIES_DIR", memories_dir), \
          patch.object(cs, "CONFIG_PATH", tmp_path / "config.yaml"), \
          patch("code_scanner._hostname", return_value="testhost"), \
-         patch("code_scanner.acompletion", new=AsyncMock(
+         patch("litellm.acompletion", new=AsyncMock(
              return_value=MagicMock(
                  choices=[MagicMock(message=MagicMock(
                      content="SUMMARY: Stable repo.\nTAGS: python"
                  ))]
              )
-         ), create=True):
+         )):
 
         import yaml as _yaml
         (tmp_path / "config.yaml").write_text(_yaml.dump(config_content))
@@ -440,10 +441,11 @@ async def test_scanner_skips_write_when_no_changes(tmp_path):
 
 async def test_email_scanner_writes_memory_for_thread(tmp_path):
     """EmailScanner scan → email-thread-*.md written with correct frontmatter."""
+    import shutil as _shutil
     import sqlite3 as _sqlite3
     import email_scanner as es
     from email_scanner import EmailScanner, EnvelopeIndexSource, CORE_DATA_EPOCH_OFFSET
-    from datetime import datetime as _dt
+    from datetime import datetime as _dt, timedelta as _td
 
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -469,9 +471,11 @@ async def test_email_scanner_writes_memory_for_thread(tmp_path):
             mailbox INTEGER
         );
     """)
-    # Insert two threads: 2 messages in thread 1001, 1 message in thread 1002
-    def ts(dt):
-        return (_dt(*dt) - _dt(1970, 1, 1)).total_seconds() - CORE_DATA_EPOCH_OFFSET
+    # Insert two threads: 2 messages in thread 1001, 1 message in thread 1002.
+    # Use relative timestamps so messages always fall within the 30-day lookback.
+    def ts(days_ago):
+        dt = _dt.now() - _td(days=days_ago)
+        return (dt - _dt(1970, 1, 1)).total_seconds() - CORE_DATA_EPOCH_OFFSET
 
     conn.execute("INSERT INTO subjects VALUES (1, 'API Migration Timeline')")
     conn.execute("INSERT INTO subjects VALUES (2, 'Q3 Budget')")
@@ -479,11 +483,11 @@ async def test_email_scanner_writes_memory_for_thread(tmp_path):
     conn.execute("INSERT INTO addresses VALUES (2, 'bob@acme.com', 'Bob')")
     conn.execute("INSERT INTO mailboxes VALUES (1, 'mailbox://user@host/INBOX')")
     conn.execute("INSERT INTO messages VALUES (101, 1001, 1, ?, ?, 'Starting migration planning', 0, 0, 0, 1, 1)",
-                 (ts((2026, 4, 5, 8, 0, 0)),) * 2)
-    conn.execute("INSERT INTO messages VALUES (102, 1001, 1, ?, ?, 'May 15 cutover confirmed', 1, 0, 0, 2, 1)",
-                 (ts((2026, 4, 10, 9, 0, 0)),) * 2)
+                 (ts(20),) * 2)
+    conn.execute("INSERT INTO messages VALUES (102, 1001, 1, ?, ?, 'Latest update', 1, 0, 0, 2, 1)",
+                 (ts(10),) * 2)
     conn.execute("INSERT INTO messages VALUES (103, 1002, 2, ?, ?, 'Budget numbers attached', 0, 0, 0, 1, 1)",
-                 (ts((2026, 4, 8, 10, 0, 0)),) * 2)
+                 (ts(15),) * 2)
     conn.commit()
     conn.close()
 
@@ -499,18 +503,25 @@ async def test_email_scanner_writes_memory_for_thread(tmp_path):
 
     scanner = EmailScanner(role="full")
 
+    _copy_count = [0]
+    def _make_db_copy():
+        dest = tmp_path / f"db_copy_{_copy_count[0]}"
+        _shutil.copy2(str(db_path), str(dest))
+        _copy_count[0] += 1
+        return dest
+
     with patch.object(es, "MEMORIES_DIR", memories_dir), \
          patch.object(es, "STATE_FILE", tmp_path / "state.json"), \
          patch.object(es, "CONFIG_PATH", tmp_path / "config.yaml"), \
          patch.object(EnvelopeIndexSource, "_find_db_path", return_value=db_path), \
-         patch.object(EnvelopeIndexSource, "_copy_db", return_value=db_path), \
-         patch("email_scanner.acompletion", new=AsyncMock(
+         patch.object(EnvelopeIndexSource, "_copy_db", side_effect=_make_db_copy), \
+         patch("litellm.acompletion", new=AsyncMock(
              return_value=MagicMock(
                  choices=[MagicMock(message=MagicMock(
                      content="SUMMARY: Thread about API migration.\nTAGS: acme, api-migration"
                  ))]
              )
-         ), create=True):
+         )):
 
         import yaml as _yaml
         (tmp_path / "config.yaml").write_text(_yaml.dump(config_content))
@@ -533,10 +544,11 @@ async def test_email_scanner_writes_memory_for_thread(tmp_path):
 
 async def test_email_scanner_skips_write_when_no_new_messages(tmp_path):
     """Second scan with same data must not modify memory files."""
+    import shutil as _shutil
     import sqlite3 as _sqlite3
     import email_scanner as es
     from email_scanner import EmailScanner, EnvelopeIndexSource, CORE_DATA_EPOCH_OFFSET
-    from datetime import datetime as _dt
+    from datetime import datetime as _dt, timedelta as _td
 
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -555,14 +567,16 @@ async def test_email_scanner_skips_write_when_no_new_messages(tmp_path):
         );
     """)
 
-    def ts(dt):
-        return (_dt(*dt) - _dt(1970, 1, 1)).total_seconds() - CORE_DATA_EPOCH_OFFSET
+    # Use a relative timestamp so the message stays within the 30-day lookback.
+    def ts(days_ago):
+        dt = _dt.now() - _td(days=days_ago)
+        return (dt - _dt(1970, 1, 1)).total_seconds() - CORE_DATA_EPOCH_OFFSET
 
     conn.execute("INSERT INTO subjects VALUES (1, 'Status Update')")
     conn.execute("INSERT INTO addresses VALUES (1, 'a@b.com', 'A')")
     conn.execute("INSERT INTO mailboxes VALUES (1, 'mailbox://u@h/INBOX')")
     conn.execute("INSERT INTO messages VALUES (10, 9001, 1, ?, ?, 'Hello', 0, 0, 0, 1, 1)",
-                 (ts((2026, 4, 10, 9, 0, 0)),) * 2)
+                 (ts(5),) * 2)
     conn.commit()
     conn.close()
 
@@ -575,18 +589,25 @@ async def test_email_scanner_skips_write_when_no_new_messages(tmp_path):
 
     scanner = EmailScanner(role="full")
 
+    _copy_count = [0]
+    def _make_db_copy():
+        dest = tmp_path / f"db_copy_{_copy_count[0]}"
+        _shutil.copy2(str(db_path), str(dest))
+        _copy_count[0] += 1
+        return dest
+
     with patch.object(es, "MEMORIES_DIR", memories_dir), \
          patch.object(es, "STATE_FILE", tmp_path / "state.json"), \
          patch.object(es, "CONFIG_PATH", tmp_path / "config.yaml"), \
          patch.object(EnvelopeIndexSource, "_find_db_path", return_value=db_path), \
-         patch.object(EnvelopeIndexSource, "_copy_db", return_value=db_path), \
-         patch("email_scanner.acompletion", new=AsyncMock(
+         patch.object(EnvelopeIndexSource, "_copy_db", side_effect=_make_db_copy), \
+         patch("litellm.acompletion", new=AsyncMock(
              return_value=MagicMock(
                  choices=[MagicMock(message=MagicMock(
                      content="SUMMARY: Status update.\nTAGS: status"
                  ))]
              )
-         ), create=True):
+         )):
 
         import yaml as _yaml
         (tmp_path / "config.yaml").write_text(_yaml.dump(config_content))

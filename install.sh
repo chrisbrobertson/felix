@@ -876,6 +876,23 @@ fi
 echo ""
 info "Calendar scanner will request Automation permission for Calendar.app on first scan — allow it when prompted."
 
+# ── 18. Pre-commit hook ───────────────────────────────────────────────────────
+echo ""
+echo "Installing pre-commit hook..."
+HOOK_SRC="$REPO_DIR/hooks/pre-commit"
+HOOK_DST="$REPO_DIR/.git/hooks/pre-commit"
+if [ -f "$HOOK_SRC" ]; then
+    if [ -f "$HOOK_DST" ] && cmp -s "$HOOK_SRC" "$HOOK_DST"; then
+        skip "Pre-commit hook already up to date"
+    else
+        cp "$HOOK_SRC" "$HOOK_DST"
+        chmod +x "$HOOK_DST"
+        ok "Installed pre-commit hook → .git/hooks/pre-commit"
+    fi
+else
+    skip "hooks/pre-commit not found in repo — skipping"
+fi
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

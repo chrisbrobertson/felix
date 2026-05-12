@@ -15,7 +15,6 @@ import yaml
 
 from llm_routes import resolve
 from usage_tracker import record_usage
-from skill_executor import SkillExecutor
 from utils import load_config
 from heartbeat import record_beat
 
@@ -84,7 +83,6 @@ SKIP_DIRS = {
 class CodeScanner:
     def __init__(self, role: str = "full"):
         self.role = role
-        self._executor = None  # lazy — only created if LLM call needed
         self._migrate_legacy_code_project_files()
         self._migrate_project_filenames()
         self._migrate_project_to_code_files()
@@ -616,9 +614,6 @@ class CodeScanner:
             return True
 
     async def _generate_summary_and_tags(self, readme_text: str, commits: list) -> tuple:
-        if self._executor is None:
-            self._executor = SkillExecutor("summarize-webpage", role=self.role)
-
         if readme_text:
             prompt_content = readme_text[:3000]
         elif commits:

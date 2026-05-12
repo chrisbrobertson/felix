@@ -59,6 +59,10 @@ pytest -k test_atomic_write_leaves_no_tmp_file
 
 All modules are in the repo root (not a package). `tests/conftest.py` inserts the root into `sys.path` so imports work. Tests use `tmp_path` fixtures for file isolation and `unittest.mock.patch` to redirect module-level path constants (e.g. `MEMORIES_DIR`, `SKILLS_DIR`, `BRAIN_DIR`) to temporary directories — never touching real iCloud paths or browser DBs. `acompletion` and Telegram's `ApplicationBuilder` are always mocked.
 
+**Mock pattern for `acompletion`:** modules that lazily import `from litellm import acompletion` inside a function body must be patched via `patch("litellm.acompletion", ...)` — patching the module attribute (e.g. `patch("email_scanner.acompletion", ...)`) only works if the module imports it at the top level.
+
+**Pre-commit hook:** `install.sh` installs `hooks/pre-commit` into `.git/hooks/`. The hook runs `pytest -q --tb=short` using the deploy venv. On a fresh clone without a venv, the hook skips gracefully.
+
 When adding or changing any module, add or update the corresponding tests. Unit tests live in `tests/unit/test_<module>.py`. Integration tests that span module boundaries go in `tests/integration/`.
 
 ## Documentation
