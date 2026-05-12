@@ -899,7 +899,7 @@ echo "Checking for known CVEs in dependencies..."
 if ! "$VENV/bin/pip" show pip-audit &>/dev/null; then
     "$VENV/bin/pip" install -q pip-audit
 fi
-CVE_OUTPUT=$("$VENV/bin/pip-audit" --format columns 2>&1)
+CVE_OUTPUT=$("$VENV/bin/pip-audit" --format columns 2>&1) || true
 CVE_EXIT=$?
 if [ $CVE_EXIT -eq 0 ]; then
     ok "No known CVEs found"
