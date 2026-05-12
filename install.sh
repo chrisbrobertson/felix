@@ -899,10 +899,16 @@ echo "Checking for known CVEs in dependencies..."
 if ! "$VENV/bin/pip" show pip-audit &>/dev/null; then
     "$VENV/bin/pip" install -q pip-audit
 fi
-if "$VENV/bin/pip" audit --format columns 2>/dev/null; then
+CVE_OUTPUT=$("$VENV/bin/pip-audit" --format columns 2>&1)
+CVE_EXIT=$?
+if [ $CVE_EXIT -eq 0 ]; then
     ok "No known CVEs found"
+elif [ $CVE_EXIT -eq 1 ]; then
+    echo "$CVE_OUTPUT"
+    printf "${YELLOW}  !${NC}  pip-audit found vulnerabilities above — review before deploying\n"
 else
-    printf "${YELLOW}  !${NC}  pip audit found vulnerabilities above — review before deploying\n"
+    echo "$CVE_OUTPUT"
+    printf "${YELLOW}  !${NC}  pip-audit exited with code $CVE_EXIT — scan may not have completed\n"
 fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
