@@ -20,11 +20,14 @@ async def scrape_claude(cookie_path: Path) -> dict:
         cookie_path: Path to saved session cookie file
 
     Returns:
-        dict with keys: used, cap, window_resets_at (ISO timestamp)
+        dict with keys: used, cap, window_resets_at (ISO timestamp).
+        Returns {} if the cookie file is missing.
 
     Raises:
-        NotImplementedError: Scraping not yet implemented
+        NotImplementedError: Scraping is not yet implemented.
     """
+    if not cookie_path.exists():
+        return {}
     raise NotImplementedError(
         "Scraping not yet implemented; use /quota report for self-report."
     )
@@ -37,11 +40,14 @@ async def scrape_chatgpt(cookie_path: Path) -> dict:
         cookie_path: Path to saved session cookie file
 
     Returns:
-        dict with keys: used, cap, window_resets_at (ISO timestamp)
+        dict with keys: used, cap, window_resets_at (ISO timestamp).
+        Returns {} if the cookie file is missing.
 
     Raises:
-        NotImplementedError: Scraping not yet implemented
+        NotImplementedError: Scraping is not yet implemented.
     """
+    if not cookie_path.exists():
+        return {}
     raise NotImplementedError(
         "Scraping not yet implemented; use /quota report for self-report."
     )

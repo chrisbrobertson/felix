@@ -7,6 +7,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Dependency CVE scan** (`install.sh`): step 19 now runs `pip audit` against the deploy venv after every install, printing any known CVEs and warning (non-blocking) when vulnerabilities are found. `pip-audit` is installed on-demand into the venv if not already present (#113).
+- **Unit tests for `quota_scrapers.py`** (`tests/unit/test_quota_scrapers.py`): four tests cover missing-cookie-file guard (returns `{}`) and the not-yet-implemented scraping stub (raises `NotImplementedError` when cookie exists). `scrape_claude` and `scrape_chatgpt` now return `{}` immediately when the cookie file is absent instead of proceeding to the `NotImplementedError` raise (#114).
 - **Pre-commit hook** (`hooks/pre-commit`): running `install.sh` now installs a git pre-commit hook that gates every commit behind the full pytest suite. The hook uses the deploy venv when available, falls back to system pytest, and skips gracefully on a fresh clone before venv exists. Addresses gap #3 (P1) from the test coverage assessment (#111).
 
 ### Fixed

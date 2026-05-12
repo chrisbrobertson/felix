@@ -893,6 +893,18 @@ else
     skip "hooks/pre-commit not found in repo — skipping"
 fi
 
+# ── 19. Dependency CVE scan ───────────────────────────────────────────────────
+echo ""
+echo "Checking for known CVEs in dependencies..."
+if ! "$VENV/bin/pip" show pip-audit &>/dev/null; then
+    "$VENV/bin/pip" install -q pip-audit
+fi
+if "$VENV/bin/pip" audit --format columns 2>/dev/null; then
+    ok "No known CVEs found"
+else
+    printf "${YELLOW}  !${NC}  pip audit found vulnerabilities above — review before deploying\n"
+fi
+
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
