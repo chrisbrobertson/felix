@@ -6,6 +6,13 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **`run_action`, `drop_action`, `defer_action` LLM tool calls** (closes #129 partial): the chat skill can now approve/execute, reject, or snooze pending agent-proposed actions via natural language ("run action 2", "drop that action", "snooze it for 48 hours"). Tool dispatch routes to new `_run_action_text`, `_drop_action_text`, `_defer_action_text` helpers in `chat_handler.py`. All three added to `MUTATING_TOOLS`. 11 new tests in `test_e2e_actions.py` and `test_chat_tools.py`.
+
+### Fixed
+- **`_get_action_text` used `_last_actions_set`** (never initialized, always empty) instead of `_last_action_set` — `get_action` LLM tool always returned "No actions listed" even after `list_actions`. Fixed variable name and added tuple unpacking (`path, _ = ...`) since `_last_action_set` stores `(path, fm)` pairs. Added regression test `test_get_action_tool_returns_detail`.
+- **`seed.action()` in integration tests** used `type: action` instead of `type: agent_action`, causing `_load_action_set`'s type filter to silently exclude every seeded action — all action smoke tests passed vacuously. Fixed type and added missing `target` field; upgraded smoke tests to assert reply content.
+
 ## [1.19.0] — 2026-06-29
 
 ### Added

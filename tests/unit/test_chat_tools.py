@@ -28,6 +28,9 @@ def mock_handler():
     h._get_comm_text.return_value = "comm detail"
     h._get_reading_text.return_value = "reading detail"
     h._get_action_text.return_value = "action detail"
+    h._run_action_text = AsyncMock(return_value="✓ Action 1 executed: done")
+    h._drop_action_text = AsyncMock(return_value="✗ Action 1 rejected.")
+    h._defer_action_text = AsyncMock(return_value="Action 1 snoozed for 24h.")
     h._update_feature_text = AsyncMock(return_value="feature updated")
     h._update_issue_priority_text = AsyncMock(return_value="priority updated")
     return h
@@ -256,6 +259,41 @@ async def test_dispatch_get_action(mock_handler):
     mock_handler._get_action_text.assert_called_once_with(2)
 
 
+async def test_dispatch_run_action(mock_handler):
+    result = await chat_tools.dispatch("run_action", {"index": 1}, mock_handler)
+    assert "executed" in result or "Action 1" in result
+    mock_handler._run_action_text.assert_called_once_with(1)
+
+
+async def test_dispatch_drop_action(mock_handler):
+    result = await chat_tools.dispatch("drop_action", {"index": 1}, mock_handler)
+    assert "rejected" in result.lower() or "Action 1" in result
+    mock_handler._drop_action_text.assert_called_once_with(1)
+
+
+async def test_dispatch_defer_action_default_hours(mock_handler):
+    result = await chat_tools.dispatch("defer_action", {"index": 1}, mock_handler)
+    assert "snoozed" in result or "Action 1" in result
+    mock_handler._defer_action_text.assert_called_once_with(1, hours=24)
+
+
+async def test_dispatch_defer_action_custom_hours(mock_handler):
+    await chat_tools.dispatch("defer_action", {"index": 2, "hours": 48}, mock_handler)
+    mock_handler._defer_action_text.assert_called_once_with(2, hours=48)
+
+
+async def test_run_action_in_mutating_tools():
+    assert "run_action" in chat_tools.MUTATING_TOOLS
+
+
+async def test_drop_action_in_mutating_tools():
+    assert "drop_action" in chat_tools.MUTATING_TOOLS
+
+
+async def test_defer_action_in_mutating_tools():
+    assert "defer_action" in chat_tools.MUTATING_TOOLS
+
+
 async def test_dispatch_update_feature_plan(mock_handler):
     result = await chat_tools.dispatch(
         "update_feature", {"index_or_id": "3", "action": "plan"}, mock_handler
@@ -302,6 +340,7 @@ def test_all_tool_names_in_dispatcher():
         "close_commitment", "close_goal", "close_project",
         "add_todo", "get_goal", "get_project", "get_feature", "update_feature",
         "get_event", "get_meeting", "get_contact", "get_comm", "get_reading", "get_action",
+        "run_action", "drop_action", "defer_action",
         "update_issue_priority",
         # Handled in handle_message's tool_dispatch closure (needs chat_id in scope)
         "get_recent_commands",

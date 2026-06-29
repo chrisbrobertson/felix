@@ -19,7 +19,7 @@ MEMORIES_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/secon
 MUTATING_TOOLS: frozenset[str] = frozenset(
     {"add_goal", "add_project", "add_bug", "add_feature", "close_issue", "close_commitment",
      "close_goal", "close_project", "deliver_pending_replies", "add_todo", "update_feature",
-     "update_issue_priority"}
+     "update_issue_priority", "run_action", "drop_action", "defer_action"}
 )
 
 TOOLS: list[dict] = [
@@ -799,6 +799,76 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_action",
+            "description": (
+                "Approve and execute a pending agent-proposed action by its list index. "
+                "Call list_actions first to see the numbered list. Use when the user says "
+                "'run action 2', 'approve that action', 'execute action N', or similar. "
+                "Marks the action as executed and runs the proposed steps."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_actions result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "drop_action",
+            "description": (
+                "Reject and dismiss a pending agent-proposed action by its list index. "
+                "Call list_actions first to see the numbered list. Use when the user says "
+                "'drop action 2', 'reject that action', 'dismiss action N', or similar. "
+                "Marks the action as rejected so it won't appear in future lists."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_actions result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "defer_action",
+            "description": (
+                "Snooze a pending agent-proposed action for a number of hours. "
+                "Call list_actions first to see the numbered list. Use when the user says "
+                "'defer action 2', 'snooze that for a day', 'remind me about action N later'. "
+                "The action won't appear in list_actions results until the defer window expires."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_actions result",
+                    },
+                    "hours": {
+                        "type": "integer",
+                        "description": "Number of hours to snooze (default 24)",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
 ]
 
 
@@ -1010,6 +1080,15 @@ async def _call(name: str, arguments: dict, handler):
         return handler._get_reading_text(int(arguments["index"]))
     if name == "get_action":
         return handler._get_action_text(int(arguments["index"]))
+    if name == "run_action":
+        return await handler._run_action_text(int(arguments["index"]))
+    if name == "drop_action":
+        return await handler._drop_action_text(int(arguments["index"]))
+    if name == "defer_action":
+        return await handler._defer_action_text(
+            int(arguments["index"]),
+            hours=int(arguments.get("hours", 24)),
+        )
     if name in ("add_feature", "add_bug"):
         import hashlib, os, re, yaml
         from datetime import datetime

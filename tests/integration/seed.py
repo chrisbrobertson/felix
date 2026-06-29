@@ -52,13 +52,25 @@ def action(brain_dir, *, title="Reach out", status="pending") -> Path:
     memories.mkdir(exist_ok=True)
     slug = _slugify(title)
     action_id = uuid.uuid4().hex[:8]
-    path = memories / f"action-test-{slug}-{action_id}.md"
-    path.write_text(
-        f"---\ntype: action\nsource_title: {title}\nsummary: Action\n"
-        f"tags: []\nstatus: {status}\nsource_type: goal\nsource_slug: test\n"
-        f"action_id: {action_id}\nproposed_at: 2026-04-27T10:00:00\n---\n\n## Details\n{title}\n"
-    )
-    return path
+    path = memories / f"action-{slug}-{action_id}.md"
+    fm = {
+        "type": "agent_action",
+        "source_title": title,
+        "summary": "Action",
+        "tags": [],
+        "status": status,
+        "source_type": "goal",
+        "source_slug": "test",
+        "source_goal_or_project": "Test Goal",
+        "target": title,
+        "action_id": action_id,
+        "action_type": "followup",
+        "rationale": "Test rationale for automated action",
+        "proposed_steps": ["Step 1: do something", "Step 2: verify it worked"],
+        "proposed_at": "2026-04-27T10:00:00",
+    }
+    return _write_memory(path, fm, f"## Details\n{title}\n")
+
 
 
 def calendar_event(brain_dir, *, title="Standup", start_iso="2026-04-28T09:00:00-07:00") -> Path:

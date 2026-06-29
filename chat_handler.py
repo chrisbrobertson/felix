@@ -2378,11 +2378,11 @@ class TelegramChatHandler:
 
     def _get_action_text(self, index: int) -> str:
         """Get full detail for an agent-proposed action by list index. Used by get_action tool."""
-        if not self._last_actions_set:
+        if not self._last_action_set:
             return "No actions listed yet. Call list_actions first."
-        if index < 1 or index > len(self._last_actions_set):
-            return f"Index {index} out of range (1-{len(self._last_actions_set)})."
-        path = self._last_actions_set[index - 1]
+        if index < 1 or index > len(self._last_action_set):
+            return f"Index {index} out of range (1-{len(self._last_action_set)})."
+        path, _ = self._last_action_set[index - 1]
         fm = self._parse_frontmatter(path)
         title = fm.get("source_title", path.stem)
         source = fm.get("source_goal_or_project", "?")
@@ -2399,6 +2399,119 @@ class TelegramChatHandler:
             lines.append("\nProposed steps:")
             lines.extend(f"{i}. {s}" for i, s in enumerate(steps[:5], 1))
         return "\n".join(lines)
+
+    async def _run_action_text(self, index: int) -> str:
+        """Approve and execute action N. Used by run_action tool."""
+        if not self._last_action_set:
+            return "No actions listed. Call list_actions first."
+        if index < 1 or index > len(self._last_action_set):
+            return f"Index {index} out of range (1-{len(self._last_action_set)})."
+        path, _ = self._last_action_set[index - 1]
+        try:
+            fresh_fm = self._parse_frontmatter(path)
+            fresh_text = path.read_text(encoding="utf-8")
+        except Exception as e:
+            return f"Error reading action file: {_safe_error(e)}"
+        if fresh_fm.get("status") != "pending":
+            return f"Action {index} is no longer pending (status: {fresh_fm.get('status')})."
+        from goal_project_agent import GoalProjectAgent
+        agent = GoalProjectAgent(role="full", cache=self._cache)
+        try:
+            msg = await agent._execute_action(path, fresh_fm)
+            fresh_fm["status"] = "executed"
+            fresh_fm["executed_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            parts = fresh_text.split("---", 2)
+            new_fm = yaml.dump(fresh_fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
+            new_content = f"---\n{new_fm}---{parts[2] if len(parts) >= 3 else ''}"
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(new_content, encoding="utf-8")
+            os.rename(str(tmp), str(path))
+            await self._cache.invalidate(path.name)
+            self._last_action_set = []
+            return f"✓ Action {index} executed: {msg}"
+        except Exception as e:
+            error_str = str(e)
+            if "not found" in error_str.lower() or "already" in error_str.lower():
+                fresh_fm["status"] = "superseded"
+                fresh_fm["superseded_reason"] = error_str
+                fresh_fm["superseded_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                parts = fresh_text.split("---", 2)
+                new_fm = yaml.dump(fresh_fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
+                new_content = f"---\n{new_fm}---{parts[2] if len(parts) >= 3 else ''}"
+                tmp = path.with_suffix(".tmp")
+                tmp.write_text(new_content, encoding="utf-8")
+                os.rename(str(tmp), str(path))
+                await self._cache.invalidate(path.name)
+                self._last_action_set = []
+                return f"Action {index} superseded: {error_str}"
+            return f"Error executing action {index}: {_safe_error(e)}"
+
+    async def _drop_action_text(self, index: int) -> str:
+        """Reject action N. Used by drop_action tool."""
+        if not self._last_action_set:
+            return "No actions listed. Call list_actions first."
+        if index < 1 or index > len(self._last_action_set):
+            return f"Index {index} out of range (1-{len(self._last_action_set)})."
+        path, _ = self._last_action_set[index - 1]
+        try:
+            fresh_fm = self._parse_frontmatter(path)
+            fresh_text = path.read_text(encoding="utf-8")
+        except Exception as e:
+            return f"Error reading action file: {_safe_error(e)}"
+        fresh_fm["status"] = "rejected"
+        fresh_fm["rejected_at"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        rejected_file = DEPLOY_DIR / "rejected-actions.json"
+        if rejected_file.exists():
+            try:
+                rejected_data = json.loads(rejected_file.read_text())
+            except Exception:
+                rejected_data = {"rejected": []}
+        else:
+            rejected_data = {"rejected": []}
+        rejected_data["rejected"].append({
+            "action_id": fresh_fm.get("action_id"),
+            "action_type": fresh_fm.get("action_type"),
+            "rationale": fresh_fm.get("rationale"),
+            "rejected_at": fresh_fm["rejected_at"],
+        })
+        tmp_rej = rejected_file.with_suffix(".tmp")
+        tmp_rej.write_text(json.dumps(rejected_data, indent=2))
+        os.rename(str(tmp_rej), str(rejected_file))
+        parts = fresh_text.split("---", 2)
+        new_fm = yaml.dump(fresh_fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
+        new_content = f"---\n{new_fm}---{parts[2] if len(parts) >= 3 else ''}"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(new_content, encoding="utf-8")
+        os.rename(str(tmp), str(path))
+        await self._cache.invalidate(path.name)
+        self._last_action_set = []
+        return f"✗ Action {index} rejected."
+
+    async def _defer_action_text(self, index: int, hours: int = 24) -> str:
+        """Snooze action N for hours. Used by defer_action tool."""
+        if not self._last_action_set:
+            return "No actions listed. Call list_actions first."
+        if index < 1 or index > len(self._last_action_set):
+            return f"Index {index} out of range (1-{len(self._last_action_set)})."
+        if hours <= 0:
+            return "Hours must be a positive number."
+        path, _ = self._last_action_set[index - 1]
+        try:
+            fresh_fm = self._parse_frontmatter(path)
+            fresh_text = path.read_text(encoding="utf-8")
+        except Exception as e:
+            return f"Error reading action file: {_safe_error(e)}"
+        defer_until = datetime.now() + timedelta(hours=hours)
+        fresh_fm["defer_until"] = defer_until.strftime("%Y-%m-%dT%H:%M:%S")
+        parts = fresh_text.split("---", 2)
+        new_fm = yaml.dump(fresh_fm, default_flow_style=None, allow_unicode=True, sort_keys=False)
+        new_content = f"---\n{new_fm}---{parts[2] if len(parts) >= 3 else ''}"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(new_content, encoding="utf-8")
+        os.rename(str(tmp), str(path))
+        await self._cache.invalidate(path.name)
+        self._last_action_set = []
+        return f"Action {index} snoozed for {hours}h (until {defer_until.strftime('%Y-%m-%d %H:%M')})."
 
     async def cmd_commitments(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
