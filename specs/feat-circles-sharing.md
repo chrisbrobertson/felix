@@ -6,8 +6,8 @@ version: 1.1.0
 created: 2026-04-16
 updated: 2026-06-29
 status: partial
-phases_done: [A, B, D]
-phases_pending: [C]
+phases_done: [A, B, C, D]
+phases_pending: []
 complexity: high
 maturity: 2
 parent_system: second-brain
@@ -371,11 +371,14 @@ cycle — verify files appear and disappear correctly.
 ### Phase C — Member bot (per-circle Telegram app)
 
 **Deliverables:**
-- `CircleBotHandler` class in `circle_sync_scanner.py` (or a new `circle_bot.py`)
-- Per-circle bot startup in `daemon.py` (one `Application` per circle with `bot_token`)
-- Member ID enforcement (allowlist from `members[].telegram_user_id`)
-- `/circle-invite N` host command + `/join <code>` member command (FR-6)
-- Unit tests: scope enforcement, member allowlist, invite flow
+- `CircleBotHandler` class in `circle_bot.py` ✓
+- `CircleBotRunner` in `circle_bot.py` — wraps one `Application` per circle ✓
+- Per-circle bot startup in `daemon.py` (one `Application` per circle with `bot_token`) ✓
+- Member ID enforcement (allowlist from `members[].telegram_user_id`) ✓
+- `/circle-invite N` host command + `/join <code>` member command (FR-6) ✓
+- Unit tests: scope enforcement, member allowlist, invite flow, runner lifecycle ✓
+
+**Deferred (FR-4):** `/ask <question>` LLM query command for member bots.
 
 ### Phase D — In-Telegram rule editor
 

@@ -1,4 +1,5 @@
-"""Unit tests for circle_bot.py — CircleBotHandler."""
+"""Unit tests for circle_bot.py — CircleBotHandler and CircleBotRunner."""
+import asyncio
 import json
 import time
 
@@ -7,7 +8,8 @@ import yaml
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from circle_bot import CircleBotHandler, _parse_frontmatter, _get_body
+from circle_bot import CircleBotHandler, CircleBotRunner, _parse_frontmatter, _get_body
+from circle_ruleset import CircleRuleset
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -614,3 +616,96 @@ async def test_join_grants_immediate_access(tmp_path):
     update.effective_user.first_name = "Alice"
     await handler.cmd_join(update, _make_context(args=[code]))
     assert 42 in handler._member_ids
+
+
+# ── CircleBotRunner ───────────────────────────────────────────────────────────
+
+def _make_ruleset(
+    bot_token: str = "fake:token123",
+    slug: str = "family",
+    display_name: str = "Family",
+    members=None,
+    icloud_folder: str = "second-brain-circles/family/memories",
+) -> CircleRuleset:
+    return CircleRuleset(
+        slug=slug,
+        display_name=display_name,
+        members=members or [],
+        bot_token=bot_token,
+        icloud_folder=icloud_folder,
+        include_rules=[],
+        exclude_rules=[],
+    )
+
+
+@patch("circle_bot.ApplicationBuilder")
+def test_runner_builds_application_with_token(mock_builder, tmp_path):
+    """CircleBotRunner calls ApplicationBuilder().token(bot_token).build()."""
+    ruleset = _make_ruleset(bot_token="7654321:AAtest")
+    ruleset_path = tmp_path / "family.yaml"
+    ruleset_path.touch()
+    runner = CircleBotRunner(ruleset, ruleset_path, tmp_path, tmp_path / "circle-invites.json")
+    mock_builder.assert_called_once()
+    mock_builder.return_value.token.assert_called_once_with("7654321:AAtest")
+    mock_builder.return_value.token.return_value.build.assert_called_once()
+
+
+@patch("circle_bot.ApplicationBuilder")
+def test_runner_registers_all_commands(mock_builder, tmp_path):
+    """CircleBotRunner registers exactly 6 CommandHandlers on the application."""
+    ruleset = _make_ruleset()
+    ruleset_path = tmp_path / "family.yaml"
+    ruleset_path.touch()
+    mock_app = mock_builder.return_value.token.return_value.build.return_value
+    runner = CircleBotRunner(ruleset, ruleset_path, tmp_path, tmp_path / "circle-invites.json")
+    assert mock_app.add_handler.call_count == 6
+
+
+@patch("circle_bot.ApplicationBuilder")
+@pytest.mark.asyncio
+async def test_runner_start_calls_polling(mock_builder, tmp_path):
+    """start() calls initialize(), start(), and updater.start_polling()."""
+    ruleset = _make_ruleset()
+    ruleset_path = tmp_path / "family.yaml"
+    ruleset_path.touch()
+    mock_app = mock_builder.return_value.token.return_value.build.return_value
+    mock_app.initialize = AsyncMock()
+    mock_app.start = AsyncMock()
+    mock_app.updater.start_polling = AsyncMock()
+    runner = CircleBotRunner(ruleset, ruleset_path, tmp_path, tmp_path / "circle-invites.json")
+    await runner.start()
+    mock_app.initialize.assert_called_once()
+    mock_app.start.assert_called_once()
+    mock_app.updater.start_polling.assert_called_once_with(drop_pending_updates=True)
+
+
+@patch("circle_bot.ApplicationBuilder")
+@pytest.mark.asyncio
+async def test_runner_stop_calls_shutdown(mock_builder, tmp_path):
+    """stop() calls updater.stop(), app.stop(), and app.shutdown()."""
+    ruleset = _make_ruleset()
+    ruleset_path = tmp_path / "family.yaml"
+    ruleset_path.touch()
+    mock_app = mock_builder.return_value.token.return_value.build.return_value
+    mock_app.updater.stop = AsyncMock()
+    mock_app.stop = AsyncMock()
+    mock_app.shutdown = AsyncMock()
+    runner = CircleBotRunner(ruleset, ruleset_path, tmp_path, tmp_path / "circle-invites.json")
+    await runner.stop()
+    mock_app.updater.stop.assert_called_once()
+    mock_app.stop.assert_called_once()
+    mock_app.shutdown.assert_called_once()
+
+
+@patch("circle_bot.ApplicationBuilder")
+@pytest.mark.asyncio
+async def test_runner_poll_loop_exits_on_stop_event(mock_builder, tmp_path):
+    """poll_loop() returns as soon as the stop_event is set."""
+    ruleset = _make_ruleset()
+    ruleset_path = tmp_path / "family.yaml"
+    ruleset_path.touch()
+    runner = CircleBotRunner(ruleset, ruleset_path, tmp_path, tmp_path / "circle-invites.json")
+    stop_event = asyncio.Event()
+    stop_event.set()
+    # Should complete immediately without hanging
+    await asyncio.wait_for(runner.poll_loop(stop_event), timeout=1.0)

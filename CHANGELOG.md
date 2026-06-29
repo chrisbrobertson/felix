@@ -6,6 +6,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Circles Phase C — daemon wiring for per-circle member bots**: `daemon.py` now loads all circle rulesets at startup and starts one `python-telegram-bot` `Application` per circle that has a `bot_token`. `CircleBotRunner` (new class in `circle_bot.py`) wraps the Application and exposes `start()`, `stop()`, and `poll_loop(stop_event)` methods following the same lifecycle pattern as the main `TelegramChatHandler`. Runners are shut down gracefully in the daemon's `finally` block. Five unit tests added to `tests/unit/test_circle_bot.py` covering token wiring, command registration, start/stop lifecycle, and poll_loop exit behaviour. `/ask` LLM query command remains deferred.
+
 ## [1.18.0] — 2026-06-29
 
 ### Fixed

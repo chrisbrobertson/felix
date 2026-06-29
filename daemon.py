@@ -169,6 +169,7 @@ async def main():
     # Tier 2: full node only — chat handler, cloud scanners, aggregators, optimizer
     # Import after role check so watcher nodes never touch packages that may not be installed.
     chat = None
+    circle_bot_runners: list = []
     if role == "full":
         from chat_handler import TelegramChatHandler
         from skill_optimizer import SkillOptimizer
@@ -296,6 +297,42 @@ async def main():
         if circle_sync_scanner is not None:
             tasks.append(circle_sync_scanner.run_loop)
 
+        # Start per-circle member bots (Phase C — one Application per circle)
+        if circles_cfg.get("enabled", False):
+            from circle_bot import CircleBotRunner
+            from circle_ruleset import load_ruleset as _load_ruleset
+
+            _circles_dir = Path(
+                circles_cfg.get("dir", str(deploy_dir / "circles"))
+            ).expanduser()
+            _icloud_root = Path(
+                circles_cfg.get(
+                    "icloud_root",
+                    str(Path.home() / "Library/Mobile Documents/com~apple~CloudDocs"),
+                )
+            ).expanduser()
+            _invites_file = deploy_dir / "circle-invites.json"
+
+            if _circles_dir.exists():
+                for _rp in sorted(_circles_dir.glob("*.yaml")):
+                    try:
+                        _rs = _load_ruleset(_rp)
+                    except ValueError as _e:
+                        log.warning("circle-bot: malformed ruleset %s: %s", _rp.name, _e)
+                        continue
+                    if not _rs.bot_token:
+                        log.info("circle-bot: '%s' has no bot_token — skipping", _rs.slug)
+                        continue
+                    try:
+                        _runner = CircleBotRunner(_rs, _rp, _icloud_root, _invites_file)
+                        await _runner.start()
+                        circle_bot_runners.append(_runner)
+                    except Exception as _e:
+                        log.error("circle-bot: failed to start '%s': %s", _rs.slug, _e)
+
+            for _runner in circle_bot_runners:
+                tasks.append(_runner.poll_loop)
+
         # Add Slack adapter task if configured
         if slack_adapter is not None:
             tasks.append(slack_adapter.start)
@@ -331,6 +368,9 @@ async def main():
         # Stop Slack adapter if running (only available in full role)
         if role == "full" and 'slack_adapter' in locals() and slack_adapter is not None:
             await slack_adapter.stop()
+        # Stop per-circle member bots
+        for _runner in circle_bot_runners:
+            await _runner.stop()
         # Close cache connection
         cache.close()
 

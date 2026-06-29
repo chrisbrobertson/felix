@@ -1,14 +1,16 @@
 """
-circle_bot.py — Per-circle Telegram bot handler (read-only member view).
+circle_bot.py — Per-circle Telegram bot handler and runner (read-only member view).
 
 Phase C of the Circles feature. Each CircleBotHandler is bound to one circle's
 iCloud folder and handles a small set of read-only commands for circle members.
 It NEVER reads from MEMORIES_DIR — all file access is strictly scoped to the
 injected circle_path.
 
-Daemon wiring (per-circle Application startup) is deferred to a later iteration.
-The /ask LLM command is deferred; the FR-6 invite flow (/join) is implemented here.
+CircleBotRunner wraps a python-telegram-bot Application and is used by daemon.py
+to start one Telegram bot per circle. The /ask LLM command is deferred to a
+future iteration.
 """
+import asyncio
 import json
 import logging
 import os
@@ -19,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
+from telegram.ext import ApplicationBuilder, CommandHandler
 
 from circle_ruleset import write_ruleset_yaml
 
@@ -453,3 +456,74 @@ class CircleBotHandler:
                 tmp_path.unlink()
             except OSError:
                 pass
+
+
+class CircleBotRunner:
+    """
+    Wraps a python-telegram-bot Application with a CircleBotHandler.
+    One instance per circle. Daemon.py creates and starts these at startup.
+
+    Usage:
+        runner = CircleBotRunner(ruleset, ruleset_path, icloud_root, invites_file)
+        await runner.start()
+        tasks.append(runner.poll_loop)   # add to asyncio.gather task list
+        # on shutdown:
+        await runner.stop()
+    """
+
+    def __init__(
+        self,
+        ruleset,
+        ruleset_path: Path,
+        icloud_root: Path,
+        invites_file: Path,
+    ):
+        """
+        Args:
+            ruleset: CircleRuleset dataclass instance.
+            ruleset_path: Actual path to the circle's YAML file on disk.
+                          Passed directly to avoid slug→path reconstruction bugs
+                          when the filename stem differs from the circle slug.
+            icloud_root: Root iCloud Drive path for resolving icloud_folder.
+            invites_file: Path to circle-invites.json (shared with host bot).
+        """
+        self._slug = ruleset.slug
+
+        circle_path = icloud_root / ruleset.icloud_folder
+        handler = CircleBotHandler(
+            circle_path=circle_path,
+            display_name=ruleset.display_name,
+            members=ruleset.members,
+            ruleset_path=ruleset_path,
+            invites_file=invites_file,
+            slug=ruleset.slug,
+        )
+
+        self.app = ApplicationBuilder().token(ruleset.bot_token).build()
+        self.app.add_handler(CommandHandler("memories", handler.cmd_memories))
+        self.app.add_handler(CommandHandler("search", handler.cmd_search))
+        self.app.add_handler(CommandHandler("events", handler.cmd_events))
+        self.app.add_handler(CommandHandler("commitments", handler.cmd_commitments))
+        self.app.add_handler(CommandHandler("help", handler.cmd_help))
+        self.app.add_handler(CommandHandler("join", handler.cmd_join))
+
+    async def start(self) -> None:
+        """Initialize and start polling. Call once before adding to task list."""
+        await self.app.initialize()
+        await self.app.start()
+        await self.app.updater.start_polling(drop_pending_updates=True)
+        log.info("circle-bot: '%s' started polling", self._slug)
+
+    async def stop(self) -> None:
+        """Stop the bot gracefully. Call from the daemon's finally block."""
+        try:
+            await self.app.updater.stop()
+            await self.app.stop()
+            await self.app.shutdown()
+        except Exception as e:
+            log.error("circle-bot: '%s' stop error: %s", self._slug, e)
+        log.info("circle-bot: '%s' stopped", self._slug)
+
+    async def poll_loop(self, stop_event: asyncio.Event) -> None:
+        """Async task that holds open until the daemon stop_event fires."""
+        await stop_event.wait()
