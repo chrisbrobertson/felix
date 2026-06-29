@@ -119,3 +119,10 @@ class GitHubClient:
             if r.status_code == 422:  # already exists
                 continue
             r.raise_for_status()
+
+    # ── Pull Request operations ─────────────────────────────────────────
+    async def list_pull_requests(self, state: str = "open", per_page: int = 30) -> list:
+        params = {"state": state, "per_page": per_page, "sort": "updated", "direction": "desc"}
+        r = await self._ensure_client().get(f"/repos/{self.repo}/pulls", params=params)
+        r.raise_for_status()
+        return r.json()

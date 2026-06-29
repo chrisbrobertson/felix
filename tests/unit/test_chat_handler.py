@@ -2057,6 +2057,112 @@ async def test_github_enabled_create_bug(handler, brain_dir):
     assert fm.get("kind") == "bug"
 
 
+# ── /prs command ──────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_list_prs_text_github_not_configured(handler):
+    """`_list_prs_text` returns a clear message when GitHub is not configured."""
+    handler.github = MagicMock()
+    handler.github.enabled = False
+
+    result = await handler._list_prs_text()
+
+    assert "GitHub not configured" in result
+
+
+@pytest.mark.asyncio
+async def test_list_prs_text_returns_open_prs(handler):
+    """`_list_prs_text` formats open PRs with number, title, draft tag, branch, author."""
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.list_pull_requests = AsyncMock(return_value=[
+        {
+            "number": 42,
+            "title": "Add cool feature",
+            "draft": False,
+            "state": "open",
+            "merged_at": None,
+            "user": {"login": "alice"},
+            "head": {"ref": "feat/cool"},
+            "updated_at": "2026-06-29T10:00:00Z",
+        },
+    ])
+    handler.github = mock_gh
+
+    result = await handler._list_prs_text(state="open")
+
+    assert "#42" in result
+    assert "Add cool feature" in result
+    assert "@alice" in result
+    assert "feat/cool" in result
+    mock_gh.list_pull_requests.assert_called_once_with(state="open")
+
+
+@pytest.mark.asyncio
+async def test_list_prs_text_draft_tag(handler):
+    """`_list_prs_text` shows [DRAFT] tag for draft PRs."""
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.list_pull_requests = AsyncMock(return_value=[
+        {
+            "number": 7,
+            "title": "WIP: draft PR",
+            "draft": True,
+            "state": "open",
+            "merged_at": None,
+            "user": {"login": "bob"},
+            "head": {"ref": "wip/draft"},
+            "updated_at": "2026-06-28T00:00:00Z",
+        },
+    ])
+    handler.github = mock_gh
+
+    result = await handler._list_prs_text()
+
+    assert "[DRAFT]" in result
+
+
+@pytest.mark.asyncio
+async def test_list_prs_text_empty(handler):
+    """`_list_prs_text` returns 'No open pull requests' when there are none."""
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.list_pull_requests = AsyncMock(return_value=[])
+    handler.github = mock_gh
+
+    result = await handler._list_prs_text(state="open")
+
+    assert "No open pull requests" in result
+
+
+@pytest.mark.asyncio
+async def test_cmd_prs_requires_auth(handler):
+    """/prs rejects unauthenticated users."""
+    update, ctx = _make_update(99999)  # not in ALLOWED_CHAT_IDS
+    await handler.cmd_prs(update, ctx)
+    update.message.reply_text.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cmd_prs_defaults_to_open(handler):
+    """/prs with no args lists open PRs."""
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.list_pull_requests = AsyncMock(return_value=[
+        {
+            "number": 1, "title": "A PR", "draft": False, "state": "open",
+            "merged_at": None, "user": {"login": "u"}, "head": {"ref": "br"},
+            "updated_at": "2026-06-01T00:00:00Z",
+        },
+    ])
+    handler.github = mock_gh
+    update, ctx = _make_update(12345)
+    await handler.cmd_prs(update, ctx)
+    mock_gh.list_pull_requests.assert_called_once_with(state="open")
+    reply = update.message.reply_text.call_args[0][0]
+    assert "#1" in reply
+
+
 @pytest.mark.asyncio
 async def test_github_feature_plan_sets_status(handler, brain_dir):
     mock_gh = AsyncMock()

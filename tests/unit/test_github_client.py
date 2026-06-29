@@ -155,3 +155,50 @@ async def test_ensure_client_raises_when_not_enabled():
         client = GitHubClient()
         with pytest.raises(GitHubNotConfigured):
             client._ensure_client()
+
+
+@pytest.mark.asyncio
+async def test_list_pull_requests_returns_prs():
+    client = GitHubClient(repo="owner/repo", pat="mytoken")
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = [
+        {"number": 10, "title": "Feature PR", "state": "open", "draft": False,
+         "user": {"login": "alice"}, "head": {"ref": "feat/foo"}, "updated_at": "2026-01-01T00:00:00Z"},
+        {"number": 11, "title": "Draft PR", "state": "open", "draft": True,
+         "user": {"login": "bob"}, "head": {"ref": "wip/bar"}, "updated_at": "2026-01-02T00:00:00Z"},
+    ]
+    mock_response.raise_for_status = MagicMock()
+    mock_get = AsyncMock(return_value=mock_response)
+
+    _ = client._ensure_client()
+    client._client.get = mock_get
+
+    result = await client.list_pull_requests(state="open")
+
+    assert len(result) == 2
+    assert result[0]["number"] == 10
+    assert result[1]["draft"] is True
+    mock_get.assert_called_once()
+    call_args = mock_get.call_args
+    assert "/pulls" in call_args[0][0]
+    assert call_args[1]["params"]["state"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_list_pull_requests_closed_state():
+    client = GitHubClient(repo="owner/repo", pat="mytoken")
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = []
+    mock_response.raise_for_status = MagicMock()
+    mock_get = AsyncMock(return_value=mock_response)
+
+    _ = client._ensure_client()
+    client._client.get = mock_get
+
+    result = await client.list_pull_requests(state="closed")
+
+    assert result == []
+    call_args = mock_get.call_args
+    assert call_args[1]["params"]["state"] == "closed"

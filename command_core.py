@@ -129,6 +129,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("feature_wont_do",  "Mark feature N as won't do (optional reason)"),
         ("feature_note",     "Append a timestamped note to feature N"),
         ("feature_import",   "Import existing local feature files into GitHub issues (one-time migration)"),
+        ("prs",              "List pull requests. /prs [open|closed|all] (default: open)"),
     ],
     "Skill Management": [
         ("skill_drafts",    "List pending skill drafts awaiting approval"),

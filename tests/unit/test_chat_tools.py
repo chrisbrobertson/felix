@@ -38,6 +38,7 @@ def mock_handler():
     h._defer_action_text = AsyncMock(return_value="Action 1 snoozed for 24h.")
     h._update_feature_text = AsyncMock(return_value="feature updated")
     h._update_issue_priority_text = AsyncMock(return_value="priority updated")
+    h._list_prs_text = AsyncMock(return_value="prs result")
     return h
 
 
@@ -393,6 +394,7 @@ def test_all_tool_names_in_dispatcher():
         "run_action", "drop_action", "defer_action",
         "update_issue_priority",
         "list_notes", "get_note", "list_insights", "list_aichat", "get_aichat",
+        "list_prs",
         # Handled in handle_message's tool_dispatch closure (needs chat_id in scope)
         "get_recent_commands",
     }
@@ -929,3 +931,33 @@ async def test_get_feature_dispatch_by_short_id(mock_handler):
 
     assert "Some bug" in result
     mock_handler._get_feature_text.assert_called_once_with("ab12cd")
+
+
+# --- list_prs tool tests ---
+
+def test_list_prs_tool_in_tools_list():
+    """list_prs is present in TOOLS with optional state field."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "list_prs" in names
+
+    tool = next(t for t in chat_tools.TOOLS if t["function"]["name"] == "list_prs")
+    params = tool["function"]["parameters"]
+    assert "state" in params["properties"]
+    assert "required" not in params or "state" not in params.get("required", [])
+
+
+@pytest.mark.asyncio
+async def test_list_prs_dispatch_defaults_to_open(mock_handler):
+    """list_prs dispatches to _list_prs_text with state='open' by default."""
+    result = await chat_tools.dispatch("list_prs", {}, mock_handler)
+
+    assert result == "prs result"
+    mock_handler._list_prs_text.assert_called_once_with(state="open")
+
+
+@pytest.mark.asyncio
+async def test_list_prs_dispatch_with_state(mock_handler):
+    """list_prs passes state argument through to _list_prs_text."""
+    await chat_tools.dispatch("list_prs", {"state": "closed"}, mock_handler)
+
+    mock_handler._list_prs_text.assert_called_once_with(state="closed")

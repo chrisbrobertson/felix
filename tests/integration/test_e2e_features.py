@@ -127,3 +127,12 @@ async def test_feature_import_smoke(handler, mk_update):
     update, ctx = mk_update("/feature_import")
     await handler.cmd_feature_import(update, ctx)
     update.message.reply_text.assert_called()
+
+
+async def test_prs_smoke(handler, mk_update):
+    """Without GitHub configured, /prs replies with a 'not configured' message."""
+    update, ctx = mk_update("/prs")
+    await handler.cmd_prs(update, ctx)
+    update.message.reply_text.assert_called()
+    reply = update.message.reply_text.call_args[0][0]
+    assert "GitHub not configured" in reply

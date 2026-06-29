@@ -971,6 +971,27 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_prs",
+            "description": (
+                "List pull requests from the configured GitHub repository. "
+                "Use this to check what the autonomous coding loop (babysitter) has been working on, "
+                "review open PRs, or see recently merged/closed work. "
+                "Call this when the user asks about pull requests, open PRs, or recent code changes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "state": {
+                        "type": "string",
+                        "description": "Filter by PR state: 'open' (default), 'closed', or 'all'",
+                    },
+                },
+            },
+        },
+    },
 ]
 
 
@@ -1209,6 +1230,10 @@ async def _call(name: str, arguments: dict, handler):
         )
     if name == "get_aichat":
         return await handler._get_aichat_text(int(arguments["index"]))
+    if name == "list_prs":
+        return await handler._list_prs_text(
+            state=arguments.get("state", "open"),
+        )
     if name in ("add_feature", "add_bug"):
         import hashlib, os, re, yaml
         from datetime import datetime

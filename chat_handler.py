@@ -177,6 +177,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("feature_wont_do", self.cmd_feature_wont_do))
         self.app.add_handler(CommandHandler("feature_note", self.cmd_feature_note))
         self.app.add_handler(CommandHandler("feature_import", self.cmd_feature_import))
+        self.app.add_handler(CommandHandler("prs", self.cmd_prs))
         # Goals
         self.app.add_handler(CommandHandler("addgoal", self.cmd_addgoal))
         self.app.add_handler(CommandHandler("goals", self.cmd_goals))
@@ -7340,6 +7341,43 @@ class TelegramChatHandler:
             imported += 1
         await self._rewrite_features_index_snapshot()
         await self._send_reply(update, f"Imported {imported} issue(s) to {self.github.repo}.")
+
+    async def _list_prs_text(self, state: str = "open") -> str:
+        """Return formatted pull request list text. Called by cmd_prs and tool dispatch."""
+        if not self.github.enabled:
+            return "GitHub not configured (GITHUB_PAT / GITHUB_REPO missing)."
+        if state not in ("open", "closed", "all"):
+            state = "open"
+        try:
+            prs = await self.github.list_pull_requests(state=state)
+        except Exception as e:
+            return f"GitHub error: {e}"
+        if not prs:
+            return f"No {state} pull requests." if state != "all" else "No pull requests found."
+        lines = [f"Pull requests ({state}): {len(prs)}"]
+        for pr in prs:
+            number = pr.get("number")
+            title = (pr.get("title") or "")[:60]
+            draft_tag = " [DRAFT]" if pr.get("draft") else ""
+            branch = (pr.get("head") or {}).get("ref", "?")
+            author = (pr.get("user") or {}).get("login", "?")
+            updated = (pr.get("updated_at") or "")[:10]
+            merged = (pr.get("merged_at") or "") != ""
+            pr_state = pr.get("state", "")
+            state_tag = ""
+            if state in ("all", "closed"):
+                state_tag = f"[{'merged' if merged else pr_state}] " if pr_state else ""
+            lines.append(f"#{number}{draft_tag} {state_tag}{title}")
+            lines.append(f"   @{author} — {branch} — {updated}")
+        return "\n".join(lines)
+
+    async def cmd_prs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """List open (or closed/all) pull requests from GitHub."""
+        if not self._check_auth(update):
+            return
+        args = [a.lower() for a in (context.args or [])]
+        state = args[0] if args and args[0] in ("open", "closed", "all") else "open"
+        await self._send_reply(update, await self._list_prs_text(state=state))
 
     # ── Skill Management commands ─────────────────────────────────────────────
 
