@@ -1285,7 +1285,7 @@ Skipped folders are checked via case-insensitive substring match — "archive" i
 
 **Circles** let you share specific memories with named groups through iCloud shared folders. Each circle has its own ruleset (YAML file) that declares which memory types, tags, categories, or metadata should be synced. The daemon runs a scanner loop that keeps the shared folders in sync with your main memories directory.
 
-Phases A (one-way sync), B (host Telegram commands), and D (in-Telegram rule editor) are implemented. Phase C (per-circle member bots) is planned.
+All four phases are implemented: A (one-way sync), B (host Telegram commands), C (per-circle member bots), and D (in-Telegram rule editor).
 
 ### How it works
 
@@ -1305,7 +1305,7 @@ display_name: Robertson Family
 members:
   - telegram_user_id: 123456
     name: Alex
-bot_token: ""  # empty for Phase A (member bot comes in Phase B)
+bot_token: "7654321:AABotTokenHere"  # Telegram bot token for the circle's member bot
 icloud_folder: second-brain-circles/family/memories  # relative to icloud_root
 
 rules:
@@ -1377,6 +1377,18 @@ Example: `/circle_rule add 1 include type:calendar_event tags:family,home`
 
 Rule edits are written atomically to the YAML file; the scanner picks up the change on its next 5-minute cycle.
 
+### Member bot setup
+
+Each circle can have its own Telegram bot that gives members a read-only view of the shared memories. To set one up:
+
+1. Create a new bot via [@BotFather](https://t.me/BotFather) and copy the token
+2. Set `bot_token` in the circle's ruleset YAML to that token
+3. Restart the daemon (`./install.sh`) — it starts one bot Application per circle that has a token
+4. Send `/circle_invite <N>` on the **host** bot to generate an invite code, share the code with the member
+5. The member sends `/join <code>` to the **circle bot** to register their Telegram ID
+
+If `bot_token` is empty, the circle runs sync-only (no member bot starts for that circle).
+
 ### Invite flow
 
 **Host** generates a one-time invite code via `/circle_invite <N>` (on the main bot). The code is an 8-character hex string that expires after 24 hours. Share this code with the invitee.
@@ -1389,6 +1401,12 @@ Each invite code is single-use and stored in `~/secondbrain/circle-invites.json`
 
 | Command | Description |
 |---------|-------------|
+| `/help` | Show available commands |
+| `/memories [N]` | List shared memories; pass N for full detail on item N |
+| `/search <query>` | Keyword search across shared memories |
+| `/events [N]` | List calendar events; pass N for full detail on item N |
+| `/commitments` | List active commitments from shared memories |
+| `/ask <question>` | Ask an LLM question answered from shared memories |
 | `/join <code>` | Redeem an invite code to join the circle |
 
 ---

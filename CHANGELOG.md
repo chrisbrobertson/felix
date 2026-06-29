@@ -6,9 +6,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.19.0] — 2026-06-29
+
 ### Added
 - **Circles — `/ask` LLM query command for member bots**: `CircleBotHandler.cmd_ask` lets circle members ask natural-language questions about the memories shared in their circle. Keyword-scores all circle files, passes the top-matching context to the `chat` LLM route via `litellm.acompletion`, and relays the answer (chunked at 4096 chars for Telegram). Member-allowlist check and MEMORIES_DIR isolation invariant both apply. Wired up in `CircleBotRunner` alongside the existing six commands. Six unit tests added; `test_handler_never_reads_memories_dir` extended to exercise `/ask`; `test_runner_registers_all_commands` count updated to 7. Spec `feat-circles-sharing` marked `implemented`.
 - **Circles Phase C — daemon wiring for per-circle member bots**: `daemon.py` now loads all circle rulesets at startup and starts one `python-telegram-bot` `Application` per circle that has a `bot_token`. `CircleBotRunner` (new class in `circle_bot.py`) wraps the Application and exposes `start()`, `stop()`, and `poll_loop(stop_event)` methods following the same lifecycle pattern as the main `TelegramChatHandler`. Runners are shut down gracefully in the daemon's `finally` block. Five unit tests added to `tests/unit/test_circle_bot.py` covering token wiring, command registration, start/stop lifecycle, and poll_loop exit behaviour.
+
+### Changed
+- **README — Circles section updated for Phase C completion**: corrected "Phase C is planned" to reflect that all four phases (A–D) are now implemented; added member bot setup instructions; expanded the member bot command table to document all seven commands (`/help`, `/memories`, `/search`, `/events`, `/commitments`, `/ask`, `/join`); updated example ruleset `bot_token` comment.
 
 ## [1.18.0] — 2026-06-29
 
