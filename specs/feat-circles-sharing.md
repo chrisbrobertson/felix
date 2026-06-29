@@ -2,11 +2,14 @@
 specmas: 3.0
 kind: feature
 id: feat-circles-sharing
-version: 1.0.0
+version: 1.1.0
 created: 2026-04-16
-status: open
+updated: 2026-06-29
+status: partial
+phases_done: [A, B, D]
+phases_pending: [C]
 complexity: high
-maturity: 1
+maturity: 2
 parent_system: second-brain
 related_specs:
   - second-brain-spec-v1.0

@@ -151,6 +151,7 @@ COMMAND_REGISTRY: dict[str, list[tuple[str, str]]] = {
         ("circles",       "List configured circles with member count and last-sync time"),
         ("circle",        "Show detail for circle N from last /circles list"),
         ("circle_status", "Quick health check: which circles are syncing, which have missing iCloud folders"),
+        ("circle_rule",   "Add or remove a sync rule: /circle_rule add <N> include|exclude type:value  OR  /circle_rule remove <N> <rule_index>"),
     ],
     "Meta": [
         ("help",     "Show this list"),

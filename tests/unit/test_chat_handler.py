@@ -5983,6 +5983,182 @@ class TestCircleCommands:
         await h.cmd_circles(update, context)
         update.message.reply_text.assert_not_called()
 
+    # ── /circle_rule tests ───────────────────────────────────────────────────
+
+    def _setup_circle_set(self, h, tmp, slug, include_rules=None, exclude_rules=None):
+        """Populate h._last_circle_set with a single circle YAML file."""
+        import yaml as _yaml
+        circles_dir = tmp / "circles"
+        circles_dir.mkdir(exist_ok=True)
+        include_rules = include_rules or [{"type": "calendar_event"}]
+        exclude_rules = exclude_rules or []
+        data = {
+            "circle": slug,
+            "display_name": slug.title(),
+            "members": [],
+            "bot_token": "",
+            "icloud_folder": f"second-brain-circles/{slug}/memories",
+            "rules": {"include": include_rules, "exclude": exclude_rules},
+        }
+        p = circles_dir / f"{slug}.yaml"
+        p.write_text(_yaml.dump(data))
+        h._last_circle_set = [p]
+        return p
+
+    @pytest.mark.asyncio
+    async def test_circle_rule_add_include(self, handler, tmp_path):
+        """Adding an include rule appends to the ruleset YAML."""
+        import yaml as _yaml
+        h, tmp = handler
+        p = self._setup_circle_set(h, tmp, "family")
+        update, context = self._make_update(
+            args=["add", "1", "include", "type:goal", "category:family"]
+        )
+        await h.cmd_circle_rule(update, context)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Added include rule to family" in text
+        assert "type:goal" in text
+        data = _yaml.safe_load(p.read_text())
+        rules = data["rules"]["include"]
+        assert any(r.get("type") == "goal" for r in rules)
+        assert any(r.get("category") == "family" for r in rules)
+
+    @pytest.mark.asyncio
+    async def test_circle_rule_add_exclude(self, handler, tmp_path):
+        """Adding an exclude rule appends to the exclude list."""
+        import yaml as _yaml
+        h, tmp = handler
+        p = self._setup_circle_set(h, tmp, "family")
+        update, context = self._make_update(
+            args=["add", "1", "exclude", "classification:marketing"]
+        )
+        await h.cmd_circle_rule(update, context)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Added exclude rule to family" in text
+        data = _yaml.safe_load(p.read_text())
+        assert any(r.get("classification") == "marketing" for r in data["rules"]["exclude"])
+
+    @pytest.mark.asyncio
+    async def test_circle_rule_add_tags(self, handler, tmp_path):
+        """tags:v1,v2 shorthand is parsed to tags_contains_any."""
+        import yaml as _yaml
+        h, tmp = handler
+        p = self._setup_circle_set(h, tmp, "family")
+        update, context = self._make_update(
+            args=["add", "1", "include", "tags:family,home"]
+        )
+        await h.cmd_circle_rule(update, context)
+        data = _yaml.safe_load(p.read_text())
+        added = [r for r in data["rules"]["include"] if "tags_contains_any" in r]
+        assert added
+        assert set(added[0]["tags_contains_any"]) == {"family", "home"}
+
+    @pytest.mark.asyncio
+    async def test_circle_rule_remove_include(self, handler, tmp_path):
+        """Removing rule 1 deletes the first include rule."""
+        import yaml as _yaml
+        h, tmp = handler
+        p = self._setup_circle_set(
+            h, tmp, "family",
+            include_rules=[{"type": "calendar_event"}, {"type": "goal"}],
+        )
+        update, context = self._make_update(args=["remove", "1", "1"])
+        await h.cmd_circle_rule(update, context)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Removed include rule 1" in text
+        data = _yaml.safe_load(p.read_text())
+        remaining = data["rules"]["include"]
+        assert len(remaining) == 1
+        assert remaining[0]["type"] == "goal"
+
+    @pytest.mark.asyncio
+    async def test_circle_rule_remove_exclude(self, handler, tmp_path):
+        """Removing a rule whose index falls in the exclude list works correctly."""
+        import yaml as _yaml
+        h, tmp = handler
+        p = self._setup_circle_set(
+            h, tmp, "family",
+            include_rules=[{"type": "calendar_event"}],
+            exclude_rules=[{"classification": "marketing"}, {"tags_contains_any": ["work"]}],
+        )
+        # Rule index 2 = first exclude rule (after 1 include rule)
+        update, context = self._make_update(args=["remove", "1", "2"])
+        await h.cmd_circle_rule(update, context)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Removed exclude rule 2" in text
+        data = _yaml.safe_load(p.read_text())
+        assert len(data["rules"]["exclude"]) == 1
+        assert data["rules"]["exclude"][0]["tags_contains_any"] == ["work"]
+
+    @pytest.mark.asyncio
+    async def test_circle_rule_no_prior_circles(self, handler, tmp_path):
+        """No prior /circles run -> 'Run /circles first'."""
+        h, tmp = handler
+        h._last_circle_set = []
+        update, context = self._make_update(args=["add", "1", "include", "type:goal"])
+        await h.cmd_circle_rule(update, context)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Run /circles first" in text
+
+    @pytest.mark.asyncio
+    async def test_circle_rule_invalid_circle_index(self, handler, tmp_path):
+        """Circle index out of range -> error."""
+        h, tmp = handler
+        self._setup_circle_set(h, tmp, "family")
+        update, context = self._make_update(args=["add", "5", "include", "type:goal"])
+        await h.cmd_circle_rule(update, context)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Invalid circle index" in text
+
+    @pytest.mark.asyncio
+    async def test_circle_rule_remove_out_of_range(self, handler, tmp_path):
+        """Rule index beyond total rule count -> error."""
+        h, tmp = handler
+        p = self._setup_circle_set(h, tmp, "family", include_rules=[{"type": "goal"}])
+        update, context = self._make_update(args=["remove", "1", "99"])
+        await h.cmd_circle_rule(update, context)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Invalid rule index" in text
+
+    @pytest.mark.asyncio
+    async def test_circle_rule_unknown_subcommand(self, handler, tmp_path):
+        """Unknown subcommand -> usage hint."""
+        h, tmp = handler
+        self._setup_circle_set(h, tmp, "family")
+        update, context = self._make_update(args=["edit", "1", "include", "type:goal"])
+        await h.cmd_circle_rule(update, context)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Unknown subcommand" in text
+
+    @pytest.mark.asyncio
+    async def test_circle_rule_no_valid_predicates(self, handler, tmp_path):
+        """No parseable predicates -> helpful error."""
+        h, tmp = handler
+        self._setup_circle_set(h, tmp, "family")
+        update, context = self._make_update(args=["add", "1", "include", "notakey"])
+        await h.cmd_circle_rule(update, context)
+        text = update.message.reply_text.call_args[0][0]
+        assert "No valid predicates" in text
+
+    @pytest.mark.asyncio
+    async def test_circle_rule_invalid_direction(self, handler, tmp_path):
+        """Direction other than include/exclude -> error."""
+        h, tmp = handler
+        self._setup_circle_set(h, tmp, "family")
+        update, context = self._make_update(args=["add", "1", "both", "type:goal"])
+        await h.cmd_circle_rule(update, context)
+        text = update.message.reply_text.call_args[0][0]
+        assert "include" in text.lower() or "exclude" in text.lower()
+
+    @pytest.mark.asyncio
+    async def test_circle_rule_unauth(self, handler, tmp_path):
+        """Unauthorized user -> silent return."""
+        h, tmp = handler
+        self._setup_circle_set(h, tmp, "family")
+        update, context = self._make_update(user_id=99999, args=["add", "1", "include", "type:goal"])
+        await h.cmd_circle_rule(update, context)
+        update.message.reply_text.assert_not_called()
+
 
 # ── LLM Chat Tests ────────────────────────────────────────────────────────────
 

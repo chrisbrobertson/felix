@@ -4,6 +4,7 @@ circle_ruleset.py — Circle ruleset parser and rule-match predicates.
 Pure Python module: no LLM calls, no async, no filesystem IO (just YAML parsing).
 """
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -172,3 +173,62 @@ def should_sync(ruleset: CircleRuleset, fm: dict) -> bool:
     Logic: matches at least one include rule AND does not match any exclude rule.
     """
     return matches_include(ruleset, fm) and not matches_exclude(ruleset, fm)
+
+
+# ── Rule editing helpers ──────────────────────────────────────────────────────
+
+# Maps short command-line token keys to canonical YAML rule keys.
+_PREDICATE_ALIASES = {
+    "type":           "type",
+    "tags":           "tags_contains_any",
+    "tags_any":       "tags_contains_any",
+    "tags_all":       "tags_contains_all",
+    "category":       "category",
+    "classification": "classification",
+    "hostname":       "hostname",
+    "source_title":   "source_title_contains",
+}
+
+# Predicates that accept comma-separated lists.
+_LIST_PREDICATES = {"tags_contains_any", "tags_contains_all"}
+
+
+def parse_rule_predicates(tokens: list) -> dict:
+    """
+    Parse a list of ``key:value`` tokens into a rule dict suitable for YAML.
+
+    Supported token forms:
+    - ``type:calendar_event``
+    - ``tags:family,home``  (→ tags_contains_any: [family, home])
+    - ``tags_all:family,home``  (→ tags_contains_all: [family, home])
+    - ``category:work``
+    - ``classification:marketing``
+    - ``hostname:macstudio``
+    - ``source_title:Python docs``
+
+    Unknown keys are ignored silently.  Tokens without a colon are skipped.
+    Returns {} if no valid predicates are found.
+    """
+    rule: dict = {}
+    for token in tokens:
+        if ":" not in token:
+            continue
+        raw_key, _, val = token.partition(":")
+        raw_key = raw_key.strip().lower()
+        val = val.strip()
+        if not val or raw_key not in _PREDICATE_ALIASES:
+            continue
+        canon = _PREDICATE_ALIASES[raw_key]
+        if canon in _LIST_PREDICATES:
+            rule[canon] = [v.strip() for v in val.split(",") if v.strip()]
+        else:
+            rule[canon] = val
+    return rule
+
+
+def write_ruleset_yaml(path: Path, data: dict) -> None:
+    """Atomically overwrite *path* with the YAML serialisation of *data*."""
+    tmp = path.with_suffix(".tmp")
+    text = yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    tmp.write_text(text)
+    os.rename(str(tmp), str(path))

@@ -1282,7 +1282,7 @@ Skipped folders are checked via case-insensitive substring match — "archive" i
 
 **Circles** let you share specific memories with named groups through iCloud shared folders. Each circle has its own ruleset (YAML file) that declares which memory types, tags, categories, or metadata should be synced. The daemon runs a scanner loop that keeps the shared folders in sync with your main memories directory.
 
-**Phase A** (current) implements **one-way sync** — the full node reads rulesets, matches memories, and writes to shared folders. No Telegram commands, no member bots. Phase B will add `/circles`, `/circle <N>`, and per-circle member bots.
+Phases A (one-way sync), B (host Telegram commands), and D (in-Telegram rule editor) are implemented. Phase C (per-circle member bots) is planned.
 
 ### How it works
 
@@ -1347,13 +1347,36 @@ circles:
 
 **State file:** `~/secondbrain/circle-sync-state.json` tracks synced files per circle (mtime-based change detection).
 
-### Phase B (future)
+### Telegram commands (host only)
 
-Phase B will add:
-- `/circles` — list all circles with member count, last sync, file count
-- `/circle <N>` — show ruleset, members, and recent synced files
-- **Member bots** — per-circle Telegram bot tokens, members can query their shared memories
-- **Two-way edits** — members can update tags/status on shared files, changes propagate back
+| Command | Description |
+|---------|-------------|
+| `/circles` | List all circles with member count, file count, last sync |
+| `/circle <N>` | Show detail: members, rules, iCloud folder status |
+| `/circle_status` | Quick health check — which circles are syncing, which have missing iCloud folders |
+| `/circle_rule add <N> include\|exclude <predicates>` | Add a sync rule to circle N |
+| `/circle_rule remove <N> <rule_index>` | Remove rule by index (run `/circle N` to see numbered rules) |
+
+**`/circle_rule add` predicate syntax** (space-separated key:value tokens):
+
+| Token | YAML predicate |
+|-------|---------------|
+| `type:calendar_event` | `type: calendar_event` |
+| `tags:family,home` | `tags_contains_any: [family, home]` |
+| `tags_all:family,home` | `tags_contains_all: [family, home]` |
+| `category:family` | `category: family` |
+| `classification:marketing` | `classification: marketing` |
+| `hostname:macstudio` | `hostname: macstudio` |
+| `source_title:school` | `source_title_contains: school` |
+
+Example: `/circle_rule add 1 include type:calendar_event tags:family,home`
+
+Rule edits are written atomically to the YAML file; the scanner picks up the change on its next 5-minute cycle.
+
+### Planned (Phase C)
+
+- **Per-circle member bots** — one `bot_token` per circle; members get read-only `/ask`, `/search`, `/memories`, `/events`, `/commitments` commands scoped to the shared folder.
+- **Invite flow** — host generates one-time invite code; member redeems it on the circle bot with `/join <code>`.
 
 ---
 

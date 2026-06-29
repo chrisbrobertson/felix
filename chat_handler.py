@@ -238,6 +238,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("circles", self.cmd_circles))
         self.app.add_handler(CommandHandler("circle", self.cmd_circle))
         self.app.add_handler(CommandHandler("circle_status", self.cmd_circle_status))
+        self.app.add_handler(CommandHandler("circle_rule", self.cmd_circle_rule))
         self.app.add_error_handler(self._on_telegram_error)
         # Cache: path -> (mtime, header_text). Invalidated when mtime changes.
         # Avoids reading every file on every chat message.
@@ -7920,6 +7921,131 @@ class TelegramChatHandler:
             )
 
         await update.message.reply_text("\n".join(lines))
+
+    async def cmd_circle_rule(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        /circle_rule add <N> include|exclude type:value [tags:v1,v2 ...]
+        /circle_rule remove <N> <rule_index>
+
+        Edits the YAML ruleset file for circle N from the last /circles list.
+        Writes atomically; scanner picks up the change on its next cycle.
+        """
+        if not self._check_auth(update):
+            return
+
+        args = context.args or []
+        USAGE = (
+            "Usage:\n"
+            "  /circle_rule add <N> include|exclude type:value [tags:v1,v2 ...]\n"
+            "  /circle_rule remove <N> <rule_index>\n\n"
+            "Predicates: type:value  tags:v1,v2  category:value\n"
+            "            classification:value  hostname:value  source_title:text"
+        )
+
+        if len(args) < 3:
+            await update.message.reply_text(USAGE)
+            return
+
+        subcommand = args[0].lower()
+        try:
+            circle_n = int(args[1])
+        except ValueError:
+            await update.message.reply_text(USAGE)
+            return
+
+        if not self._last_circle_set or circle_n < 1 or circle_n > len(self._last_circle_set):
+            await update.message.reply_text("Invalid circle index. Run /circles first.")
+            return
+
+        path = self._last_circle_set[circle_n - 1]
+        if path is None:
+            await update.message.reply_text("That circle has a malformed ruleset.")
+            return
+
+        try:
+            raw_data = yaml.safe_load(path.read_text()) or {}
+        except Exception as e:
+            await update.message.reply_text(f"Failed to read ruleset: {e}")
+            return
+
+        if subcommand == "add":
+            if len(args) < 4:
+                await update.message.reply_text(USAGE)
+                return
+            direction = args[2].lower()
+            if direction not in ("include", "exclude"):
+                await update.message.reply_text("Direction must be 'include' or 'exclude'.")
+                return
+
+            from circle_ruleset import parse_rule_predicates, write_ruleset_yaml
+            rule = parse_rule_predicates(args[3:])
+            if not rule:
+                await update.message.reply_text(
+                    "No valid predicates found.\n"
+                    "Examples: type:calendar_event  tags:family,home  classification:marketing"
+                )
+                return
+
+            rules = raw_data.setdefault("rules", {})
+            rules.setdefault(direction, []).append(rule)
+            try:
+                write_ruleset_yaml(path, raw_data)
+            except OSError as e:
+                await update.message.reply_text(f"Failed to save ruleset: {e}")
+                return
+
+            rule_str = self._format_circle_rule(rule)
+            await update.message.reply_text(
+                f"Added {direction} rule to {path.stem}:\n  · {rule_str}"
+            )
+
+        elif subcommand == "remove":
+            try:
+                rule_idx = int(args[2])
+            except ValueError:
+                await update.message.reply_text(USAGE)
+                return
+
+            rules = raw_data.get("rules", {})
+            include_list = list(rules.get("include", []))
+            exclude_list = list(rules.get("exclude", []))
+            total = len(include_list) + len(exclude_list)
+
+            if rule_idx < 1 or rule_idx > total:
+                await update.message.reply_text(
+                    f"Invalid rule index. Circle '{path.stem}' has {total} rule(s).\n"
+                    "Run /circle <N> to see numbered rules."
+                )
+                return
+
+            if rule_idx <= len(include_list):
+                removed = include_list.pop(rule_idx - 1)
+                removed_from = "include"
+            else:
+                idx_in_exclude = rule_idx - len(include_list) - 1
+                removed = exclude_list.pop(idx_in_exclude)
+                removed_from = "exclude"
+
+            rules["include"] = include_list
+            rules["exclude"] = exclude_list
+            raw_data["rules"] = rules
+
+            from circle_ruleset import write_ruleset_yaml
+            try:
+                write_ruleset_yaml(path, raw_data)
+            except OSError as e:
+                await update.message.reply_text(f"Failed to save ruleset: {e}")
+                return
+
+            rule_str = self._format_circle_rule(removed)
+            await update.message.reply_text(
+                f"Removed {removed_from} rule {rule_idx} from {path.stem}:\n  · {rule_str}"
+            )
+
+        else:
+            await update.message.reply_text(
+                f"Unknown subcommand '{subcommand}'. Use 'add' or 'remove'.\n\n{USAGE}"
+            )
 
     # ── CommandRouter bridge ──────────────────────────────────────────────────
 

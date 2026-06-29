@@ -5,7 +5,8 @@ import yaml
 from pathlib import Path
 
 from circle_ruleset import (
-    CircleRuleset, load_ruleset, matches_include, matches_exclude, should_sync
+    CircleRuleset, load_ruleset, matches_include, matches_exclude, should_sync,
+    parse_rule_predicates, write_ruleset_yaml,
 )
 
 
@@ -257,3 +258,93 @@ def test_source_title_contains():
 
     assert matches_include(ruleset, fm_match) is True
     assert matches_include(ruleset, fm_no_match) is False
+
+
+# ── parse_rule_predicates ─────────────────────────────────────────────────────
+
+def test_parse_rule_predicates_type():
+    rule = parse_rule_predicates(["type:calendar_event"])
+    assert rule == {"type": "calendar_event"}
+
+
+def test_parse_rule_predicates_tags_any():
+    rule = parse_rule_predicates(["tags:family,home,kids"])
+    assert rule == {"tags_contains_any": ["family", "home", "kids"]}
+
+
+def test_parse_rule_predicates_tags_all():
+    rule = parse_rule_predicates(["tags_all:family,home"])
+    assert rule == {"tags_contains_all": ["family", "home"]}
+
+
+def test_parse_rule_predicates_multiple():
+    rule = parse_rule_predicates(["type:calendar_event", "tags:family,home", "hostname:macstudio"])
+    assert rule == {
+        "type": "calendar_event",
+        "tags_contains_any": ["family", "home"],
+        "hostname": "macstudio",
+    }
+
+
+def test_parse_rule_predicates_classification():
+    rule = parse_rule_predicates(["classification:marketing"])
+    assert rule == {"classification": "marketing"}
+
+
+def test_parse_rule_predicates_source_title():
+    rule = parse_rule_predicates(["source_title:Python docs"])
+    assert rule == {"source_title_contains": "Python docs"}
+
+
+def test_parse_rule_predicates_unknown_key_ignored():
+    rule = parse_rule_predicates(["unknown:value", "type:goal"])
+    assert rule == {"type": "goal"}
+
+
+def test_parse_rule_predicates_no_colon_skipped():
+    rule = parse_rule_predicates(["nocodonhere", "type:goal"])
+    assert rule == {"type": "goal"}
+
+
+def test_parse_rule_predicates_empty_returns_empty():
+    assert parse_rule_predicates([]) == {}
+
+
+# ── write_ruleset_yaml ────────────────────────────────────────────────────────
+
+def test_write_ruleset_yaml_round_trips(tmp_path):
+    """Data written by write_ruleset_yaml can be read back identically."""
+    data = {
+        "circle": "family",
+        "display_name": "Family",
+        "members": [],
+        "bot_token": "",
+        "icloud_folder": "second-brain-circles/family/memories",
+        "rules": {
+            "include": [{"type": "calendar_event"}],
+            "exclude": [],
+        },
+    }
+    path = tmp_path / "family.yaml"
+    write_ruleset_yaml(path, data)
+    assert path.exists()
+    loaded = yaml.safe_load(path.read_text())
+    assert loaded == data
+
+
+def test_write_ruleset_yaml_atomic_no_partial_on_error(tmp_path, monkeypatch):
+    """If rename fails the tmp file is left, original untouched."""
+    import os
+    path = tmp_path / "family.yaml"
+    path.write_text("original: content\n")
+
+    original_rename = os.rename
+
+    def bad_rename(src, dst):
+        raise OSError("simulated rename failure")
+
+    monkeypatch.setattr("circle_ruleset.os.rename", bad_rename)
+    with pytest.raises(OSError):
+        write_ruleset_yaml(path, {"circle": "family"})
+    # Original should be untouched
+    assert path.read_text() == "original: content\n"

@@ -5,9 +5,10 @@ id: feat-skill-routing
 version: 1.1.0
 created: 2026-04-12
 updated: 2026-04-12
-status: draft
+status: implemented
+shipped_version: "1.17.0"
 complexity: moderate
-maturity: 1
+maturity: 2
 parent_system: second-brain
 related_specs:
   - feat-skill-optimizer
