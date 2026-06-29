@@ -19,7 +19,9 @@ MEMORIES_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/secon
 MUTATING_TOOLS: frozenset[str] = frozenset(
     {"add_goal", "add_project", "add_bug", "add_feature", "close_issue", "close_commitment",
      "close_goal", "close_project", "deliver_pending_replies", "add_todo", "update_feature",
-     "update_issue_priority", "run_action", "drop_action", "defer_action"}
+     "update_issue_priority", "run_action", "drop_action", "defer_action",
+     "update_goal_note", "update_goal_due", "update_project_note", "update_project_due",
+     "add_milestone", "toggle_milestone", "link_goal", "unlink_goal"}
 )
 
 TOOLS: list[dict] = [
@@ -622,6 +624,210 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "update_goal_note",
+            "description": (
+                "Append a timestamped note to a goal. Use when the user says things like "
+                "'add a note to my fitness goal', 'update goal 2 with this note', "
+                "'log a progress update on goal 1'. "
+                "Call list_goals first if you need to find the goal index."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_goals result",
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": "Text to append as a timestamped note",
+                    },
+                },
+                "required": ["index", "note"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_goal_due",
+            "description": (
+                "Set or clear the due date on a goal. Use when the user says "
+                "'set the due date on goal 2 to next month', 'update deadline for my learning goal', "
+                "or 'clear the due date on goal 1'. "
+                "Call list_goals first if you need to find the goal index."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_goals result",
+                    },
+                    "due_date": {
+                        "type": "string",
+                        "description": "Due date in YYYY-MM-DD format, or 'none' to clear",
+                    },
+                },
+                "required": ["index", "due_date"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_project_note",
+            "description": (
+                "Append a timestamped note to a project. Use when the user says "
+                "'add a note to the X project', 'log an update on project 2', "
+                "'record a status note on my website project'. "
+                "Call list_projects first if you need to find the project index."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_projects result",
+                    },
+                    "note": {
+                        "type": "string",
+                        "description": "Text to append as a timestamped note",
+                    },
+                },
+                "required": ["index", "note"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_project_due",
+            "description": (
+                "Set or clear the due date on a project. Use when the user says "
+                "'set the deadline for project 3 to June', 'update due date on X project', "
+                "or 'clear the due date on project 1'. "
+                "Call list_projects first if you need to find the project index."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_projects result",
+                    },
+                    "due_date": {
+                        "type": "string",
+                        "description": "Due date in YYYY-MM-DD format, or 'none' to clear",
+                    },
+                },
+                "required": ["index", "due_date"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_milestone",
+            "description": (
+                "Add a new milestone to a project. Use when the user says "
+                "'add a milestone to project 2', 'create a checkpoint for the X project', "
+                "'add a deliverable to my website project'. "
+                "Call list_projects first if you need to find the project index."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_projects result",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Description of the milestone",
+                    },
+                },
+                "required": ["project_index", "text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "toggle_milestone",
+            "description": (
+                "Toggle a milestone on a project as done or undone. Use when the user says "
+                "'mark milestone 2 on project 1 done', 'I completed milestone 3 for the X project', "
+                "or 'undo milestone 1 on project 2'. "
+                "Call get_project first to see the milestone list and indices."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_projects result",
+                    },
+                    "milestone_index": {
+                        "type": "integer",
+                        "description": "1-based position of the milestone within the project",
+                    },
+                },
+                "required": ["project_index", "milestone_index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "link_goal",
+            "description": (
+                "Link a project to a goal. Use when the user says "
+                "'link project 2 to goal 1', 'connect the X project to my fitness goal', "
+                "or 'associate project 3 with goal 2'. "
+                "Call list_projects and list_goals first to find the indices."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_projects result",
+                    },
+                    "goal_index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_goals result",
+                    },
+                },
+                "required": ["project_index", "goal_index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "unlink_goal",
+            "description": (
+                "Unlink a project from its associated goal. Use when the user says "
+                "'unlink project 2 from its goal', 'remove the goal link from the X project', "
+                "or 'detach project 1 from goal'. "
+                "Call list_projects first if you need to find the project index."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_projects result",
+                    },
+                },
+                "required": ["project_index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_feature",
             "description": (
                 "Get full detail for a specific feature request or bug report. "
@@ -1060,6 +1266,45 @@ async def _call(name: str, arguments: dict, handler):
         return handler._get_goal_text(int(arguments["index"]))
     if name == "get_project":
         return handler._get_project_text(int(arguments["index"]))
+    if name == "update_goal_note":
+        return await handler._update_goal_note_text(
+            index=int(arguments["index"]),
+            note=arguments["note"],
+        )
+    if name == "update_goal_due":
+        return await handler._update_goal_due_text(
+            index=int(arguments["index"]),
+            due_date=arguments["due_date"],
+        )
+    if name == "update_project_note":
+        return await handler._update_project_note_text(
+            index=int(arguments["index"]),
+            note=arguments["note"],
+        )
+    if name == "update_project_due":
+        return await handler._update_project_due_text(
+            index=int(arguments["index"]),
+            due_date=arguments["due_date"],
+        )
+    if name == "add_milestone":
+        return await handler._add_milestone_text(
+            project_index=int(arguments["project_index"]),
+            text=arguments["text"],
+        )
+    if name == "toggle_milestone":
+        return await handler._toggle_milestone_text(
+            project_index=int(arguments["project_index"]),
+            milestone_index=int(arguments["milestone_index"]),
+        )
+    if name == "link_goal":
+        return await handler._link_goal_text(
+            project_index=int(arguments["project_index"]),
+            goal_index=int(arguments["goal_index"]),
+        )
+    if name == "unlink_goal":
+        return await handler._unlink_goal_text(
+            project_index=int(arguments["project_index"]),
+        )
     if name == "get_feature":
         return await handler._get_feature_text(str(arguments["index_or_id"]))
     if name == "update_feature":

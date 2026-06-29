@@ -342,6 +342,9 @@ def test_all_tool_names_in_dispatcher():
         "get_event", "get_meeting", "get_contact", "get_comm", "get_reading", "get_action",
         "run_action", "drop_action", "defer_action",
         "update_issue_priority",
+        "update_goal_note", "update_goal_due",
+        "update_project_note", "update_project_due",
+        "add_milestone", "toggle_milestone", "link_goal", "unlink_goal",
         # Handled in handle_message's tool_dispatch closure (needs chat_id in scope)
         "get_recent_commands",
     }
@@ -878,3 +881,144 @@ async def test_get_feature_dispatch_by_short_id(mock_handler):
 
     assert "Some bug" in result
     mock_handler._get_feature_text.assert_called_once_with("ab12cd")
+
+
+# --- goal/project field mutation tool tests ---
+
+def test_goal_project_mutation_tools_in_tools_list():
+    """All 8 new goal/project mutation tools are present in TOOLS."""
+    names = {t["function"]["name"] for t in chat_tools.TOOLS}
+    for expected in (
+        "update_goal_note", "update_goal_due",
+        "update_project_note", "update_project_due",
+        "add_milestone", "toggle_milestone", "link_goal", "unlink_goal",
+    ):
+        assert expected in names, f"{expected!r} missing from TOOLS"
+
+
+def test_goal_project_mutation_tools_in_mutating_set():
+    """All 8 new goal/project mutation tools are listed in MUTATING_TOOLS."""
+    for name in (
+        "update_goal_note", "update_goal_due",
+        "update_project_note", "update_project_due",
+        "add_milestone", "toggle_milestone", "link_goal", "unlink_goal",
+    ):
+        assert name in chat_tools.MUTATING_TOOLS, f"{name!r} missing from MUTATING_TOOLS"
+
+
+@pytest.mark.asyncio
+async def test_update_goal_note_dispatch(mock_handler):
+    """update_goal_note dispatches to _update_goal_note_text with index and note."""
+    mock_handler._update_goal_note_text = AsyncMock(return_value='Note added to "Run a 5K".')
+
+    result = await chat_tools.dispatch(
+        "update_goal_note", {"index": 1, "note": "Ran 3km today"}, mock_handler
+    )
+
+    assert "Note added" in result
+    mock_handler._update_goal_note_text.assert_called_once_with(index=1, note="Ran 3km today")
+
+
+@pytest.mark.asyncio
+async def test_update_goal_due_dispatch(mock_handler):
+    """update_goal_due dispatches to _update_goal_due_text with index and due_date."""
+    mock_handler._update_goal_due_text = AsyncMock(
+        return_value='Due date set to 2026-12-31 for "Run a 5K".'
+    )
+
+    result = await chat_tools.dispatch(
+        "update_goal_due", {"index": 1, "due_date": "2026-12-31"}, mock_handler
+    )
+
+    assert "2026-12-31" in result
+    mock_handler._update_goal_due_text.assert_called_once_with(index=1, due_date="2026-12-31")
+
+
+@pytest.mark.asyncio
+async def test_update_project_note_dispatch(mock_handler):
+    """update_project_note dispatches to _update_project_note_text with index and note."""
+    mock_handler._update_project_note_text = AsyncMock(
+        return_value='Note added to "Website redesign".'
+    )
+
+    result = await chat_tools.dispatch(
+        "update_project_note", {"index": 2, "note": "Finished mockups"}, mock_handler
+    )
+
+    assert "Note added" in result
+    mock_handler._update_project_note_text.assert_called_once_with(index=2, note="Finished mockups")
+
+
+@pytest.mark.asyncio
+async def test_update_project_due_dispatch(mock_handler):
+    """update_project_due dispatches to _update_project_due_text."""
+    mock_handler._update_project_due_text = AsyncMock(
+        return_value='Due date set to 2026-09-01 for "Website redesign".'
+    )
+
+    result = await chat_tools.dispatch(
+        "update_project_due", {"index": 2, "due_date": "2026-09-01"}, mock_handler
+    )
+
+    assert "2026-09-01" in result
+    mock_handler._update_project_due_text.assert_called_once_with(index=2, due_date="2026-09-01")
+
+
+@pytest.mark.asyncio
+async def test_add_milestone_dispatch(mock_handler):
+    """add_milestone dispatches to _add_milestone_text with project_index and text."""
+    mock_handler._add_milestone_text = AsyncMock(
+        return_value='Milestone added to "Website redesign": Launch landing page'
+    )
+
+    result = await chat_tools.dispatch(
+        "add_milestone", {"project_index": 2, "text": "Launch landing page"}, mock_handler
+    )
+
+    assert "Milestone added" in result
+    mock_handler._add_milestone_text.assert_called_once_with(
+        project_index=2, text="Launch landing page"
+    )
+
+
+@pytest.mark.asyncio
+async def test_toggle_milestone_dispatch(mock_handler):
+    """toggle_milestone dispatches to _toggle_milestone_text with both indices."""
+    mock_handler._toggle_milestone_text = AsyncMock(return_value="✓ Milestone marked done.")
+
+    result = await chat_tools.dispatch(
+        "toggle_milestone", {"project_index": 1, "milestone_index": 2}, mock_handler
+    )
+
+    assert "done" in result
+    mock_handler._toggle_milestone_text.assert_called_once_with(project_index=1, milestone_index=2)
+
+
+@pytest.mark.asyncio
+async def test_link_goal_dispatch(mock_handler):
+    """link_goal dispatches to _link_goal_text with project_index and goal_index."""
+    mock_handler._link_goal_text = AsyncMock(
+        return_value='Linked "Website redesign" to goal "Grow online presence".'
+    )
+
+    result = await chat_tools.dispatch(
+        "link_goal", {"project_index": 1, "goal_index": 3}, mock_handler
+    )
+
+    assert "Linked" in result
+    mock_handler._link_goal_text.assert_called_once_with(project_index=1, goal_index=3)
+
+
+@pytest.mark.asyncio
+async def test_unlink_goal_dispatch(mock_handler):
+    """unlink_goal dispatches to _unlink_goal_text with project_index."""
+    mock_handler._unlink_goal_text = AsyncMock(
+        return_value='Unlinked "Website redesign" from its goal.'
+    )
+
+    result = await chat_tools.dispatch(
+        "unlink_goal", {"project_index": 1}, mock_handler
+    )
+
+    assert "Unlinked" in result
+    mock_handler._unlink_goal_text.assert_called_once_with(project_index=1)
