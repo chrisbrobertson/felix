@@ -5862,19 +5862,29 @@ class TelegramChatHandler:
 
         if todos_only:
             all_notes = [(f, fm) for f, fm in all_notes if fm.get("has_todos")]
-        elif folder_filter:
+        if folder_filter:
             ff = folder_filter.lower()
             all_notes = [(f, fm) for f, fm in all_notes if ff in (fm.get("folder") or "").lower()]
 
         if not all_notes:
-            hint = " with todos" if todos_only else f" in folder '{folder_filter}'"
+            parts = []
+            if todos_only:
+                parts.append("with todos")
+            if folder_filter:
+                parts.append(f"in folder '{folder_filter}'")
+            hint = (" " + " and ".join(parts)) if parts else ""
             return f"No Apple Notes found{hint}."
 
         notes = all_notes[:limit]
         self._last_note_set = [f for f, _ in notes]
         self._active_list = self._last_note_set
 
-        filter_note = " (todos only)" if todos_only else (f" in '{folder_filter}'" if folder_filter else "")
+        filter_parts = []
+        if todos_only:
+            filter_parts.append("todos only")
+        if folder_filter:
+            filter_parts.append(f"in '{folder_filter}'")
+        filter_note = (" (" + ", ".join(filter_parts) + ")") if filter_parts else ""
         lines = [f"Apple Notes{filter_note} ({len(notes)} shown of {len(all_notes)}):"]
         for i, (_, fm) in enumerate(notes, 1):
             title = (fm.get("source_title") or "(no title)")[:50]

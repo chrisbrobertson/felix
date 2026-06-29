@@ -7341,3 +7341,31 @@ async def test_cmd_notes_todos_flag_not_treated_as_folder(handler, brain_dir):
 
     assert captured.get("todos_only") is True
     assert captured.get("folder_filter") is None
+
+
+@pytest.mark.asyncio
+async def test_list_notes_todos_and_folder_both_applied(handler, brain_dir):
+    """todos_only and folder_filter must both be applied; earlier elif caused folder to be ignored."""
+    import yaml
+    memories_dir = brain_dir / "memories"
+
+    def write_note(slug, folder, has_todos):
+        fm = {
+            "type": "apple_notes",
+            "source_title": f"Note {slug}",
+            "folder": folder,
+            "has_todos": has_todos,
+            "modified": "2026-04-20",
+        }
+        path = memories_dir / f"apple-notes-{slug}.md"
+        path.write_text(f"---\n{yaml.dump(fm, sort_keys=False)}---\n\nContent.\n")
+
+    write_note("work-todo", "Work", True)    # should appear
+    write_note("work-plain", "Work", False)  # filtered out by todos_only
+    write_note("home-todo", "Home", True)    # filtered out by folder_filter
+
+    result = await handler._list_notes_text(todos_only=True, folder_filter="Work")
+
+    assert "Note work-todo" in result
+    assert "Note work-plain" not in result
+    assert "Note home-todo" not in result
