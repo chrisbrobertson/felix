@@ -5867,6 +5867,8 @@ class TelegramChatHandler:
             all_notes = [(f, fm) for f, fm in all_notes if ff in (fm.get("folder") or "").lower()]
 
         if not all_notes:
+            self._last_note_set = []
+            self._active_list = []
             parts = []
             if todos_only:
                 parts.append("with todos")

@@ -89,6 +89,13 @@ async def test_all_loops_exit_cleanly_on_stop_event(daemon_dirs, monkeypatch):
     deploy = daemon_dirs["deploy"]
     brain = daemon_dirs["brain"]
 
+    # ── Prevent real Keychain subprocess calls (Slack/Zoom/etc credential lookup) ──
+    # slack_scanner and zoom_scanner call get_secret_or_env before the while loop,
+    # so a pre-set stop_event does not prevent the Keychain subprocess from running.
+    # Patching secrets.get_secret to return None avoids 5s-per-item timeouts.
+    import secrets as secrets_mod
+    monkeypatch.setattr(secrets_mod, "get_secret", lambda *_: None)
+
     # ── BrowserWatcher: constructor calls SkillExecutor and _load_seen_urls ──
     monkeypatch.setattr("browser_watcher.SkillExecutor", MagicMock(return_value=MagicMock()))
     monkeypatch.setattr("browser_watcher.SEEN_URLS_FILE", deploy / "seen-urls")

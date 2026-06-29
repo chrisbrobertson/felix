@@ -7404,3 +7404,39 @@ async def test_list_notes_todos_and_folder_both_applied(handler, brain_dir):
     assert "Note work-todo" in result
     assert "Note work-plain" not in result
     assert "Note home-todo" not in result
+
+
+@pytest.mark.asyncio
+async def test_list_notes_empty_filter_clears_index(handler, brain_dir):
+    """list_notes with a filter that returns no results must clear _last_note_set.
+
+    Without this, get_note after a failed filter would return a stale note
+    from the previous list call instead of "No notes listed yet."
+    """
+    import yaml
+    memories_dir = brain_dir / "memories"
+
+    fm = {
+        "type": "apple_notes",
+        "source_title": "My Note",
+        "folder": "Work",
+        "has_todos": False,
+        "modified": "2026-04-20",
+    }
+    (memories_dir / "apple-notes-my-note.md").write_text(
+        f"---\n{yaml.dump(fm, sort_keys=False)}---\n\nContent.\n"
+    )
+
+    # Populate the index with one note
+    result = await handler._list_notes_text()
+    assert "My Note" in result
+    assert len(handler._last_note_set) == 1
+
+    # Filter that matches nothing — index must be cleared
+    result2 = await handler._list_notes_text(folder_filter="Nonexistent")
+    assert "No Apple Notes found" in result2
+    assert handler._last_note_set == []
+
+    # get_note must now return the "no notes listed" guard, not the stale note
+    detail = await handler._get_note_text(1)
+    assert "No notes listed" in detail
