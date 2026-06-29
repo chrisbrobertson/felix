@@ -6635,6 +6635,41 @@ async def test_cmd_aichat_list_groups_by_platform(handler, brain_dir):
 
 
 @pytest.mark.asyncio
+async def test_cmd_aichat_list_shows_most_recent_across_platforms(handler, brain_dir):
+    """List mode must show the 20 most-recent conversations, not the 20 from the
+    alphabetically earliest platform.
+
+    Regression: sorted_mems was built from ALL memories sorted by platform, so
+    :20 sliced the first 20 alphabetically by platform rather than by recency.
+    """
+    h = handler
+    memories_dir = brain_dir / "memories"
+
+    # Write 25 claude chats (alphabetically before chatgpt? no — 'c' = same letter)
+    # Use "aardvark" platform (alphabetically first) with old timestamps.
+    for i in range(22):
+        write_llm_chat_memory(
+            memories_dir, "aardvark", f"Aardvark chat {i}",
+            f"2024-01-{i+1:02d}T10:00:00", f"aardvark-{i}", f"aa{i:04d}",
+        )
+    # Write 3 newer chats on a later-alphabetical platform
+    write_llm_chat_memory(memories_dir, "zzz", "ZZZ newest 1", "2026-04-22T10:00:00", "zzz1", "zz0001")
+    write_llm_chat_memory(memories_dir, "zzz", "ZZZ newest 2", "2026-04-21T10:00:00", "zzz2", "zz0002")
+    write_llm_chat_memory(memories_dir, "zzz", "ZZZ newest 3", "2026-04-20T10:00:00", "zzz3", "zz0003")
+
+    update, context = _make_update(12345, args=[])
+    await h.cmd_aichat(update, context)
+    text = update.message.reply_text.call_args[0][0]
+
+    # The 3 most-recent chats are zzz — they must appear in the list
+    assert "ZZZ newest 1" in text
+    assert "ZZZ newest 2" in text
+    assert "ZZZ newest 3" in text
+    # Very old aardvark chats should not crowd out the zzz entries
+    assert "Aardvark chat 0" not in text
+
+
+@pytest.mark.asyncio
 async def test_cmd_aichat_detail_shows_summary(handler, brain_dir):
     """Detail mode shows full summary and topics."""
     h = handler

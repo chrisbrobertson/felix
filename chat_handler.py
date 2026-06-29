@@ -6741,16 +6741,18 @@ class TelegramChatHandler:
 
         args = list(context.args) if context.args else []
         memories = await self._llm_chat_memories()
-        # Sort by platform so detail-mode index N matches position N in the grouped list.
-        sorted_mems = sorted(memories, key=lambda m: m["platform"])
+        # Slice to the 20 most recent first, then sort by platform for grouped display.
+        # Slicing before sorting ensures the list shows the 20 newest conversations
+        # rather than the 20 from the alphabetically earliest platform.
+        sorted_mems = sorted(memories[:20], key=lambda m: m["platform"])
 
-        # Search mode: /aichat search <query>
+        # Search mode: /aichat search <query> — searches all memories, not just top 20
         if args and args[0].lower() == "search":
             query = " ".join(args[1:]).lower()
             if not query:
                 await update.message.reply_text("Usage: /aichat search <query>")
                 return
-            filtered = [m for m in sorted_mems if query in m["header"].lower()]
+            filtered = [m for m in memories if query in m["header"].lower()]
             await update.message.reply_text(self._format_aichat_list(filtered[:20]))
             return
 
@@ -6764,7 +6766,7 @@ class TelegramChatHandler:
             return
 
         # List mode (default): /aichat
-        await update.message.reply_text(self._format_aichat_list_grouped(sorted_mems[:20]))
+        await update.message.reply_text(self._format_aichat_list_grouped(sorted_mems))
 
     # ── Notification commands ─────────────────────────────────────────────────
 
