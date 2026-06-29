@@ -2042,14 +2042,18 @@ class TelegramChatHandler:
                 return f"Index {index} out of range (1-{len(self._last_feature_set)})."
             path = self._last_feature_set[index - 1]
         except ValueError:
-            # Try short_id or GitHub issue number
+            # Try short_id or GitHub issue number via cache
             id_str = index_or_id.lstrip("#")
-            features = list(MEMORIES_DIR.glob("feature-request-*.md"))
-            hits = [
-                f for f in features
-                if self._parse_frontmatter(f).get("short_id") == id_str
-                or str(self._parse_frontmatter(f).get("github_issue_number")) == id_str
-            ]
+            memories_dir = BRAIN_DIR / "memories"
+            rows = await self._cache.query_by_prefix("feature-request-")
+            hits = []
+            for row in rows:
+                try:
+                    fm = json.loads(row.get("frontmatter") or "{}")
+                except Exception:
+                    fm = {}
+                if fm.get("short_id") == id_str or str(fm.get("github_issue_number")) == id_str:
+                    hits.append(memories_dir / row["filename"])
             if not hits:
                 return f"No feature/bug found with ID '{index_or_id}'."
             path = hits[0]
@@ -2073,38 +2077,70 @@ class TelegramChatHandler:
         return "\n".join(lines)
 
     async def _update_feature_text(
-        self, short_id: str = None, title: str = None, priority: str = None, status: str = None
+        self, index_or_id: str, action: str, note_or_priority: str = None
     ) -> str:
-        """Update priority or status of a feature/bug. Used by update_feature tool."""
-        if not short_id and not title:
-            return "Error: provide either short_id or title."
-        features = list(MEMORIES_DIR.glob("feature-request-*.md"))
-        if short_id:
-            hits = [f for f in features if self._parse_frontmatter(f).get("short_id") == short_id]
-        else:
-            hits = [
-                f for f in features
-                if title.lower() in (self._parse_frontmatter(f).get("title") or "").lower()
-            ]
-        if not hits:
-            return f"No feature/bug found matching '{short_id or title}'."
-        if len(hits) > 1:
-            return f"Multiple matches — be more specific. Found {len(hits)} items."
-        path = hits[0]
-        fm = self._parse_frontmatter(path)
-        if priority:
-            fm["priority"] = priority
-        if status:
-            fm["status"] = status
-        import yaml
-        content = path.read_text()
-        body_start = content.find("---\n\n") + 5 if "---\n\n" in content else 0
-        body = content[body_start:]
-        new_content = f"---\n{yaml.dump(fm, sort_keys=False, allow_unicode=True)}---\n\n{body}"
-        path.write_text(new_content)
-        return f"Updated [{fm.get('short_id')}] {fm.get('title')}: status={fm.get('status')}, priority={fm.get('priority')}"
+        """Update a feature/bug status, priority, or add a note. Called by update_feature tool."""
+        target = await self._resolve_feature_index([index_or_id], None)
+        if target is None:
+            return f"Feature '{index_or_id}' not found. Use list_features to browse."
 
-    async def _get_event_text(self, index: int) -> str:
+        action = action.lower().replace("-", "_")
+        valid_actions = ("plan", "start", "done", "wont_do", "priority", "note")
+        if action not in valid_actions:
+            return f"Invalid action '{action}'. Use one of: {', '.join(valid_actions)}"
+
+        if isinstance(target, int):
+            # GitHub-backed issue
+            if action == "plan":
+                await self._gh_set_status(target, "planned")
+            elif action == "start":
+                await self._gh_set_status(target, "in-progress")
+            elif action == "done":
+                await self._gh_set_status(target, "done")
+                if note_or_priority:
+                    await self.github.add_comment(target, note_or_priority)
+            elif action == "wont_do":
+                await self._gh_set_status(target, "wont-do")
+                if note_or_priority:
+                    await self.github.add_comment(target, f"Won't do: {note_or_priority}")
+            elif action == "priority":
+                if not note_or_priority or note_or_priority not in ("low", "medium", "high", "critical"):
+                    return "Priority must be one of: low, medium, high, critical"
+                await self._gh_set_priority(target, note_or_priority)
+            elif action == "note":
+                if not note_or_priority:
+                    return "Note text is required."
+                await self.github.add_comment(target, note_or_priority)
+            await self._rewrite_features_index_snapshot()
+            title = await self._gh_title(target)
+            return f"Feature '{title[:60]}' updated: {action}."
+        else:
+            # Local file
+            fm = self._parse_frontmatter(target)
+            title = fm.get("title", "?")[:60]
+            if action == "plan":
+                self._rewrite_feature_frontmatter(target, {"status": "planned"})
+            elif action == "start":
+                self._rewrite_feature_frontmatter(target, {"status": "in-progress"})
+            elif action == "done":
+                self._rewrite_feature_frontmatter(target, {"status": "done"})
+                if note_or_priority:
+                    self._append_feature_note(target, note_or_priority)
+            elif action == "wont_do":
+                self._rewrite_feature_frontmatter(target, {"status": "wont-do"})
+                if note_or_priority:
+                    self._append_feature_note(target, f"Won't do: {note_or_priority}")
+            elif action == "priority":
+                if not note_or_priority or note_or_priority not in ("low", "medium", "high", "critical"):
+                    return "Priority must be one of: low, medium, high, critical"
+                self._rewrite_feature_frontmatter(target, {"priority": note_or_priority})
+            elif action == "note":
+                if not note_or_priority:
+                    return "Note text is required."
+                self._append_feature_note(target, note_or_priority)
+            return f"Feature '{title}' updated: {action}."
+
+    def _get_event_text(self, index: int) -> str:
         """Get full detail for a calendar event by list index. Used by get_event tool."""
         if not self._last_event_set:
             return "No events listed yet. Call list_events first."
@@ -2128,7 +2164,7 @@ class TelegramChatHandler:
             lines.append(f"\n{summary}")
         return "\n".join(lines)
 
-    async def _get_meeting_text(self, index: int) -> str:
+    def _get_meeting_text(self, index: int) -> str:
         """Get full detail for a meeting transcript by list index. Used by get_meeting tool."""
         if not self._last_meeting_set:
             return "No meetings listed yet. Call list_meetings first."
@@ -2149,29 +2185,68 @@ class TelegramChatHandler:
             lines.append(f"\n{summary[:500]}")
         return "\n".join(lines)
 
-    async def _get_contact_text(self, index: int) -> str:
-        """Get full detail for a contact by list index. Used by get_contact tool."""
-        if not self._last_contact_set:
-            return "No contacts listed yet. Call list_contacts first."
-        if index < 1 or index > len(self._last_contact_set):
-            return f"Index {index} out of range (1-{len(self._last_contact_set)})."
-        path = self._last_contact_set[index - 1]
-        fm = self._parse_frontmatter(path)
-        name = fm.get("name", path.stem)
-        email = fm.get("email", "none")
+    async def _get_contact_text(self, name_or_n: str) -> str:
+        """Return formatted contact detail by index or name. Called by get_contact tool."""
+        path = self._resolve_contact_index(name_or_n)
+        if path:
+            fm = self._parse_frontmatter(path)
+        else:
+            if not self._last_contact_set:
+                self._list_contacts_text()
+            path, fm = self._find_contact_by_name(name_or_n)
+            if not path:
+                return f"No contact found for '{name_or_n}'. Use list_contacts to browse."
+
+        name = fm.get("name", "(no name)")
+        emails = fm.get("emails", [])
+        email_str = ", ".join(emails) if emails else "no email"
         score = fm.get("relationship_score", 0.0)
-        interactions = fm.get("interaction_count", 0)
-        last_contact = fm.get("last_contact_date", "unknown")
+        interaction_count = fm.get("interaction_count", 0)
         lines = [
-            f"**{name}**",
-            f"Email: {email}",
-            f"Relationship score: {score:.2f}",
-            f"Interactions: {interactions}",
-            f"Last contact: {last_contact}",
+            f"{name} ({email_str})",
+            f"Relationship score: {score} | {interaction_count} interactions",
+            "",
         ]
+
+        open_commitments = []
+        commit_rows = await self._cache.query_by_prefix("commitment-")
+        for row in commit_rows:
+            try:
+                cfm = json.loads(row.get("frontmatter") or "{}")
+            except Exception:
+                cfm = {}
+            if cfm.get("status") != "active":
+                continue
+            owner = cfm.get("owner", "")
+            recipient = cfm.get("recipient", "")
+            owner_email = cfm.get("owner_email", "")
+            if name in (owner, recipient) or (emails and owner_email in emails):
+                open_commitments.append(cfm)
+
+        if open_commitments:
+            lines.append("Open commitments:")
+            for cfm in open_commitments[:5]:
+                ct = cfm.get("commitment_type", "outbound")
+                desc = (cfm.get("source_title") or "")[:60]
+                due = cfm.get("due_date")
+                due_str = f"due {due}" if due else "due unknown"
+                direction = "outbound" if ct == "outbound" else "waiting_on"
+                lines.append(f"• [{direction}] {desc} — {due_str}")
+            lines.append("")
+
+        try:
+            content = path.read_text()
+            m = re.search(r'## Recent Interactions\n\n(.*?)(?=\n\n##|\Z)', content, re.DOTALL)
+            if m:
+                summary = m.group(1).strip()[:400]
+                lines.append("Summary:")
+                lines.append(summary)
+        except Exception:
+            pass
+
         return "\n".join(lines)
 
-    async def _get_comm_text(self, index: int) -> str:
+    def _get_comm_text(self, index: int) -> str:
         """Get full detail for an email/Slack thread by list index. Used by get_comm tool."""
         if not self._last_comms_set:
             return "No comms listed yet. Call list_comms first."
@@ -2193,7 +2268,7 @@ class TelegramChatHandler:
             lines.append(f"\n{summary[:500]}")
         return "\n".join(lines)
 
-    async def _get_reading_text(self, index: int) -> str:
+    def _get_reading_text(self, index: int) -> str:
         """Get full detail for a web page capture by list index. Used by get_reading tool."""
         if not self._last_readings_set:
             return "No readings listed yet. Call list_readings first."
@@ -2219,7 +2294,7 @@ class TelegramChatHandler:
             lines.append(f"\nTags: {', '.join(tags[:10])}")
         return "\n".join(lines)
 
-    async def _get_action_text(self, index: int) -> str:
+    def _get_action_text(self, index: int) -> str:
         """Get full detail for an agent-proposed action by list index. Used by get_action tool."""
         if not self._last_actions_set:
             return "No actions listed yet. Call list_actions first."

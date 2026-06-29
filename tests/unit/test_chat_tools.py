@@ -22,6 +22,13 @@ def mock_handler():
     h._search_memories_text = AsyncMock(return_value="search result")
     h._get_memory_text = AsyncMock(return_value="memory content")
     h._list_commands_text.return_value = "commands text"
+    h._get_event_text.return_value = "event detail"
+    h._get_meeting_text.return_value = "meeting detail"
+    h._get_contact_text = AsyncMock(return_value="contact detail")
+    h._get_comm_text.return_value = "comm detail"
+    h._get_reading_text.return_value = "reading detail"
+    h._get_action_text.return_value = "action detail"
+    h._update_feature_text = AsyncMock(return_value="feature updated")
     return h
 
 
@@ -204,6 +211,82 @@ async def test_add_feature_empty_description(mock_handler, tmp_path, monkeypatch
     assert "Error" in result
     memories_dir = tmp_path / "memories"
     assert not memories_dir.exists() or not list(memories_dir.glob("*.md"))
+
+
+async def test_dispatch_get_event(mock_handler):
+    result = await chat_tools.dispatch("get_event", {"index": 2}, mock_handler)
+    assert result == "event detail"
+    mock_handler._get_event_text.assert_called_once_with(2)
+
+
+async def test_dispatch_get_meeting(mock_handler):
+    result = await chat_tools.dispatch("get_meeting", {"index": 1}, mock_handler)
+    assert result == "meeting detail"
+    mock_handler._get_meeting_text.assert_called_once_with(1)
+
+
+async def test_dispatch_get_contact(mock_handler):
+    result = await chat_tools.dispatch("get_contact", {"name_or_index": "Alice"}, mock_handler)
+    assert result == "contact detail"
+    mock_handler._get_contact_text.assert_called_once_with("Alice")
+
+
+async def test_dispatch_get_contact_by_index(mock_handler):
+    result = await chat_tools.dispatch("get_contact", {"name_or_index": "3"}, mock_handler)
+    assert result == "contact detail"
+    mock_handler._get_contact_text.assert_called_once_with("3")
+
+
+async def test_dispatch_get_comm(mock_handler):
+    result = await chat_tools.dispatch("get_comm", {"index": 4}, mock_handler)
+    assert result == "comm detail"
+    mock_handler._get_comm_text.assert_called_once_with(4)
+
+
+async def test_dispatch_get_reading(mock_handler):
+    result = await chat_tools.dispatch("get_reading", {"index": 1}, mock_handler)
+    assert result == "reading detail"
+    mock_handler._get_reading_text.assert_called_once_with(1)
+
+
+async def test_dispatch_get_action(mock_handler):
+    result = await chat_tools.dispatch("get_action", {"index": 2}, mock_handler)
+    assert result == "action detail"
+    mock_handler._get_action_text.assert_called_once_with(2)
+
+
+async def test_dispatch_update_feature_plan(mock_handler):
+    result = await chat_tools.dispatch(
+        "update_feature", {"index_or_id": "3", "action": "plan"}, mock_handler
+    )
+    assert result == "feature updated"
+    mock_handler._update_feature_text.assert_called_once_with(
+        index_or_id="3", action="plan", note_or_priority=None
+    )
+
+
+async def test_dispatch_update_feature_done_with_note(mock_handler):
+    result = await chat_tools.dispatch(
+        "update_feature", {"index_or_id": "abc123", "action": "done", "note_or_priority": "Shipped"}, mock_handler
+    )
+    assert result == "feature updated"
+    mock_handler._update_feature_text.assert_called_once_with(
+        index_or_id="abc123", action="done", note_or_priority="Shipped"
+    )
+
+
+async def test_dispatch_update_feature_priority(mock_handler):
+    result = await chat_tools.dispatch(
+        "update_feature", {"index_or_id": "2", "action": "priority", "note_or_priority": "high"}, mock_handler
+    )
+    assert result == "feature updated"
+    mock_handler._update_feature_text.assert_called_once_with(
+        index_or_id="2", action="priority", note_or_priority="high"
+    )
+
+
+async def test_update_feature_in_mutating_tools():
+    assert "update_feature" in chat_tools.MUTATING_TOOLS
 
 
 def test_all_tool_names_in_dispatcher():

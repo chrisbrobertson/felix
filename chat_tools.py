@@ -18,7 +18,7 @@ MEMORIES_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/secon
 # it can warn the user rather than silently suggest they retry.
 MUTATING_TOOLS: frozenset[str] = frozenset(
     {"add_goal", "add_project", "add_bug", "add_feature", "close_issue", "close_commitment",
-     "close_goal", "close_project", "deliver_pending_replies", "add_todo"}
+     "close_goal", "close_project", "deliver_pending_replies", "add_todo", "update_feature"}
 )
 
 TOOLS: list[dict] = [
@@ -614,32 +614,30 @@ TOOLS: list[dict] = [
         "function": {
             "name": "update_feature",
             "description": (
-                "Update the priority or status of a feature request or bug. "
-                "Useful when the user wants to change metadata without closing the issue. "
-                "Provide either short_id or title substring to identify the target."
+                "Update a feature request or bug report's status, priority, or add a note. "
+                "Actions: 'plan' (mark as planned), 'start' (mark in-progress), "
+                "'done' (close as completed), 'wont_do' (close as won't do), "
+                "'priority' (update priority), 'note' (append a note). "
+                "Accepts a 1-based index, GitHub issue number, or 6-char short_id."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "short_id": {
+                    "index_or_id": {
                         "type": "string",
-                        "description": "6-character hash ID shown in /features or /bugs listings",
+                        "description": "List index, GitHub issue number (e.g. '42' or '#42'), or 6-char short_id",
                     },
-                    "title": {
+                    "action": {
                         "type": "string",
-                        "description": "Partial title to search for when short_id is unknown",
+                        "enum": ["plan", "start", "done", "wont_do", "priority", "note"],
+                        "description": "Action to perform on the feature/bug",
                     },
-                    "priority": {
+                    "note_or_priority": {
                         "type": "string",
-                        "description": "New priority level",
-                        "enum": ["low", "medium", "high", "critical"],
-                    },
-                    "status": {
-                        "type": "string",
-                        "description": "New status",
-                        "enum": ["new", "in_progress", "blocked", "done", "wont_do"],
+                        "description": "For 'note': the note text. For 'priority': low/medium/high/critical. For 'done'/'wont_do': optional closing note.",
                     },
                 },
+                "required": ["index_or_id", "action"],
             },
         },
     },
@@ -690,19 +688,19 @@ TOOLS: list[dict] = [
         "function": {
             "name": "get_contact",
             "description": (
-                "Get full detail for a specific contact by their list index. "
-                "Call list_contacts first to get the numbered list, then use get_contact "
-                "with the index number to see email, relationship score, and recent interactions."
+                "Get full detail for a contact by 1-based index or by name substring. "
+                "Returns name, email, relationship score, open commitments, and recent interaction summary. "
+                "Auto-loads the contact list if needed."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "index": {
-                        "type": "integer",
-                        "description": "1-based position from the last list_contacts result",
+                    "name_or_index": {
+                        "type": "string",
+                        "description": "Contact name (or substring) or 1-based index from list_contacts",
                     },
                 },
-                "required": ["index"],
+                "required": ["name_or_index"],
             },
         },
     },
@@ -958,23 +956,22 @@ async def _call(name: str, arguments: dict, handler):
         return await handler._get_feature_text(str(arguments["index_or_id"]))
     if name == "update_feature":
         return await handler._update_feature_text(
-            short_id=arguments.get("short_id"),
-            title=arguments.get("title"),
-            priority=arguments.get("priority"),
-            status=arguments.get("status"),
+            index_or_id=str(arguments["index_or_id"]),
+            action=str(arguments["action"]),
+            note_or_priority=arguments.get("note_or_priority"),
         )
     if name == "get_event":
-        return await handler._get_event_text(int(arguments["index"]))
+        return handler._get_event_text(int(arguments["index"]))
     if name == "get_meeting":
-        return await handler._get_meeting_text(int(arguments["index"]))
+        return handler._get_meeting_text(int(arguments["index"]))
     if name == "get_contact":
-        return await handler._get_contact_text(int(arguments["index"]))
+        return await handler._get_contact_text(str(arguments["name_or_index"]))
     if name == "get_comm":
-        return await handler._get_comm_text(int(arguments["index"]))
+        return handler._get_comm_text(int(arguments["index"]))
     if name == "get_reading":
-        return await handler._get_reading_text(int(arguments["index"]))
+        return handler._get_reading_text(int(arguments["index"]))
     if name == "get_action":
-        return await handler._get_action_text(int(arguments["index"]))
+        return handler._get_action_text(int(arguments["index"]))
     if name in ("add_feature", "add_bug"):
         import hashlib, os, re, yaml
         from datetime import datetime
