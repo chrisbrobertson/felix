@@ -1372,6 +1372,7 @@ class TelegramChatHandler:
         "event":      {"calendar_event"},
         "contact":    {"contact"},
         "web":        {None},
+        "llm_chat":   {"llm_chat"},
     }
 
     # Display order for grouped search results
@@ -1427,6 +1428,11 @@ class TelegramChatHandler:
             title = (fm.get("source_title") or "Untitled")[:45]
             start = str(fm.get("start_time") or fm.get("created") or "")[:10]
             return f"  {i}. {title} · {start}"
+        if mem_type == "llm_chat":
+            title = (fm.get("source_title") or "(no title)")[:45]
+            platform = fm.get("platform", "unknown")
+            date = str(fm.get("created") or "")[:10]
+            return f"  {i}. [{platform}] {title} · {date}"
         # Web memory / default
         title = (fm.get("source_title") or "(no title)")[:55]
         date = str(fm.get("created") or "")[:10]
@@ -1440,7 +1446,7 @@ class TelegramChatHandler:
         if type_filter:
             filter_set = self._SEARCH_TYPE_FILTERS.get(type_filter.lower())
             if filter_set is None:
-                return f"Unknown type filter: {type_filter!r}. Valid types: email, slack, meeting, project, commitment, event, contact, web"
+                return f"Unknown type filter: {type_filter!r}. Valid types: email, slack, meeting, project, commitment, event, contact, web, llm_chat"
 
         memories_dir = BRAIN_DIR / "memories"
         # cache.score_keywords mirrors _score_relevance against the cached

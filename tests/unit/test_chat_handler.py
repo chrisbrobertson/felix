@@ -6753,6 +6753,35 @@ async def test_search_memories_tool_accepts_llm_chat_type(handler, brain_dir):
 
 
 @pytest.mark.asyncio
+async def test_search_memories_llm_chat_type_filter_returns_results(handler, brain_dir):
+    """search_memories with type=llm_chat returns llm_chat memories, not an error.
+
+    Regression: _SEARCH_TYPE_FILTERS had no llm_chat key, so any search with
+    type=llm_chat (as directed by skills/chat.md) returned 'Unknown type filter'.
+    """
+    memories_dir = brain_dir / "memories"
+    write_llm_chat_memory(
+        memories_dir, "claude", "Python decorators deep dive",
+        "2026-04-20T10:00:00", "py-dec", "aaa111",
+    )
+    write_llm_chat_memory(
+        memories_dir, "chatgpt", "Docker networking guide",
+        "2026-04-19T10:00:00", "docker", "bbb222",
+    )
+    # Also add a non-llm_chat memory that shares the keyword
+    _write_typed_memory(memories_dir, "email-py", "Python email thread", "email_thread")
+
+    result = await handler._search_memories_text("python", type_filter="llm_chat")
+
+    assert "Unknown type filter" not in result, "llm_chat must be a supported type filter"
+    assert "Python decorators" in result, "matching llm_chat memory must appear in results"
+    assert "Docker" not in result, "non-matching llm_chat memory must be excluded"
+    assert "email" not in result.lower() or "Python decorators" in result, \
+        "email_thread memories must be excluded by the type filter"
+    assert "[claude]" in result, "platform label must appear in llm_chat search results"
+
+
+@pytest.mark.asyncio
 async def test_command_registry_includes_aichat(handler):
     """Registry-completeness test passes for aichat."""
     # This is covered by the existing test_registry_completeness test which
