@@ -6711,7 +6711,9 @@ class TelegramChatHandler:
     async def _list_aichat_text(self, limit: int = 20) -> str:
         """Return formatted list of imported LLM chat memories. Used by list_aichat tool."""
         memories = await self._llm_chat_memories()
-        self._last_aichat_memories = memories[:limit]
+        # Sort by platform so _last_aichat_memories index N matches position N in the
+        # grouped display (_format_aichat_list_grouped iterates sorted platform keys).
+        self._last_aichat_memories = sorted(memories[:limit], key=lambda m: m["platform"])
         return self._format_aichat_list_grouped(self._last_aichat_memories)
 
     async def _get_aichat_text(self, index: int) -> str:
@@ -6729,6 +6731,8 @@ class TelegramChatHandler:
 
         args = list(context.args) if context.args else []
         memories = await self._llm_chat_memories()
+        # Sort by platform so detail-mode index N matches position N in the grouped list.
+        sorted_mems = sorted(memories, key=lambda m: m["platform"])
 
         # Search mode: /aichat search <query>
         if args and args[0].lower() == "search":
@@ -6736,21 +6740,21 @@ class TelegramChatHandler:
             if not query:
                 await update.message.reply_text("Usage: /aichat search <query>")
                 return
-            filtered = [m for m in memories if query in m["header"].lower()]
+            filtered = [m for m in sorted_mems if query in m["header"].lower()]
             await update.message.reply_text(self._format_aichat_list(filtered[:20]))
             return
 
         # Detail mode: /aichat <N>
         if args and args[0].isdigit():
             idx = int(args[0]) - 1
-            if not (0 <= idx < len(memories)):
+            if not (0 <= idx < len(sorted_mems)):
                 await update.message.reply_text("No such entry.")
                 return
-            await update.message.reply_text(self._format_aichat_detail(memories[idx]))
+            await update.message.reply_text(self._format_aichat_detail(sorted_mems[idx]))
             return
 
         # List mode (default): /aichat
-        await update.message.reply_text(self._format_aichat_list_grouped(memories[:20]))
+        await update.message.reply_text(self._format_aichat_list_grouped(sorted_mems[:20]))
 
     # ── Notification commands ─────────────────────────────────────────────────
 

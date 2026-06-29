@@ -6731,6 +6731,32 @@ async def test_command_registry_includes_aichat(handler):
     assert "aichat" in all_in_registry
 
 
+@pytest.mark.asyncio
+async def test_get_aichat_index_matches_grouped_display_order(handler, brain_dir):
+    """get_aichat(N) must return the conversation shown at position N in the grouped list.
+
+    Regression: _last_aichat_memories was stored in recency order but the grouped
+    list displays them platform-sorted, so index N retrieved the wrong conversation.
+    """
+    h = handler
+    memories_dir = brain_dir / "memories"
+    # Recency order: chatgpt-newest > claude-middle > chatgpt-oldest.
+    # Grouped display (platform-sorted): chatgpt[1,2] then claude[3].
+    write_llm_chat_memory(memories_dir, "chatgpt", "Chatgpt newest", "2026-04-22T10:00:00", "cgpt-new", "aaa111")
+    write_llm_chat_memory(memories_dir, "claude", "Claude middle", "2026-04-21T10:00:00", "cla-mid", "bbb222")
+    write_llm_chat_memory(memories_dir, "chatgpt", "Chatgpt oldest", "2026-04-20T10:00:00", "cgpt-old", "ccc333")
+
+    await h._list_aichat_text()
+
+    # Position 3 in grouped display is the Claude entry (third platform group)
+    detail_3 = await h._get_aichat_text(3)
+    assert "Claude middle" in detail_3, f"Expected Claude middle at index 3, got: {detail_3}"
+
+    # Position 2 is the second chatgpt entry (oldest chatgpt by recency)
+    detail_2 = await h._get_aichat_text(2)
+    assert "Chatgpt oldest" in detail_2, f"Expected Chatgpt oldest at index 2, got: {detail_2}"
+
+
 # --- _list_projects_text (tool dispatch) ---
 
 def _write_project_file(memories_dir: Path, slug: str, title: str,
