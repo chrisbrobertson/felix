@@ -13,6 +13,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 - **`_get_action_text` used `_last_actions_set`** (never initialized, always empty) instead of `_last_action_set` — `get_action` LLM tool always returned "No actions listed" even after `list_actions`. Fixed variable name and added tuple unpacking (`path, _ = ...`) since `_last_action_set` stores `(path, fm)` pairs. Added regression test `test_get_action_tool_returns_detail`.
 - **`seed.action()` in integration tests** used `type: action` instead of `type: agent_action`, causing `_load_action_set`'s type filter to silently exclude every seeded action — all action smoke tests passed vacuously. Fixed type and added missing `target` field; upgraded smoke tests to assert reply content.
+- **`_list_notes_text` empty-corpus early return left stale `_last_note_set`** — when the notes database contained no files at all, the early-return path skipped clearing the index, so a subsequent `get_note(N)` would return a stale note from the previous list instead of the "no notes listed" guard. Fixed by clearing `_last_note_set` and `_active_list` before returning. Added `test_list_notes_empty_corpus_clears_index` regression test.
+- **`skills/chat.md` directed platform-specific AI chat queries to `list_aichat`** — the guidance said to use `list_aichat` for "show me my Claude conversations", but `list_aichat` has no platform filter and can omit minority-platform chats when the limit fills with others. Updated guidance to use `search_memories with type=llm_chat` for platform-specific requests; reserve `list_aichat` for general browsing.
 
 ## [1.19.0] — 2026-06-29
 

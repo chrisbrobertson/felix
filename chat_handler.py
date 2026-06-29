@@ -5856,6 +5856,8 @@ class TelegramChatHandler:
             all_notes.append((memories_dir / row["filename"], fm))
 
         if not all_notes:
+            self._last_note_set = []
+            self._active_list = []
             return "No Apple Notes found. The notes scanner may not have run yet."
 
         all_notes.sort(key=lambda x: x[1].get("modified") or "", reverse=True)

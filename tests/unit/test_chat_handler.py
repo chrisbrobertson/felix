@@ -7440,3 +7440,41 @@ async def test_list_notes_empty_filter_clears_index(handler, brain_dir):
     # get_note must now return the "no notes listed" guard, not the stale note
     detail = await handler._get_note_text(1)
     assert "No notes listed" in detail
+
+
+@pytest.mark.asyncio
+async def test_list_notes_empty_corpus_clears_index(handler, brain_dir):
+    """list_notes with an empty notes corpus must clear _last_note_set.
+
+    The early-return path (all_notes is empty before any filtering) previously
+    skipped the index-clear, so a stale previous list could drive get_note.
+    """
+    import yaml
+    memories_dir = brain_dir / "memories"
+
+    fm = {
+        "type": "apple_notes",
+        "source_title": "My Note",
+        "folder": "Work",
+        "has_todos": False,
+        "modified": "2026-04-20",
+    }
+    (memories_dir / "apple-notes-my-note.md").write_text(
+        f"---\n{yaml.dump(fm, sort_keys=False)}---\n\nContent.\n"
+    )
+
+    # Populate the index with one note
+    result = await handler._list_notes_text()
+    assert "My Note" in result
+    assert len(handler._last_note_set) == 1
+
+    # Remove the note file; pass-through mode reads the filesystem on each call
+    (memories_dir / "apple-notes-my-note.md").unlink()
+
+    result2 = await handler._list_notes_text()
+    assert "No Apple Notes found" in result2
+    assert handler._last_note_set == []
+
+    # get_note must now return the guard, not the stale previous note
+    detail = await handler._get_note_text(1)
+    assert "No notes listed" in detail
