@@ -92,6 +92,8 @@ def _extract_prefix(filename: str) -> str:
         return "calendar-event"
     if filename.startswith("email-thread-"):
         return "email-thread"
+    if filename.startswith("llm-chat-"):
+        return "llm-chat"
     if filename.startswith("project-candidate-"):
         return "project-candidate"
     if filename.startswith("feature-request-"):

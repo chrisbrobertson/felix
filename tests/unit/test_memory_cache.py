@@ -223,6 +223,46 @@ async def test_query_by_prefix(cache_db, memories_dir):
 
 
 @pytest.mark.asyncio
+async def test_query_by_prefix_llm_chat(cache_db, memories_dir):
+    """query_by_prefix('llm-chat-') returns llm-chat memory files.
+
+    Regression: _extract_prefix didn't recognise 'llm-chat-' filenames so they
+    were indexed with prefix='' and query_by_prefix returned an empty list even
+    when imports existed on disk.
+    """
+    from memory_cache import MemoryCache, _extract_prefix
+
+    # _extract_prefix must recognise the multi-word prefix
+    assert _extract_prefix("llm-chat-claude-2026-04-20-rag-abc123.md") == "llm-chat"
+    assert _extract_prefix("llm-chat-chatgpt-2026-04-21-docker-def456.md") == "llm-chat"
+
+    _write_memory(
+        memories_dir, "llm-chat-claude-2026-04-20-rag-abc123.md",
+        {"type": "llm_chat", "platform": "claude"}, "Claude RAG chat",
+    )
+    _write_memory(
+        memories_dir, "llm-chat-chatgpt-2026-04-21-docker-def456.md",
+        {"type": "llm_chat", "platform": "chatgpt"}, "ChatGPT Docker chat",
+    )
+    _write_memory(
+        memories_dir, "email-thread-test-ghi789.md",
+        {"type": "email_thread"}, "Should not appear",
+    )
+
+    cache = MemoryCache(cache_db, memories_dir)
+    await cache.rebuild()
+
+    results = await cache.query_by_prefix("llm-chat-")
+    assert len(results) == 2
+    filenames = {r["filename"] for r in results}
+    assert "llm-chat-claude-2026-04-20-rag-abc123.md" in filenames
+    assert "llm-chat-chatgpt-2026-04-21-docker-def456.md" in filenames
+    assert not any("email-thread" in f for f in filenames)
+
+    cache.close()
+
+
+@pytest.mark.asyncio
 async def test_query_by_prefix_cold_cache_disk_fallback(cache_db, memories_dir):
     """query_by_prefix returns files written after rebuild (cold-cache fallback).
 
