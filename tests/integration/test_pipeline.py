@@ -83,6 +83,7 @@ def chat_handler_instance(infra):
     mock_app = MagicMock()
     mock_builder = MagicMock()
     mock_builder.token.return_value = mock_builder
+    mock_builder.concurrent_updates.return_value = mock_builder
     mock_builder.build.return_value = mock_app
 
     from memory_cache import MemoryCache

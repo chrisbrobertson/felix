@@ -40,6 +40,7 @@ def handler(brain_dir, tmp_path):
     mock_app = MagicMock()
     mock_builder = MagicMock()
     mock_builder.token.return_value = mock_builder
+    mock_builder.concurrent_updates.return_value = mock_builder
     mock_builder.build.return_value = mock_app
 
     deploy_dir = tmp_path / "deploy"
@@ -3818,6 +3819,7 @@ async def test_cmd_review_cache_enabled_prefix(brain_dir, tmp_path):
     mock_app = MagicMock()
     mock_builder = MagicMock()
     mock_builder.token.return_value = mock_builder
+    mock_builder.concurrent_updates.return_value = mock_builder
     mock_builder.build.return_value = mock_app
 
     with patch.object(ch, "BRAIN_DIR", brain_dir), \
