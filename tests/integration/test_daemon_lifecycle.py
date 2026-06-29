@@ -234,6 +234,13 @@ async def test_all_loops_exit_cleanly_on_stop_event(daemon_dirs, monkeypatch):
     ]
 
     # ── Pre-set stop_event so every while loop exits on first check ───────────
+    # Design note: the event is set *before* tasks start so each loop's
+    # `while not stop_event.is_set()` guard fires immediately, skipping the
+    # work body and the inner sleep. This intentionally avoids running real
+    # side-effectful work (browser history reads, Mail/Calendar/Slack API calls)
+    # in the test environment. The tradeoff is that shutdown from *inside* a
+    # sleep (asyncio.wait_for) is not exercised here; that path is covered by
+    # per-module unit tests that mock the work body.
     stop_event = asyncio.Event()
     stop_event.set()
 
