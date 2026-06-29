@@ -11,6 +11,7 @@ import report_scheduler as rs
 from report_scheduler import (
     DigestGenerator,
     ReportScheduler,
+    _load_memories_for_sources,
     is_due,
     parse_schedule,
 )
@@ -294,3 +295,51 @@ def test_load_state_returns_defaults_when_no_file(scheduler):
     assert "runtime_reports" in state
     assert "last_sent" in state
     assert "paused_config_reports" in state
+
+
+# ── Bug-fix: body_snippet must not include frontmatter (#151) ─────────────────
+
+@pytest.mark.asyncio
+async def test_load_memories_body_snippet_excludes_frontmatter(tmp_path):
+    """_load_memories_for_sources must extract the post-frontmatter body (#151).
+
+    MemoryCache.body contains the full file text. Before the fix, body[:500]
+    included YAML frontmatter in the LLM snippet instead of actual content.
+    """
+    from datetime import datetime, timedelta
+    from unittest.mock import AsyncMock
+
+    now = datetime.now()
+    created_iso = (now - timedelta(days=1)).isoformat()
+
+    full_file_text = (
+        "---\n"
+        "type: commitment\n"
+        "source_title: Call Alice\n"
+        f"created: {created_iso}\n"
+        "status: active\n"
+        "---\n\n"
+        "## Details\n\nActual content about calling Alice."
+    )
+
+    fake_row = {
+        "filename": "commitment-call-alice-abc123.md",
+        "type": "commitment",
+        "status": "active",
+        "frontmatter": (
+            '{"type": "commitment", "source_title": "Call Alice",'
+            f' "created": "{created_iso}", "status": "active"}}'
+        ),
+        "body": full_file_text,
+        "mtime": now.timestamp(),
+    }
+
+    mock_cache = MagicMock()
+    mock_cache.query_by_type = AsyncMock(return_value=[fake_row])
+
+    results = await _load_memories_for_sources(["commitments"], window_days=7, cache=mock_cache)
+
+    assert len(results) == 1
+    snippet = results[0]["body_snippet"]
+    assert "type: commitment" not in snippet, "Frontmatter must not appear in body_snippet"
+    assert "Actual content" in snippet, "Actual markdown body must appear in body_snippet"

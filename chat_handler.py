@@ -3186,6 +3186,8 @@ class TelegramChatHandler:
             tmp = path.with_suffix(".tmp")
             tmp.write_text(new_content, encoding="utf-8")
             os.rename(str(tmp), str(path))
+            await self._cache.invalidate(path.name)
+            self._last_action_set = []
             await update.message.reply_text(f"\u2713 Action {idx+1} executed: {msg}")
         except Exception as e:
             # Check if it's a precondition failure — mark as superseded
@@ -3201,6 +3203,8 @@ class TelegramChatHandler:
                 tmp.write_text(new_content, encoding="utf-8")
                 os.rename(str(tmp), str(path))
                 await update.message.reply_text(f"Action {idx+1} superseded: {error_str}")
+                await self._cache.invalidate(path.name)
+                self._last_action_set = []
             else:
                 await update.message.reply_text(f"Error executing action {idx+1}: {_safe_error(e)}")
 
@@ -3269,6 +3273,8 @@ class TelegramChatHandler:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(new_content, encoding="utf-8")
         os.rename(str(tmp), str(path))
+        await self._cache.invalidate(path.name)
+        self._last_action_set = []
 
         await update.message.reply_text(f"\u2717 Action {idx+1} rejected.")
 
@@ -3326,6 +3332,8 @@ class TelegramChatHandler:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(new_content, encoding="utf-8")
         os.rename(str(tmp), str(path))
+        await self._cache.invalidate(path.name)
+        self._last_action_set = []
 
         await update.message.reply_text(f"Action {idx+1} snoozed for {hours}h (until {defer_until.strftime('%Y-%m-%d %H:%M')})")
 
@@ -5814,11 +5822,16 @@ class TelegramChatHandler:
         limit = 20
         folder_filter = None
         todos_only = False
+        # Collect non-todos args and join them so multi-word folder names work
+        # e.g. /notes Action Items → folder_filter = "Action Items"
+        folder_parts = []
         for arg in args:
             if arg.lower() == "todos":
                 todos_only = True
             else:
-                folder_filter = arg
+                folder_parts.append(arg)
+        if folder_parts:
+            folder_filter = " ".join(folder_parts)
         text = await self._list_notes_text(limit, folder_filter=folder_filter, todos_only=todos_only)
         await self._send_reply(update, text)
         self._record_command_reply(update.effective_chat.id, "notes", text)

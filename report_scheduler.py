@@ -193,8 +193,10 @@ async def _load_memories_for_sources(
             if created < cutoff:
                 continue
 
-            body = row.get("body") or ""
-            body_snippet = body[:500]
+            # MemoryCache "body" is the full file text — extract post-frontmatter markdown
+            full_text = row.get("body") or ""
+            parts = full_text.split("---", 2)
+            body_snippet = (parts[2] if len(parts) >= 3 else full_text)[:500]
 
             memories.append({
                 "path": MEMORIES_DIR / filename,

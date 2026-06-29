@@ -5139,6 +5139,54 @@ async def test_cmd_defer_sets_defer_until_and_hides_from_default_list(handler, b
     assert "No pending agent actions" in reply2 or "0" in reply2
 
 
+# ── Bug-fix: /run, /drop, /defer must invalidate action cache (#155) ─────────
+
+@pytest.mark.asyncio
+async def test_cmd_run_clears_action_set_on_execute(handler, brain_dir):
+    """After /run, _last_action_set is cleared so the next /actions gives fresh data (#155)."""
+    m = brain_dir / "memories"
+    write_action(m, "abc123", "add_note", "project-test.md")
+    await handler.cmd_actions(_make_update(12345, args=[])[0], _make_update(12345, args=[])[1])
+    assert len(handler._last_action_set) == 1
+
+    with patch("goal_project_agent.GoalProjectAgent._execute_action", return_value="ok"):
+        update, context = _make_update(12345, args=["1"])
+        await handler.cmd_run(update, context)
+
+    assert handler._last_action_set == [], "Action set must be cleared after /run so stale pending entries don't persist"
+
+
+@pytest.mark.asyncio
+async def test_cmd_drop_clears_action_set(handler, brain_dir, tmp_path):
+    """After /drop, _last_action_set is cleared (#155)."""
+    m = brain_dir / "memories"
+    write_action(m, "def456", "add_milestone", "project-test.md")
+    await handler.cmd_actions(_make_update(12345, args=[])[0], _make_update(12345, args=[])[1])
+    assert len(handler._last_action_set) == 1
+
+    deploy_dir = tmp_path / "deploy"
+    deploy_dir.mkdir(exist_ok=True)
+    with patch.object(ch, "DEPLOY_DIR", deploy_dir):
+        update, context = _make_update(12345, args=["1"])
+        await handler.cmd_drop(update, context)
+
+    assert handler._last_action_set == []
+
+
+@pytest.mark.asyncio
+async def test_cmd_defer_clears_action_set(handler, brain_dir):
+    """After /defer, _last_action_set is cleared (#155)."""
+    m = brain_dir / "memories"
+    write_action(m, "ghi789", "add_milestone", "project-test.md")
+    await handler.cmd_actions(_make_update(12345, args=[])[0], _make_update(12345, args=[])[1])
+    assert len(handler._last_action_set) == 1
+
+    update, context = _make_update(12345, args=["1", "24"])
+    await handler.cmd_defer(update, context)
+
+    assert handler._last_action_set == []
+
+
 # ── /pending must not clobber _last_action_set ───────────────────────────────
 
 @pytest.mark.asyncio
@@ -7213,3 +7261,57 @@ async def test_tool_dispatch_get_recent_commands(handler):
     result = handler._recent_commands_text(chat_id, limit=5)
     assert "/todos" in result
     assert "Fix bug" in result
+
+
+# ── Bug-fix: /notes multi-word folder filter (#152) ──────────────────────────
+
+@pytest.mark.asyncio
+async def test_cmd_notes_multiword_folder_filter_joined(handler, brain_dir):
+    """'/notes Action Items' must pass folder_filter='Action Items', not just 'Items' (#152)."""
+    captured = {}
+
+    async def _mock_list_notes_text(limit, folder_filter=None, todos_only=False):
+        captured["folder_filter"] = folder_filter
+        return "No Apple Notes found."
+
+    with patch.object(handler, "_list_notes_text", side_effect=_mock_list_notes_text):
+        update, context = _make_update(12345, args=["Action", "Items"])
+        await handler.cmd_notes(update, context)
+
+    assert captured.get("folder_filter") == "Action Items", (
+        f"Expected 'Action Items', got {captured.get('folder_filter')!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cmd_notes_single_word_folder_filter(handler, brain_dir):
+    """'/notes Work' passes folder_filter='Work' (single-word case still works)."""
+    captured = {}
+
+    async def _mock_list_notes_text(limit, folder_filter=None, todos_only=False):
+        captured["folder_filter"] = folder_filter
+        return "No Apple Notes found."
+
+    with patch.object(handler, "_list_notes_text", side_effect=_mock_list_notes_text):
+        update, context = _make_update(12345, args=["Work"])
+        await handler.cmd_notes(update, context)
+
+    assert captured.get("folder_filter") == "Work"
+
+
+@pytest.mark.asyncio
+async def test_cmd_notes_todos_flag_not_treated_as_folder(handler, brain_dir):
+    """'/notes todos' sets todos_only=True, not folder_filter='todos' (#152)."""
+    captured = {}
+
+    async def _mock_list_notes_text(limit, folder_filter=None, todos_only=False):
+        captured["folder_filter"] = folder_filter
+        captured["todos_only"] = todos_only
+        return "No Apple Notes found."
+
+    with patch.object(handler, "_list_notes_text", side_effect=_mock_list_notes_text):
+        update, context = _make_update(12345, args=["todos"])
+        await handler.cmd_notes(update, context)
+
+    assert captured.get("todos_only") is True
+    assert captured.get("folder_filter") is None
