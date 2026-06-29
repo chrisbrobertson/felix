@@ -1193,7 +1193,7 @@ async def _call(name: str, arguments: dict, handler):
         )
     if name == "list_notes":
         return await handler._list_notes_text(
-            limit=min(int(arguments.get("limit", 20)), 100),
+            limit=max(1, min(int(arguments.get("limit", 20)), 100)),
             folder_filter=arguments.get("folder"),
             todos_only=bool(arguments.get("todos_only", False)),
         )
@@ -1201,11 +1201,11 @@ async def _call(name: str, arguments: dict, handler):
         return await handler._get_note_text(int(arguments["index"]))
     if name == "list_insights":
         return await handler._list_insights_text(
-            limit=min(int(arguments.get("limit", 10)), 50),
+            limit=max(1, min(int(arguments.get("limit", 10)), 50)),
         )
     if name == "list_aichat":
         return await handler._list_aichat_text(
-            limit=min(int(arguments.get("limit", 20)), 100),
+            limit=max(1, min(int(arguments.get("limit", 20)), 100)),
         )
     if name == "get_aichat":
         return await handler._get_aichat_text(int(arguments["index"]))
