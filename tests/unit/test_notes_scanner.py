@@ -77,8 +77,30 @@ def test_has_todos_title():
 
 
 def test_has_todos_body_checklist():
-    assert _has_todos("Notes", "Shopping", "- milk\n- eggs")
+    # Markdown checkbox syntax
+    assert _has_todos("Notes", "Shopping", "[ ] milk\n[x] eggs")
     assert _has_todos("Notes", "Work", "[ ] Fix the bug")
+    # Unicode checkbox glyphs
+    assert _has_todos("Notes", "Work", "☐ Call Alice\n☑ Email Bob")
+
+
+def test_has_todos_body_generic_bullets_not_flagged():
+    # Plain bullet lists must NOT trigger has_todos (#153 fix)
+    assert not _has_todos("Notes", "Shopping", "- milk\n- eggs\n* bread")
+    assert not _has_todos("Notes", "Trip", "• Visit the museum\n• Eat lunch")
+
+
+def test_has_todos_action_items_folder():
+    # New folder names added in #153
+    assert _has_todos("Action Items", "Q2 tasks", "just content")
+    assert _has_todos("Checklist", "Onboarding", "regular text")
+    assert _has_todos("Checklists", "Packing", "regular text")
+
+
+def test_has_todos_action_items_title():
+    # Title regex covers "action items" pattern
+    assert _has_todos("Notes", "My Action Items", "just content")
+    assert _has_todos("Notes", "Team action item list", "just content")
 
 
 def test_has_todos_false():

@@ -35,12 +35,20 @@ MAX_NOTES_PER_CYCLE = 30
 
 # Folder names that imply todo content even without explicit checklist markers
 _TODO_FOLDER_NAMES: frozenset[str] = frozenset(
-    {"todos", "to do", "to-do", "tasks", "task list", "task", "to dos"}
+    {"todos", "to do", "to-do", "tasks", "task list", "task", "to dos",
+     "action items", "checklist", "checklists"}
 )
 
 # Patterns in note title or body that hint at checklist content
-_TODO_TITLE_RE = re.compile(r'\b(todo|to.?do|tasks?|checklist)\b', re.IGNORECASE)
-_TODO_BODY_RE = re.compile(r'^\s*[\-\*•]\s+\S|^\s*\[\s*[xX ]?\s*\]', re.MULTILINE)
+# Title: recognise common todo-related words; folder names like "Action Items" are handled above
+_TODO_TITLE_RE = re.compile(
+    r'\b(todo|to.?do|tasks?|checklist|action.items?)\b', re.IGNORECASE
+)
+# Body: only checkbox-style markers, NOT generic bullets.
+# Generic bullets (- item, * item) are too broad and flag ordinary bulleted notes.
+_TODO_BODY_RE = re.compile(
+    r'^\s*\[\s*[xX ]?\s*\]|^\s*[☐☑]\s', re.MULTILINE
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
