@@ -30,6 +30,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 - `/bugs` and `/features` list entries now include the 6-character hash ID (e.g. `[abc123]`) so users can reference items by ID in follow-up commands like `/feature_detail` (#131).
+- Calendar events with a NULL `ZMODIFIEDDATE` (common for all-day and recurring events) were using `datetime.now()` as the modification timestamp fallback, causing those events to appear "updated" on every scan cycle and be re-ingested every 5 minutes. Fixed by using `_cd_to_datetime(modified_cd)` directly, which maps null/zero to the stable epoch `datetime(2001, 1, 1)` (#126).
 
 ## [1.14.0] — 2026-05-10
 

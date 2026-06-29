@@ -309,7 +309,7 @@ class CalendarCacheSource(CalendarDataSource):
                     "title": title or "Untitled Event",
                     "start_time": _cd_to_datetime(start_cd) if start_cd else datetime.now(),
                     "end_time": _cd_to_datetime(end_cd) if end_cd else datetime.now(),
-                    "modified_time": _cd_to_datetime(modified_cd) if modified_cd else datetime.now(),
+                    "modified_time": _cd_to_datetime(modified_cd),  # None/0 → epoch; stable across scans
                     "location": location or "",
                     "notes": notes or "",
                     "all_day": bool(all_day),
