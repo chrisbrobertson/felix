@@ -19,6 +19,11 @@ def mock_handler():
     h._list_contacts_text = AsyncMock(return_value="contacts result")
     h._list_comms_text = AsyncMock(return_value="comms result")
     h._list_readings_text = AsyncMock(return_value="readings result")
+    h._list_notes_text = AsyncMock(return_value="notes result")
+    h._get_note_text = AsyncMock(return_value="note detail")
+    h._list_insights_text = AsyncMock(return_value="insights result")
+    h._list_aichat_text = AsyncMock(return_value="aichat result")
+    h._get_aichat_text = AsyncMock(return_value="aichat detail")
     h._search_memories_text = AsyncMock(return_value="search result")
     h._get_memory_text = AsyncMock(return_value="memory content")
     h._list_commands_text.return_value = "commands text"
@@ -328,6 +333,51 @@ async def test_update_feature_in_mutating_tools():
     assert "update_feature" in chat_tools.MUTATING_TOOLS
 
 
+async def test_dispatch_list_notes(mock_handler):
+    result = await chat_tools.dispatch("list_notes", {}, mock_handler)
+    assert result == "notes result"
+    mock_handler._list_notes_text.assert_called_once_with(limit=20, folder_filter=None, todos_only=False)
+
+
+async def test_dispatch_list_notes_with_folder(mock_handler):
+    await chat_tools.dispatch("list_notes", {"folder": "Work", "limit": 5}, mock_handler)
+    mock_handler._list_notes_text.assert_called_once_with(limit=5, folder_filter="Work", todos_only=False)
+
+
+async def test_dispatch_list_notes_todos_only(mock_handler):
+    await chat_tools.dispatch("list_notes", {"todos_only": True}, mock_handler)
+    mock_handler._list_notes_text.assert_called_once_with(limit=20, folder_filter=None, todos_only=True)
+
+
+async def test_dispatch_get_note(mock_handler):
+    result = await chat_tools.dispatch("get_note", {"index": 3}, mock_handler)
+    assert result == "note detail"
+    mock_handler._get_note_text.assert_called_once_with(3)
+
+
+async def test_dispatch_list_insights(mock_handler):
+    result = await chat_tools.dispatch("list_insights", {}, mock_handler)
+    assert result == "insights result"
+    mock_handler._list_insights_text.assert_called_once_with(limit=10)
+
+
+async def test_dispatch_list_insights_custom_limit(mock_handler):
+    await chat_tools.dispatch("list_insights", {"limit": 5}, mock_handler)
+    mock_handler._list_insights_text.assert_called_once_with(limit=5)
+
+
+async def test_dispatch_list_aichat(mock_handler):
+    result = await chat_tools.dispatch("list_aichat", {}, mock_handler)
+    assert result == "aichat result"
+    mock_handler._list_aichat_text.assert_called_once_with(limit=20)
+
+
+async def test_dispatch_get_aichat(mock_handler):
+    result = await chat_tools.dispatch("get_aichat", {"index": 2}, mock_handler)
+    assert result == "aichat detail"
+    mock_handler._get_aichat_text.assert_called_once_with(2)
+
+
 def test_all_tool_names_in_dispatcher():
     """Every tool name in TOOLS is handled by dispatch (checked via no 'unknown tool' return)."""
     # We don't run dispatch here (async) — just verify the names are in the known set
@@ -342,6 +392,7 @@ def test_all_tool_names_in_dispatcher():
         "get_event", "get_meeting", "get_contact", "get_comm", "get_reading", "get_action",
         "run_action", "drop_action", "defer_action",
         "update_issue_priority",
+        "list_notes", "get_note", "list_insights", "list_aichat", "get_aichat",
         # Handled in handle_message's tool_dispatch closure (needs chat_id in scope)
         "get_recent_commands",
     }

@@ -270,6 +270,8 @@ class TelegramChatHandler:
         self._last_comms_set: list = []
         # Last /actions result set — used by /action <N>, /run <N>, /drop <N>, /defer <N>.
         self._last_action_set: list = []
+        # Last /aichat result set — used by get_aichat tool.
+        self._last_aichat_memories: list = []
         # Last /features result set
         self._last_feature_set: list = []
         # Last /skill-drafts result set
@@ -5892,6 +5894,33 @@ class TelegramChatHandler:
             return self._last_note_set[idx]
         return None
 
+    async def _get_note_text(self, index: int) -> str:
+        """Get full detail for an Apple Note by list index. Used by get_note tool."""
+        if not self._last_note_set:
+            return "No notes listed yet. Call list_notes first."
+        if index < 1 or index > len(self._last_note_set):
+            return f"Index {index} out of range (1-{len(self._last_note_set)})."
+        path = self._last_note_set[index - 1]
+        row = await self._cache.get(path.name)
+        try:
+            fm = json.loads((row or {}).get("frontmatter") or "{}")
+        except Exception:
+            fm = {}
+        title = fm.get("source_title") or "(no title)"
+        folder = fm.get("folder") or ""
+        modified = (fm.get("modified") or "")[:10]
+        has_todos = fm.get("has_todos", False)
+        try:
+            content_parts = ((row or {}).get("body") or "").split("---", 2)
+            body = content_parts[2].strip() if len(content_parts) >= 3 else ""
+        except Exception:
+            body = ""
+        lines = [f"{title}", f"Folder: {folder} | Modified: {modified}"]
+        if has_todos:
+            lines.append("[Contains checklist/todo items]")
+        lines += ["", body[:3500]]
+        return "\n".join(lines)
+
     async def cmd_notes(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """List Apple Notes or show detail for note N.
 
@@ -6543,7 +6572,11 @@ class TelegramChatHandler:
         """List recent synthesis insights."""
         if not self._check_auth(update):
             return
+        text = await self._list_insights_text()
+        await update.message.reply_text(text)
 
+    async def _list_insights_text(self, limit: int = 10) -> str:
+        """Return formatted list of recent synthesis insights. Used by list_insights tool."""
         rows = await self._cache.query_by_type("synthesis")
         synthesis = []
         for row in rows:
@@ -6556,17 +6589,15 @@ class TelegramChatHandler:
             synthesis.append((fm, fm.get("created", "")))
 
         if not synthesis:
-            await update.message.reply_text("No synthesis insights yet.")
-            return
+            return "No synthesis insights yet."
 
         synthesis.sort(key=lambda x: x[1], reverse=True)
         lines = ["Recent synthesis insights:\n"]
-        for i, (fm, created) in enumerate(synthesis[:10], 1):
+        for i, (fm, created) in enumerate(synthesis[:limit], 1):
             title = fm.get("source_title", "(no title)")
             date = created[:10] if created else "unknown"
             lines.append(f"{i}. {title} — {date}")
-
-        await update.message.reply_text("\n".join(lines))
+        return "\n".join(lines)
 
     async def _llm_chat_memories(self) -> list[dict]:
         """Load all llm-chat memories, parse frontmatter, return sorted by most-recent first.
@@ -6676,6 +6707,20 @@ class TelegramChatHandler:
             lines.append(f"Tags: {', '.join(tags[:10])}")
 
         return "\n".join(lines)
+
+    async def _list_aichat_text(self, limit: int = 20) -> str:
+        """Return formatted list of imported LLM chat memories. Used by list_aichat tool."""
+        memories = await self._llm_chat_memories()
+        self._last_aichat_memories = memories[:limit]
+        return self._format_aichat_list_grouped(self._last_aichat_memories)
+
+    async def _get_aichat_text(self, index: int) -> str:
+        """Return detail for an LLM chat by list index. Used by get_aichat tool."""
+        if not self._last_aichat_memories:
+            return "No chats listed yet. Call list_aichat first."
+        if index < 1 or index > len(self._last_aichat_memories):
+            return f"Index {index} out of range (1-{len(self._last_aichat_memories)})."
+        return self._format_aichat_detail(self._last_aichat_memories[index - 1])
 
     async def cmd_aichat(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Browse imported Claude/ChatGPT conversation history."""
