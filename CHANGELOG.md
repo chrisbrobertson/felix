@@ -10,6 +10,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `chat_handler.py` (`cmd_run`, `cmd_drop`, `cmd_defer`): after mutating an action file, each command now calls `self._cache.invalidate(path.name)` and clears `self._last_action_set`. Previously the stale pending entries remained visible in the next `/actions` call until the periodic sweep refreshed the cache. Closes #155.
 - `chat_handler.py` (`cmd_notes`): multi-word folder names (e.g. `/notes Action Items`) were silently truncated to the last word only. Fixed by joining all non-`todos` args before passing to `_list_notes_text`. Closes #152.
 - `report_scheduler.py`: `body_snippet` used to include YAML frontmatter because `MemoryCache.body` is the full file text. Fixed by splitting on `---` to extract only the post-frontmatter markdown before slicing (same root cause as #145). Closes #151.
+- `notes_scanner.py`: `_TODO_BODY_RE` matched any generic bullet line (`- item`, `* item`, `• item`), causing ordinary bulleted notes to be incorrectly flagged `has_todos: true`. Narrowed to checkbox-only patterns (`[ ]`, `[x]`, `☐`, `☑`). Added "action items", "checklist", and "checklists" to `_TODO_FOLDER_NAMES`, and "action items" to `_TODO_TITLE_RE`. Closes #153.
+- `notes_scanner.py`: renaming or moving a note left a stale orphaned memory file alongside the new one. State now stores `{modified, path}` per note ID (old flat-string state migrated on load). When the computed path changes, the old file is deleted before writing the new one. Closes #154.
 
 ## [1.17.0] — 2026-06-29
 
