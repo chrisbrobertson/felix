@@ -5,13 +5,28 @@ Spec invariant (`specs/feat-memory-cache.md:144`):
     The watcher role is the exception.
 
 This test walks the AST of every migrated module and asserts that no glob() or
-read_text-style call is anchored on MEMORIES_DIR / (BRAIN_DIR / "memories") /
-self.memories_dir / similar. Regressions land as test failures rather than as
-quietly resurrected EDEADLK retry storms on the live 3,571-file corpus.
+read_text-style call is anchored on:
+  - MEMORIES_DIR / self.memories_dir (bare name)
+  - BRAIN_DIR / "memories" (computed alias)
+  - MEMORIES_DIR / <any expr> (inline path construction, e.g. (MEMORIES_DIR / filename).read_text())
 
-Write-side scanners (`email_scanner`, `slack_scanner`, etc.) are intentionally
+The third form was added in #150 — it catches patterns like:
+  path = MEMORIES_DIR / row["filename"]  # stored in variable
+  path.read_text()                       # NOT caught — taint analysis needed
+  (MEMORIES_DIR / row["filename"]).read_text()  # NOW caught
+
+Write-side scanners (``email_scanner``, ``slack_scanner``, etc.) are intentionally
 out of scope — they read their own write namespace and the watcher role is the
 spec-sanctioned exception.
+
+What is still NOT caught:
+- A migrated module stores ``path = MEMORIES_DIR / name`` in a variable and then
+  calls ``path.read_text()`` on a later line — taint analysis would be needed to
+  close this gap.
+- Read-modify-write helpers (e.g. ``_rewrite_feature_frontmatter``) that call
+  ``read_text_with_retry(path)`` where ``path`` is a MEMORIES_DIR file. These are
+  intentionally exempt because they need to read before an atomic write-back; the
+  invariant only applies to pure read paths.
 """
 import ast
 from pathlib import Path
@@ -51,7 +66,6 @@ DISK_READ_METHODS = {
     "open",
 }
 
-
 def _is_memories_dir_expr(node: ast.AST) -> bool:
     """Return True if the AST node evaluates to MEMORIES_DIR at runtime."""
     # Bare name: MEMORIES_DIR
@@ -60,16 +74,20 @@ def _is_memories_dir_expr(node: ast.AST) -> bool:
     # Attribute access: self.memories_dir / self._memories_dir
     if isinstance(node, ast.Attribute) and node.attr in MEMORIES_DIR_NAMES:
         return True
-    # BinOp: BRAIN_DIR / "memories"
+    # BinOp — either BRAIN_DIR / "memories" or MEMORIES_DIR / something
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
         left = node.left
         right = node.right
+        # BRAIN_DIR / "memories"
         if (
             isinstance(left, ast.Name)
             and left.id == "BRAIN_DIR"
             and isinstance(right, ast.Constant)
             and right.value == "memories"
         ):
+            return True
+        # MEMORIES_DIR / <anything>  — catches (MEMORIES_DIR / filename).read_text()
+        if _is_memories_dir_expr(left):
             return True
     return False
 
@@ -107,3 +125,52 @@ def test_migrated_module_has_no_direct_memories_dir_reads(module_filename):
             "the spec eliminated. Use self._cache.query_*() / self._cache.get() instead."
         )
         pytest.fail(msg)
+
+
+# ── AST helper unit tests ─────────────────────────────────────────────────────
+
+def test_is_memories_dir_expr_catches_bare_name():
+    node = ast.parse("MEMORIES_DIR.glob('*.md')", mode="eval").body.func.value
+    assert _is_memories_dir_expr(node)
+
+
+def test_is_memories_dir_expr_catches_self_attr():
+    node = ast.parse("self.memories_dir.read_text()", mode="eval").body.func.value
+    assert _is_memories_dir_expr(node)
+
+
+def test_is_memories_dir_expr_catches_brain_dir_slash_memories():
+    node = ast.parse("(BRAIN_DIR / 'memories').glob('*.md')", mode="eval").body.func.value
+    assert _is_memories_dir_expr(node)
+
+
+def test_is_memories_dir_expr_catches_memories_dir_slash_something():
+    """#150 — inline path construction MEMORIES_DIR / expr should be flagged."""
+    node = ast.parse("(MEMORIES_DIR / filename).read_text()", mode="eval").body.func.value
+    assert _is_memories_dir_expr(node)
+
+
+def test_is_memories_dir_expr_does_not_flag_other_paths():
+    node = ast.parse("STATE_FILE.read_text()", mode="eval").body.func.value
+    assert not _is_memories_dir_expr(node)
+
+
+def test_find_disk_reads_catches_glob_on_memories_dir():
+    src = "MEMORIES_DIR.glob('*.md')"
+    tree = ast.parse(src)
+    assert len(_find_disk_reads(tree)) == 1
+
+
+def test_find_disk_reads_catches_inline_path_construction():
+    """#150 — (MEMORIES_DIR / name).read_text() must be detected."""
+    src = "(MEMORIES_DIR / row['filename']).read_text(encoding='utf-8')"
+    tree = ast.parse(src)
+    assert len(_find_disk_reads(tree)) == 1
+
+
+def test_find_disk_reads_does_not_flag_state_file_reads():
+    src = "STATE_FILE.read_text()"
+    tree = ast.parse(src)
+    assert _find_disk_reads(tree) == []
+
+
