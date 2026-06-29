@@ -24,6 +24,9 @@ def mock_handler():
     h._list_insights_text = AsyncMock(return_value="insights result")
     h._list_aichat_text = AsyncMock(return_value="aichat result")
     h._get_aichat_text = AsyncMock(return_value="aichat detail")
+    h._get_code_text = AsyncMock(return_value="code repo detail")
+    h._list_changes_text = AsyncMock(return_value="changes result")
+    h._list_pending_text = AsyncMock(return_value="pending result")
     h._search_memories_text = AsyncMock(return_value="search result")
     h._get_memory_text = AsyncMock(return_value="memory content")
     h._list_commands_text.return_value = "commands text"
@@ -393,6 +396,7 @@ def test_all_tool_names_in_dispatcher():
         "run_action", "drop_action", "defer_action",
         "update_issue_priority",
         "list_notes", "get_note", "list_insights", "list_aichat", "get_aichat",
+        "get_code", "list_changes", "list_pending",
         # Handled in handle_message's tool_dispatch closure (needs chat_id in scope)
         "get_recent_commands",
     }
@@ -929,3 +933,66 @@ async def test_get_feature_dispatch_by_short_id(mock_handler):
 
     assert "Some bug" in result
     mock_handler._get_feature_text.assert_called_once_with("ab12cd")
+
+
+# --- get_code tool tests ---
+
+def test_get_code_tool_in_tools_list():
+    """get_code is present in TOOLS with required index field."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "get_code" in names
+
+    tool = next(t for t in chat_tools.TOOLS if t["function"]["name"] == "get_code")
+    params = tool["function"]["parameters"]
+    assert "index" in params["properties"]
+    assert "index" in params.get("required", [])
+
+
+@pytest.mark.asyncio
+async def test_get_code_dispatch(mock_handler):
+    """get_code dispatches to _get_code_text with the index."""
+    mock_handler._get_code_text = AsyncMock(return_value="secondbrain\nhttps://github.com/foo/bar")
+
+    result = await chat_tools.dispatch("get_code", {"index": 1}, mock_handler)
+
+    assert "secondbrain" in result
+    mock_handler._get_code_text.assert_called_once_with(1)
+
+
+# --- list_changes tool tests ---
+
+def test_list_changes_tool_in_tools_list():
+    """list_changes is present in TOOLS."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "list_changes" in names
+
+
+@pytest.mark.asyncio
+async def test_list_changes_dispatch_default_hours(mock_handler):
+    """list_changes defaults to 24 hours."""
+    result = await chat_tools.dispatch("list_changes", {}, mock_handler)
+    assert result == "changes result"
+    mock_handler._list_changes_text.assert_called_once_with(hours=24)
+
+
+@pytest.mark.asyncio
+async def test_list_changes_dispatch_custom_hours(mock_handler):
+    """list_changes passes hours through."""
+    await chat_tools.dispatch("list_changes", {"hours": 48}, mock_handler)
+    mock_handler._list_changes_text.assert_called_once_with(hours=48)
+
+
+# --- list_pending tool tests ---
+
+def test_list_pending_tool_in_tools_list():
+    """list_pending is present in TOOLS."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "list_pending" in names
+
+
+@pytest.mark.asyncio
+async def test_list_pending_dispatch(mock_handler):
+    """list_pending dispatches to _list_pending_text."""
+    result = await chat_tools.dispatch("list_pending", {}, mock_handler)
+    assert result == "pending result"
+    mock_handler._list_pending_text.assert_called_once_with()

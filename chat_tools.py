@@ -971,6 +971,64 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_code",
+            "description": (
+                "Get full detail for a specific code repository by its list index. "
+                "Call list_projects with category='code' first to get the numbered list, "
+                "then use get_code with the index number to see URL, local path, languages, "
+                "hostname, and summary. Use when the user asks for details about a specific repo."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_projects(category='code') result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_changes",
+            "description": (
+                "Return a digest of project and goal activity for the last N hours. "
+                "Use ONLY when the user explicitly asks what changed, what's been happening "
+                "with projects/goals, or recent activity — this makes LLM sub-calls and "
+                "is slow. Do not call proactively."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hours": {
+                        "type": "integer",
+                        "description": "Look-back window in hours (1–168, default 24)",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_pending",
+            "description": (
+                "Return a count of all pending review items: project candidates awaiting "
+                "confirmation, proposed agent actions, and skill drafts. Use when the user "
+                "asks what needs attention, what's in the inbox, or what's pending review."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
 ]
 
 
@@ -1209,6 +1267,12 @@ async def _call(name: str, arguments: dict, handler):
         )
     if name == "get_aichat":
         return await handler._get_aichat_text(int(arguments["index"]))
+    if name == "get_code":
+        return await handler._get_code_text(int(arguments["index"]))
+    if name == "list_changes":
+        return await handler._list_changes_text(hours=int(arguments.get("hours", 24)))
+    if name == "list_pending":
+        return await handler._list_pending_text()
     if name in ("add_feature", "add_bug"):
         import hashlib, os, re, yaml
         from datetime import datetime

@@ -4276,6 +4276,25 @@ class TelegramChatHandler:
 
     # ── /changes command ──────────────────────────────────────────────────────
 
+    async def _list_changes_text(self, hours: int = 24) -> str:
+        """Return formatted project/goal activity digest. Used by cmd_changes and list_changes tool."""
+        hours = max(1, min(hours, 168))
+        from goal_project_agent import GoalProjectAgent
+        agent = GoalProjectAgent(role="full", cache=self._cache)
+        results = await agent.generate_change_digest(hours=hours)
+        if not results:
+            return f"No project/goal activity in the last {hours}h."
+        header = f"Project/goal activity — last {hours}h ({len(results)} item{'s' if len(results) != 1 else ''})\n"
+        parts = [header]
+        for i, item in enumerate(results, 1):
+            icon = "\U0001f3af" if item["type"] == "goal" else "\U0001f4cb"
+            count = item["memory_count"]
+            count_str = f"{count} update{'s' if count != 1 else ''}"
+            parts.append(
+                f"{i}. {icon} {item['title']}  ({count_str})\n{item['summary']}"
+            )
+        return "\n\n".join(parts)
+
     async def cmd_changes(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show project/goal activity digest for the last N hours (default 24)."""
         if not self._check_auth(update):
@@ -4294,33 +4313,13 @@ class TelegramChatHandler:
 
         await update.message.reply_text(f"Scanning activity for the last {hours}h…")
 
-        from goal_project_agent import GoalProjectAgent
-        agent = GoalProjectAgent(role="full", cache=self._cache)
-
         try:
-            results = await agent.generate_change_digest(hours=hours)
+            msg = await self._list_changes_text(hours=hours)
         except Exception as e:
             log.exception("Error in cmd_changes")
             await update.message.reply_text(f"Error generating digest: {_safe_error(e)}")
             return
 
-        if not results:
-            await update.message.reply_text(
-                f"No project/goal activity in the last {hours}h."
-            )
-            return
-
-        header = f"Project/goal activity — last {hours}h ({len(results)} item{'s' if len(results) != 1 else ''})\n"
-        parts = [header]
-        for i, item in enumerate(results, 1):
-            icon = "\U0001f3af" if item["type"] == "goal" else "\U0001f4cb"
-            count = item["memory_count"]
-            count_str = f"{count} update{'s' if count != 1 else ''}"
-            parts.append(
-                f"{i}. {icon} {item['title']}  ({count_str})\n{item['summary']}"
-            )
-
-        msg = "\n\n".join(parts)
         await self._send_reply(update, msg)
 
     # ── /contacts command ─────────────────────────────────────────────────────
@@ -4557,11 +4556,8 @@ class TelegramChatHandler:
         else:
             return f"Unknown candidate type: {candidate_type}"
 
-    async def cmd_pending(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Unified inbox: count all pending review items across candidates, actions, and skill drafts."""
-        if not self._check_auth(update):
-            return
-
+    async def _list_pending_text(self) -> str:
+        """Return formatted pending review inbox. Used by cmd_pending and list_pending tool."""
         # Project candidates
         rows = await self._cache.query_by_prefix("project-candidate")
         candidate_count = 0
@@ -4588,8 +4584,7 @@ class TelegramChatHandler:
         total = candidate_count + action_count + draft_count
 
         if total == 0:
-            await update.message.reply_text("Nothing pending review.")
-            return
+            return "Nothing pending review."
 
         lines = [f"Pending review ({total} total):", ""]
         if candidate_count:
@@ -4601,7 +4596,15 @@ class TelegramChatHandler:
         if draft_count:
             noun = "draft" if draft_count == 1 else "drafts"
             lines.append(f"• {draft_count} skill {noun} — /skill_drafts")
-        await update.message.reply_text("\n".join(lines))
+        return "\n".join(lines)
+
+    async def cmd_pending(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Unified inbox: count all pending review items across candidates, actions, and skill drafts."""
+        if not self._check_auth(update):
+            return
+
+        text = await self._list_pending_text()
+        await update.message.reply_text(text)
 
     async def cmd_review(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """List pending project/repo candidates, or show detail of candidate N."""
@@ -5545,6 +5548,39 @@ class TelegramChatHandler:
             idx += 1
 
         return "\n".join(lines)
+
+    async def _get_code_text(self, index: int) -> str:
+        """Return detail for code repo N from last list_projects(category='code') call."""
+        if not self._last_code_set:
+            return "No code repos listed yet. Call list_projects with category='code' first."
+        if index < 1 or index > len(self._last_code_set):
+            return f"Index {index} out of range (1-{len(self._last_code_set)})."
+        path = self._last_code_set[index - 1]
+        row = await self._cache.get(path.name)
+        try:
+            fm = json.loads((row or {}).get("frontmatter") or "{}")
+        except Exception:
+            fm = {}
+        name = fm.get("source_title") or "(no name)"
+        url = fm.get("source_url") or ""
+        local = fm.get("local_path") or ""
+        langs = ", ".join(fm.get("languages") or []) or "unknown"
+        last = (fm.get("last_scanned") or "")[:10]
+        hostname = fm.get("hostname") or ""
+        summary = fm.get("summary") or ""
+        tags = fm.get("tags") or []
+        tag_str = f"\nTags: {', '.join(tags)}" if tags else ""
+        lines = [
+            name,
+            url,
+            f"Local: {local}",
+            f"Host: {hostname}" if hostname else "",
+            f"Languages: {langs}",
+            f"Last scanned: {last}{tag_str}",
+            "",
+            summary,
+        ]
+        return "\n".join(line for line in lines if line or line == "")
 
     async def cmd_code(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /code command: list repos or show detail if N provided."""
