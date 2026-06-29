@@ -1902,6 +1902,74 @@ class TelegramChatHandler:
         except Exception as e:
             return f"Error updating issue: {e}"
 
+    async def _update_issue_priority_text(self, short_id=None, title=None, priority="medium") -> str:
+        """Update the priority of a bug/feature request. Used by update_issue_priority tool."""
+        if priority not in ("low", "medium", "high", "critical"):
+            return f"Invalid priority '{priority}'. Must be: low, medium, high, or critical."
+        rows = await self._cache.query_by_prefix("feature-request-")
+        match_row = None
+        match_fm = None
+
+        if short_id:
+            for row in rows:
+                try:
+                    fm = json.loads(row.get("frontmatter") or "{}")
+                except Exception:
+                    fm = {}
+                if fm.get("short_id") == short_id:
+                    match_row = row
+                    match_fm = fm
+                    break
+            if match_row is None:
+                return f"No issue found with ID '{short_id}'."
+
+        elif title:
+            hits = []
+            for row in rows:
+                try:
+                    fm = json.loads(row.get("frontmatter") or "{}")
+                except Exception:
+                    fm = {}
+                if title.lower() in (fm.get("title") or "").lower():
+                    hits.append((row, fm))
+            if not hits:
+                return f"No issue found matching '{title}'."
+            if len(hits) > 1:
+                lines = ["Multiple matches — be more specific:"]
+                for _, fm in hits[:5]:
+                    lines.append(f"• [{fm.get('short_id')}] {(fm.get('title') or '')[:60]}")
+                return "\n".join(lines)
+            match_row, match_fm = hits[0]
+        else:
+            return "Provide either short_id or title."
+
+        match = BRAIN_DIR / "memories" / match_row["filename"]
+        fm = match_fm
+        old_priority = fm.get("priority", "medium")
+
+        gh_number = fm.get("github_issue_number")
+        if gh_number:
+            if not self.github.enabled:
+                return (
+                    f"Cannot update GitHub issue #{gh_number}: "
+                    "GitHub integration not configured (GITHUB_PAT / GITHUB_REPO missing)"
+                )
+            try:
+                await self._gh_set_priority(gh_number, priority)
+                await self._rewrite_features_index_snapshot()
+            except Exception as gh_e:
+                return f"GitHub sync failed for #{gh_number}: {gh_e}"
+
+        try:
+            self._rewrite_feature_frontmatter(match, {"priority": priority})
+            await self._cache.invalidate(match.name)
+            return (
+                f"Priority updated: [{fm.get('short_id')}] "
+                f"{(fm.get('title') or '')[:60]} → {old_priority} → {priority}"
+            )
+        except Exception as e:
+            return f"Error updating issue: {e}"
+
     def _close_goal_text(self, title: str, status: str = "completed") -> str:
         """Complete or abandon a goal by title substring. Used by close_goal tool."""
         valid = {"completed", "abandoned"}

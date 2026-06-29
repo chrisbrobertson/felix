@@ -5295,6 +5295,140 @@ async def test_close_issue_github_failure_leaves_local_unchanged(handler, brain_
     assert feature_file.read_text() == original
 
 
+# ── _update_issue_priority_text tests ─────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_update_issue_priority_by_short_id(handler, brain_dir):
+    """_update_issue_priority_text updates priority field when short_id matches."""
+    memories_dir = brain_dir / "memories"
+    memories_dir.mkdir(exist_ok=True)
+
+    feature_file = memories_dir / "feature-request-pdf-bug-abc123.md"
+    feature_file.write_text(
+        "---\ntitle: PDF export broken\ntype: feature_request\nkind: bug\nstatus: new\n"
+        "priority: medium\nshort_id: abc123\n---\n\n## Bug\nPDF export doesn't work\n"
+    )
+
+    result = await handler._update_issue_priority_text(short_id="abc123", priority="high")
+
+    assert "abc123" in result
+    assert "high" in result
+    content = feature_file.read_text()
+    assert "priority: high" in content
+    assert "priority: medium" not in content
+
+
+@pytest.mark.asyncio
+async def test_update_issue_priority_by_title(handler, brain_dir):
+    """_update_issue_priority_text updates priority when title substring matches."""
+    memories_dir = brain_dir / "memories"
+    memories_dir.mkdir(exist_ok=True)
+
+    feature_file = memories_dir / "feature-request-dark-mode-def456.md"
+    feature_file.write_text(
+        "---\ntitle: Add dark mode support\ntype: feature_request\nkind: feature\nstatus: new\n"
+        "priority: low\nshort_id: def456\n---\n\n## Request\n"
+    )
+
+    result = await handler._update_issue_priority_text(title="dark mode", priority="critical")
+
+    assert "def456" in result
+    assert "critical" in result
+    assert "priority: critical" in feature_file.read_text()
+
+
+@pytest.mark.asyncio
+async def test_update_issue_priority_title_ambiguous(handler, brain_dir):
+    """_update_issue_priority_text returns disambiguation list when multiple titles match."""
+    memories_dir = brain_dir / "memories"
+    memories_dir.mkdir(exist_ok=True)
+
+    file1 = memories_dir / "feature-request-pdf-export-aaa111.md"
+    file1.write_text(
+        "---\ntitle: PDF export broken\ntype: feature_request\nkind: bug\nstatus: new\n"
+        "priority: medium\nshort_id: aaa111\n---\n\n## Bug\n"
+    )
+    file2 = memories_dir / "feature-request-pdf-viewer-bbb222.md"
+    file2.write_text(
+        "---\ntitle: PDF viewer slow\ntype: feature_request\nkind: bug\nstatus: new\n"
+        "priority: medium\nshort_id: bbb222\n---\n\n## Bug\n"
+    )
+
+    result = await handler._update_issue_priority_text(title="PDF", priority="high")
+
+    assert "Multiple matches" in result
+    assert "aaa111" in result
+    assert "bbb222" in result
+    assert "priority: medium" in file1.read_text()
+    assert "priority: medium" in file2.read_text()
+
+
+@pytest.mark.asyncio
+async def test_update_issue_priority_not_found(handler, brain_dir):
+    """_update_issue_priority_text returns error when no issue matches."""
+    memories_dir = brain_dir / "memories"
+    memories_dir.mkdir(exist_ok=True)
+
+    result = await handler._update_issue_priority_text(short_id="xxxxxx", priority="high")
+
+    assert "No issue found" in result
+
+
+@pytest.mark.asyncio
+async def test_update_issue_priority_no_params_returns_error(handler, brain_dir):
+    """_update_issue_priority_text returns error when neither short_id nor title given."""
+    result = await handler._update_issue_priority_text(priority="high")
+    assert "Provide either short_id or title" in result
+
+
+@pytest.mark.asyncio
+async def test_update_issue_priority_github_backed(handler, brain_dir):
+    """_update_issue_priority_text syncs to GitHub when issue has github_issue_number."""
+    memories_dir = brain_dir / "memories"
+    memories_dir.mkdir(exist_ok=True)
+    feature_file = memories_dir / "feature-request-feature-abc777.md"
+    feature_file.write_text(
+        "---\ntitle: GH backed feature\ntype: feature_request\nkind: feature\nstatus: new\n"
+        "priority: medium\nshort_id: abc777\ngithub_issue_number: 42\n---\n\n## Request\n"
+    )
+
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.get_issue = AsyncMock(return_value={"labels": [{"name": "priority:medium"}], "state": "open"})
+    mock_gh.replace_labels = AsyncMock()
+    mock_gh.list_issues = AsyncMock(return_value=[])
+    handler.github = mock_gh
+
+    result = await handler._update_issue_priority_text(short_id="abc777", priority="high")
+
+    assert "high" in result
+    mock_gh.replace_labels.assert_awaited_once_with(42, ["priority:high"])
+    assert "priority: high" in feature_file.read_text()
+
+
+@pytest.mark.asyncio
+async def test_update_issue_priority_github_failure_leaves_local_unchanged(handler, brain_dir):
+    """When GitHub sync fails, local file is not modified."""
+    memories_dir = brain_dir / "memories"
+    memories_dir.mkdir(exist_ok=True)
+    original = (
+        "---\ntitle: Fragile feature\ntype: feature_request\nkind: feature\nstatus: new\n"
+        "priority: low\nshort_id: abc888\ngithub_issue_number: 99\n---\n\n## Request\n"
+    )
+    feature_file = memories_dir / "feature-request-feature-abc888.md"
+    feature_file.write_text(original)
+
+    mock_gh = AsyncMock()
+    mock_gh.enabled = True
+    mock_gh.get_issue = AsyncMock(side_effect=RuntimeError("network error"))
+    handler.github = mock_gh
+
+    result = await handler._update_issue_priority_text(short_id="abc888", priority="high")
+
+    assert "GitHub sync failed" in result
+    assert feature_file.read_text() == original
+
+
 # ── _close_goal_text tests ────────────────────────────────────────────────────
 
 def _make_goal(memories_dir, filename, title, status="active"):
