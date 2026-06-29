@@ -6,6 +6,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.17.0] — 2026-06-29
+
 ### Added
 - **Circles Phase C — invite flow (FR-6)**: `/circle_invite <N>` (host command) generates an 8-char hex one-time invite code stored in `DEPLOY_DIR/circle-invites.json` with a 24-hour TTL — separate from `circle-sync-state.json` so the scanner never overwrites pending invites. Circle members redeem it via `/join <code>` on the circle's member bot: the handler validates the code, appends the user to the circle's ruleset YAML atomically, consumes the code (single-use), and grants access immediately. `cmd_join` intentionally skips the member allowlist check (invitees are not members yet). 9 new unit tests in `test_circle_bot.py` (valid/expired/invalid code, idempotency, immediate access, non-member bypass) and 4 in `TestCircleCommands` (code generation, no-list guard, auth gate, scanner state isolation). Daemon wiring (per-circle `Application` startup) deferred to the next iteration.
 - **Pre-commit hook** (`hooks/pre-commit`): running `install.sh` now installs a git pre-commit hook that gates every commit behind the full pytest suite. The hook uses the deploy venv when available, falls back to system pytest, and skips gracefully on a fresh clone before venv exists. Addresses gap #3 (P1) from the test coverage assessment (#111).
