@@ -1356,6 +1356,7 @@ circles:
 | `/circle_status` | Quick health check — which circles are syncing, which have missing iCloud folders |
 | `/circle_rule add <N> include\|exclude <predicates>` | Add a sync rule to circle N |
 | `/circle_rule remove <N> <rule_index>` | Remove rule by index (run `/circle N` to see numbered rules) |
+| `/circle_invite <N>` | Generate a one-time invite code for circle N (24-hour TTL) |
 
 **`/circle_rule add` predicate syntax** (space-separated key:value tokens):
 
@@ -1373,10 +1374,19 @@ Example: `/circle_rule add 1 include type:calendar_event tags:family,home`
 
 Rule edits are written atomically to the YAML file; the scanner picks up the change on its next 5-minute cycle.
 
-### Planned (Phase C)
+### Invite flow
 
-- **Per-circle member bots** — one `bot_token` per circle; members get read-only `/ask`, `/search`, `/memories`, `/events`, `/commitments` commands scoped to the shared folder.
-- **Invite flow** — host generates one-time invite code; member redeems it on the circle bot with `/join <code>`.
+**Host** generates a one-time invite code via `/circle_invite <N>` (on the main bot). The code is an 8-character hex string that expires after 24 hours. Share this code with the invitee.
+
+**Member** redeems the code by sending `/join <code>` to the circle's member bot (NOT the host bot). This adds their Telegram user ID to the circle's ruleset YAML so they can access the circle's shared memories.
+
+Each invite code is single-use and stored in `~/secondbrain/circle-invites.json` with automatic expiration.
+
+### Telegram commands (member bot)
+
+| Command | Description |
+|---------|-------------|
+| `/join <code>` | Redeem an invite code to join the circle |
 
 ---
 
