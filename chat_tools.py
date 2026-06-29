@@ -18,7 +18,8 @@ MEMORIES_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/secon
 # it can warn the user rather than silently suggest they retry.
 MUTATING_TOOLS: frozenset[str] = frozenset(
     {"add_goal", "add_project", "add_bug", "add_feature", "close_issue", "close_commitment",
-     "close_goal", "close_project", "deliver_pending_replies", "add_todo", "update_feature"}
+     "close_goal", "close_project", "deliver_pending_replies", "add_todo", "update_feature",
+     "update_issue_priority"}
 )
 
 TOOLS: list[dict] = [
@@ -424,6 +425,37 @@ TOOLS: list[dict] = [
                         "enum": ["done", "wont_do", "in_progress"],
                     },
                 },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_issue_priority",
+            "description": (
+                "Update the priority of a bug or feature request. "
+                "Use when the user says something like 'set bug 2b2b14 to high priority', "
+                "'mark that feature as critical', or 'lower the priority of the dark mode request'. "
+                "Provide either short_id (the 6-char hash) or a title substring."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "short_id": {
+                        "type": "string",
+                        "description": "6-character hash ID shown in /features or /bugs listings",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Partial title to search for when short_id is unknown",
+                    },
+                    "priority": {
+                        "type": "string",
+                        "description": "New priority level",
+                        "enum": ["low", "medium", "high", "critical"],
+                    },
+                },
+                "required": ["priority"],
             },
         },
     },
@@ -925,6 +957,12 @@ async def _call(name: str, arguments: dict, handler):
             short_id=arguments.get("short_id"),
             title=arguments.get("title"),
             status=arguments.get("status", "done"),
+        )
+    if name == "update_issue_priority":
+        return await handler._update_issue_priority_text(
+            short_id=arguments.get("short_id"),
+            title=arguments.get("title"),
+            priority=arguments["priority"],
         )
     if name == "close_commitment":
         return await handler._close_commitment_text(
