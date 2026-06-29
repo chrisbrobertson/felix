@@ -224,9 +224,17 @@ def _read_note_body(note_id: str) -> str:
 
 def _load_state() -> dict:
     try:
-        return json.loads(STATE_FILE.read_text())
+        raw = json.loads(STATE_FILE.read_text())
     except Exception:
         return {}
+    # Migrate old flat-string format: {note_id: "YYYY-MM-DD"} → {note_id: {"modified": ..., "path": null}}
+    migrated = {}
+    for k, v in raw.items():
+        if isinstance(v, str):
+            migrated[k] = {"modified": v, "path": None}
+        else:
+            migrated[k] = v
+    return migrated
 
 
 def _save_state(state: dict) -> None:
@@ -305,7 +313,8 @@ class NotesScanner:
             folder_lower = note["folder"].lower()
             if any(s in folder_lower for s in skip_folders):
                 continue
-            last_mod = state.get(note["id"])
+            entry = state.get(note["id"])
+            last_mod = entry["modified"] if isinstance(entry, dict) else entry
             if last_mod == note["modified"]:
                 continue
             to_process.append(note)
@@ -320,9 +329,21 @@ class NotesScanner:
 
         for note in batch:
             try:
+                new_path = _memory_path(note["folder"], note["title"], note["id"])
+                entry = state.get(note["id"])
+                old_path_str = entry.get("path") if isinstance(entry, dict) else None
+                if old_path_str and old_path_str != str(new_path):
+                    old_file = Path(old_path_str)
+                    try:
+                        old_file.unlink()
+                        log.info("Removed stale memory file %s (note renamed/moved)", old_file.name)
+                    except FileNotFoundError:
+                        pass
+                    except Exception:
+                        log.warning("Could not remove stale file %s", old_path_str)
                 body = _read_note_body(note["id"])
                 if _write_memory(note, body):
-                    state[note["id"]] = note["modified"]
+                    state[note["id"]] = {"modified": note["modified"], "path": str(new_path)}
             except Exception:
                 log.exception("Failed to process note %r", note.get("title", "?"))
 

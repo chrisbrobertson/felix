@@ -163,9 +163,20 @@ def test_load_state_empty(tmp_path, monkeypatch):
 
 def test_save_and_load_state(tmp_path, monkeypatch):
     monkeypatch.setattr(ns, "STATE_FILE", tmp_path / "state.json", raising=False)
-    _save_state({"x/Notes/1": "2026-05-01"})
+    entry = {"modified": "2026-05-01", "path": "/tmp/memories/apple-notes-work-plan-abc123.md"}
+    _save_state({"x/Notes/1": entry})
     loaded = _load_state()
-    assert loaded == {"x/Notes/1": "2026-05-01"}
+    assert loaded == {"x/Notes/1": entry}
+
+
+def test_load_state_migrates_old_flat_string_format(tmp_path, monkeypatch):
+    """#154 — old {note_id: str} state is migrated to {note_id: {modified, path}} on load."""
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({"x/Notes/1": "2026-05-01", "x/Notes/2": "2026-04-30"}))
+    monkeypatch.setattr(ns, "STATE_FILE", state_file, raising=False)
+    loaded = _load_state()
+    assert loaded["x/Notes/1"] == {"modified": "2026-05-01", "path": None}
+    assert loaded["x/Notes/2"] == {"modified": "2026-04-30", "path": None}
 
 
 # ── Memory write tests ────────────────────────────────────────────────────────
@@ -200,7 +211,7 @@ def test_write_memory_no_tmp_file_left():
 
 def test_run_scan_skips_unchanged_notes(tmp_path, monkeypatch):
     state_file = tmp_path / "state.json"
-    state_file.write_text(json.dumps({"x/Notes/1": "2026-05-01"}))
+    state_file.write_text(json.dumps({"x/Notes/1": {"modified": "2026-05-01", "path": None}}))
     monkeypatch.setattr(ns, "STATE_FILE", state_file, raising=False)
 
     fake_notes = [{"folder": "Work", "title": "Plan", "id": "x/Notes/1", "modified": "2026-05-01"}]
@@ -240,7 +251,10 @@ def test_run_scan_updates_state_after_write(tmp_path, monkeypatch):
             scanner._run_scan()
 
     state = json.loads(state_file.read_text())
-    assert state.get("x/Notes/1") == "2026-05-05"
+    entry = state.get("x/Notes/1")
+    assert isinstance(entry, dict)
+    assert entry["modified"] == "2026-05-05"
+    assert entry["path"] is not None
 
 
 def test_run_scan_skips_excluded_folders(tmp_path, monkeypatch):
@@ -310,6 +324,53 @@ def test_write_memory_returns_false_on_failure(tmp_path, monkeypatch):
     with patch("os.rename", side_effect=OSError("disk full")):
         result = _write_memory(note, "body text")
     assert result is False
+
+
+def test_run_scan_removes_stale_file_on_rename(tmp_path, monkeypatch):
+    """#154 — when a note is renamed, the old memory file is deleted before writing the new one."""
+    state_file = tmp_path / "state.json"
+    mem_dir = ns.MEMORIES_DIR  # already created by autouse fixture
+    monkeypatch.setattr(ns, "STATE_FILE", state_file, raising=False)
+
+    # Simulate old memory file written under old title
+    old_memory = mem_dir / "apple-notes-work-old-title-abc123.md"
+    old_memory.write_text("old content")
+
+    # State records the old path
+    state_file.write_text(json.dumps({
+        "x/Notes/1": {"modified": "2026-06-29T09:00:00", "path": str(old_memory)}
+    }))
+
+    # Note now has a new title (renamed) and a different modification time
+    fake_notes = [{"folder": "Work", "title": "New Title", "id": "x/Notes/1", "modified": "2026-06-29T15:30:00"}]
+    with patch("notes_scanner._read_note_metadata", return_value=fake_notes), \
+         patch("notes_scanner._read_note_body", return_value="updated body"):
+        scanner = NotesScanner(role="full")
+        with patch.object(scanner, "_scanner_config", return_value={"enabled": True}):
+            scanner._run_scan()
+
+    assert not old_memory.exists(), "Stale memory file for old title must be deleted on rename"
+    new_files = list(mem_dir.glob("apple-notes-work-new-title-*.md"))
+    assert len(new_files) == 1, "New memory file must be created under new title"
+
+
+def test_run_scan_stale_file_missing_does_not_raise(tmp_path, monkeypatch):
+    """#154 — if the stale file is already gone, unlink should not raise."""
+    state_file = tmp_path / "state.json"
+    mem_dir = ns.MEMORIES_DIR  # already created by autouse fixture
+    monkeypatch.setattr(ns, "STATE_FILE", state_file, raising=False)
+
+    # Old path that doesn't exist on disk
+    state_file.write_text(json.dumps({
+        "x/Notes/1": {"modified": "2026-06-29T09:00:00", "path": str(mem_dir / "apple-notes-work-gone-abc123.md")}
+    }))
+
+    fake_notes = [{"folder": "Work", "title": "Renamed", "id": "x/Notes/1", "modified": "2026-06-29T15:30:00"}]
+    with patch("notes_scanner._read_note_metadata", return_value=fake_notes), \
+         patch("notes_scanner._read_note_body", return_value="body"):
+        scanner = NotesScanner(role="full")
+        with patch.object(scanner, "_scanner_config", return_value={"enabled": True}):
+            scanner._run_scan()  # must not raise
 
 
 def test_run_scan_does_not_update_state_when_write_fails(tmp_path, monkeypatch):
