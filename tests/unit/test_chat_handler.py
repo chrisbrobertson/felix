@@ -5586,13 +5586,14 @@ def _make_goal(memories_dir, filename, title, status="active"):
     return path
 
 
-def test_close_goal_completes_goal(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_goal_completes_goal(handler, brain_dir):
     """_close_goal_text marks matching goal as completed."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
     path = _make_goal(memories_dir, "goal-run-5k-abc001.md", "Run a 5K race")
 
-    result = handler._close_goal_text("5K race")
+    result = await handler._close_goal_text("5K race")
 
     assert "completed" in result.lower()
     assert "5K" in result
@@ -5600,42 +5601,46 @@ def test_close_goal_completes_goal(handler, brain_dir):
     assert "status: completed" in content
 
 
-def test_close_goal_abandons_goal(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_goal_abandons_goal(handler, brain_dir):
     """_close_goal_text marks goal as abandoned when status=abandoned."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
     path = _make_goal(memories_dir, "goal-learn-piano-abc002.md", "Learn piano basics")
 
-    result = handler._close_goal_text("piano", status="abandoned")
+    result = await handler._close_goal_text("piano", status="abandoned")
 
     assert "abandoned" in result.lower()
     content = path.read_text()
     assert "status: abandoned" in content
 
 
-def test_close_goal_not_found(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_goal_not_found(handler, brain_dir):
     """_close_goal_text returns error when no goal matches."""
     (brain_dir / "memories").mkdir(exist_ok=True)
-    result = handler._close_goal_text("nonexistent goal title")
+    result = await handler._close_goal_text("nonexistent goal title")
     assert "No goal found" in result
 
 
-def test_close_goal_ambiguous_returns_disambiguation(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_goal_ambiguous_returns_disambiguation(handler, brain_dir):
     """_close_goal_text returns disambiguation list when multiple goals match."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
     _make_goal(memories_dir, "goal-run-5k-aaa111.md", "Run a 5K race")
     _make_goal(memories_dir, "goal-run-marathon-bbb222.md", "Run a marathon")
 
-    result = handler._close_goal_text("Run a")
+    result = await handler._close_goal_text("Run a")
     assert "Multiple goals match" in result
     assert "5K" in result or "marathon" in result
 
 
-def test_close_goal_invalid_status(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_goal_invalid_status(handler, brain_dir):
     """_close_goal_text returns error for invalid status."""
     (brain_dir / "memories").mkdir(exist_ok=True)
-    result = handler._close_goal_text("anything", status="pending")
+    result = await handler._close_goal_text("anything", status="pending")
     assert "Invalid status" in result
 
 
@@ -5663,78 +5668,86 @@ def _make_project(memories_dir, filename, title, status="active"):
     return path
 
 
-def test_close_project_completes_project(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_project_completes_project(handler, brain_dir):
     """_close_project_text marks matching project as completed."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
     path = _make_project(memories_dir, "project-website-rebrand-ccc001.md", "Website rebrand")
 
-    result = handler._close_project_text("Website rebrand")
+    result = await handler._close_project_text("Website rebrand")
 
     assert "completed" in result.lower()
     content = path.read_text()
     assert "status: completed" in content
 
 
-def test_close_project_puts_on_hold(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_project_puts_on_hold(handler, brain_dir):
     """_close_project_text accepts on_hold (normalised to on-hold)."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
     path = _make_project(memories_dir, "project-mobile-app-ccc002.md", "Mobile app development")
 
-    result = handler._close_project_text("Mobile app", status="on_hold")
+    result = await handler._close_project_text("Mobile app", status="on_hold")
 
     assert "on hold" in result.lower()
     content = path.read_text()
     assert "status: on-hold" in content
 
 
-def test_close_project_not_found(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_project_not_found(handler, brain_dir):
     """_close_project_text returns error when no project matches."""
     (brain_dir / "memories").mkdir(exist_ok=True)
-    result = handler._close_project_text("nonexistent project xyz")
+    result = await handler._close_project_text("nonexistent project xyz")
     assert "No project found" in result
 
 
-def test_close_project_ambiguous_returns_disambiguation(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_project_ambiguous_returns_disambiguation(handler, brain_dir):
     """_close_project_text returns disambiguation list when multiple projects match."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
     _make_project(memories_dir, "project-api-v1-ddd111.md", "API v1 launch")
     _make_project(memories_dir, "project-api-v2-ddd222.md", "API v2 migration")
 
-    result = handler._close_project_text("API v")
+    result = await handler._close_project_text("API v")
     assert "Multiple projects match" in result
 
 
-def test_close_goal_empty_title_returns_error(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_goal_empty_title_returns_error(handler, brain_dir):
     """_close_goal_text rejects empty title to prevent matching all goals."""
-    result = handler._close_goal_text("")
+    result = await handler._close_goal_text("")
     assert "specify" in result.lower()
 
 
-def test_close_goal_already_completed_is_no_op(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_goal_already_completed_is_no_op(handler, brain_dir):
     """_close_goal_text reports 'already completed' rather than silently re-completing."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
     _make_goal(memories_dir, "goal-run-aaa111.md", "Run a 5K", status="completed")
-    result = handler._close_goal_text("5K")
+    result = await handler._close_goal_text("5K")
     assert "already" in result
     assert "completed" in result
 
 
-def test_close_project_empty_title_returns_error(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_project_empty_title_returns_error(handler, brain_dir):
     """_close_project_text rejects empty title to prevent matching all projects."""
-    result = handler._close_project_text("")
+    result = await handler._close_project_text("")
     assert "specify" in result.lower()
 
 
-def test_close_project_already_on_hold_is_no_op(handler, brain_dir):
+@pytest.mark.asyncio
+async def test_close_project_already_on_hold_is_no_op(handler, brain_dir):
     """_close_project_text reports 'already put on hold' rather than silently re-applying."""
     memories_dir = brain_dir / "memories"
     memories_dir.mkdir(exist_ok=True)
     _make_project(memories_dir, "project-web-eee111.md", "Website redesign", status="on-hold")
-    result = handler._close_project_text("Website", status="on_hold")
+    result = await handler._close_project_text("Website", status="on_hold")
     assert "already" in result
     assert "hold" in result
 

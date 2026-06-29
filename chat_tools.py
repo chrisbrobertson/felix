@@ -971,12 +971,12 @@ async def _call(name: str, arguments: dict, handler):
             status=arguments.get("status", "completed"),
         )
     if name == "close_goal":
-        return handler._close_goal_text(
+        return await handler._close_goal_text(
             title=arguments["title"],
             status=arguments.get("status", "completed"),
         )
     if name == "close_project":
-        return handler._close_project_text(
+        return await handler._close_project_text(
             title=arguments["title"],
             status=arguments.get("status", "completed"),
         )

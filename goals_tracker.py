@@ -1,9 +1,11 @@
 """Goals and projects CRUD manager."""
 import hashlib
+import json
 import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
@@ -22,9 +24,10 @@ class GoalManager:
     handlers and LLM tools.
     """
 
-    def __init__(self, memories_dir: Path, config: dict):
+    def __init__(self, memories_dir: Path, config: dict, cache=None):
         self.memories_dir = memories_dir
         self.config = config
+        self._cache = cache
 
     # ── Category validation ────────────────────────────────────────────────────
     def _categories(self) -> list[str]:
@@ -178,6 +181,37 @@ class GoalManager:
 
         filtered.sort(key=sort_key)
 
+        return [path for path, _ in filtered]
+
+    async def list_goals_async(self, category: Optional[str] = None, status: Optional[str] = None) -> list:
+        """MemoryCache-backed variant of list_goals. Falls back to sync glob when no cache."""
+        if self._cache is None:
+            return self.list_goals(category=category, status=status)
+        # query_by_prefix has a disk fallback for newly-written files not yet indexed
+        rows = await self._cache.query_by_prefix("goal")
+        filtered = []
+        for row in rows:
+            fm_raw = row.get("frontmatter") or "{}"
+            try:
+                fm = json.loads(fm_raw) if isinstance(fm_raw, str) else (fm_raw or {})
+            except Exception:
+                fm = {}
+            if fm.get("type") != "goal":
+                continue
+            if status is not None and fm.get("status") != status:
+                continue
+            if category and fm.get("category") != category:
+                continue
+            filtered.append((self.memories_dir / row["filename"], fm))
+
+        def sort_key(item):
+            _, fm = item
+            due = fm.get("due_date")
+            created = fm.get("created", "")
+            due_sort = due if due else "9999-12-31"
+            return (due_sort, -ord(created[0]) if created else 0)
+
+        filtered.sort(key=sort_key)
         return [path for path, _ in filtered]
 
     def update_goal_status(self, path: Path, new_status: str) -> None:
@@ -358,6 +392,33 @@ class GoalManager:
 
         filtered.sort(key=sort_key)
 
+        return [path for path, _ in filtered]
+
+    async def list_projects_async(self, category: Optional[str] = None, status: Optional[str] = None) -> list:
+        """MemoryCache-backed variant of list_projects. Falls back to sync glob when no cache."""
+        if self._cache is None:
+            return self.list_projects(category=category, status=status)
+        # query_by_prefix has a disk fallback for newly-written files not yet indexed
+        rows = await self._cache.query_by_prefix("project")
+        filtered = []
+        for row in rows:
+            filename = row.get("filename", "")
+            if filename.startswith("project-candidate-"):
+                continue
+            fm_raw = row.get("frontmatter") or "{}"
+            try:
+                fm = json.loads(fm_raw) if isinstance(fm_raw, str) else (fm_raw or {})
+            except Exception:
+                fm = {}
+            if fm.get("type") != "project":
+                continue
+            if status is not None and fm.get("status") != status:
+                continue
+            if category and fm.get("category") != category:
+                continue
+            filtered.append((self.memories_dir / row["filename"], fm))
+
+        filtered.sort(key=lambda item: item[1].get("due_date") or "9999-12-31")
         return [path for path, _ in filtered]
 
     def update_project_status(self, path: Path, new_status: str) -> None:

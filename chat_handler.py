@@ -107,7 +107,7 @@ class TelegramChatHandler:
 
         # Goal manager for FR-7 context injection and FR-8 LLM tools
         from goals_tracker import GoalManager
-        self._goal_manager = GoalManager(BRAIN_DIR / "memories", config)
+        self._goal_manager = GoalManager(BRAIN_DIR / "memories", config, cache=self._cache)
         self.app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
         )
@@ -305,7 +305,7 @@ class TelegramChatHandler:
         # Last /circles result set — used by /circle <N>.
         self._last_circle_set: list = []
         # Goal manager for goals and projects CRUD
-        self._goal_manager = GoalManager(BRAIN_DIR / "memories", config)
+        self._goal_manager = GoalManager(BRAIN_DIR / "memories", config, cache=self._cache)
         # Notification manager reference (set by daemon.py)
         self.notification_manager = None
         # Skill creator and report scheduler (set by daemon.py)
@@ -1970,14 +1970,14 @@ class TelegramChatHandler:
         except Exception as e:
             return f"Error updating issue: {e}"
 
-    def _close_goal_text(self, title: str, status: str = "completed") -> str:
+    async def _close_goal_text(self, title: str, status: str = "completed") -> str:
         """Complete or abandon a goal by title substring. Used by close_goal tool."""
         if not title or not title.strip():
             return "Please specify a goal title to close."
         valid = {"completed", "abandoned"}
         if status not in valid:
             return f"Invalid status '{status}'. Use: completed, abandoned"
-        goals = self._goal_manager.list_goals(status=None)
+        goals = await self._goal_manager.list_goals_async(status=None)
         hits = [
             p for p in goals
             if title.lower() in (self._parse_frontmatter(p).get("source_title") or "").lower()
@@ -2004,7 +2004,7 @@ class TelegramChatHandler:
         except ValueError as e:
             return f"Error: {e}"
 
-    def _close_project_text(self, title: str, status: str = "completed") -> str:
+    async def _close_project_text(self, title: str, status: str = "completed") -> str:
         """Complete, abandon, or put a project on hold by title substring. Used by close_project tool."""
         if not title or not title.strip():
             return "Please specify a project title to close."
@@ -2012,7 +2012,7 @@ class TelegramChatHandler:
         valid = {"completed", "abandoned", "on-hold"}
         if status not in valid:
             return f"Invalid status '{status}'. Use: completed, abandoned, on_hold"
-        projects = self._goal_manager.list_projects(status=None)
+        projects = await self._goal_manager.list_projects_async(status=None)
         hits = [
             p for p in projects
             if title.lower() in (self._parse_frontmatter(p).get("source_title") or "").lower()
@@ -3381,14 +3381,14 @@ class TelegramChatHandler:
             lines.append(f"/{cmd} — {desc}")
         return "\n".join(lines)
 
-    def _resolve_goal_index(self, n_str: str):
+    async def _resolve_goal_index(self, n_str: str):
         """Return (path, None) on success or (None, error_message) on failure.
 
         Lazy-populates _last_goal_set from active goals when the cache is empty,
         so /goal N works immediately after /addgoal without needing /goals first.
         """
         if not self._last_goal_set:
-            self._last_goal_set = self._goal_manager.list_goals(status="active")
+            self._last_goal_set = await self._goal_manager.list_goals_async(status="active")
         try:
             n = int(n_str)
         except (ValueError, TypeError):
@@ -3399,14 +3399,14 @@ class TelegramChatHandler:
             return (self._last_goal_set[n - 1], None)
         return (None, f"Index {n} out of range. You have {len(self._last_goal_set)} active goal(s).")
 
-    def _resolve_project_index(self, n_str: str):
+    async def _resolve_project_index(self, n_str: str):
         """Return (path, None) on success or (None, error_message) on failure.
 
         Lazy-populates _last_project_set from active projects when the cache is empty,
         so /project N works immediately after /addproject without needing /projects first.
         """
         if not self._last_project_set:
-            self._last_project_set = self._goal_manager.list_projects(status="active")
+            self._last_project_set = await self._goal_manager.list_projects_async(status="active")
         try:
             n = int(n_str)
         except (ValueError, TypeError):
@@ -3473,9 +3473,9 @@ class TelegramChatHandler:
         finally:
             context.user_data["awaiting_addgoal_reply"] = False
 
-    def _list_goals_text(self, category: Optional[str] = None, status: Optional[str] = "active") -> str:
+    async def _list_goals_text(self, category: Optional[str] = None, status: Optional[str] = "active") -> str:
         """Return formatted goals list text. Called by cmd_goals and tool dispatch."""
-        goals = self._goal_manager.list_goals(category=category, status=status)
+        goals = await self._goal_manager.list_goals_async(category=category, status=status)
         self._last_goal_set = goals
         self._active_list = self._last_goal_set
 
@@ -3525,7 +3525,7 @@ class TelegramChatHandler:
                 status = None
 
         try:
-            goals_text = self._list_goals_text(category=category, status=status)
+            goals_text = await self._list_goals_text(category=category, status=status)
             await update.message.reply_text(goals_text)
             self._record_command_reply(update.effective_chat.id, "goals", goals_text)
         except Exception as e:
@@ -3552,7 +3552,7 @@ class TelegramChatHandler:
                     return await handler(update, context)
             # Fall through to resolver (which renders dynamic help for non-integer)
 
-        path, err = self._resolve_goal_index(context.args[0])
+        path, err = await self._resolve_goal_index(context.args[0])
         if path is None:
             await update.message.reply_text(err)
             return
@@ -3593,7 +3593,7 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /completegoal N")
             return
 
-        path, err = self._resolve_goal_index(context.args[0])
+        path, err = await self._resolve_goal_index(context.args[0])
         if path is None:
             await update.message.reply_text(err)
             return
@@ -3616,7 +3616,7 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /abandongoal N")
             return
 
-        path, err = self._resolve_goal_index(context.args[0])
+        path, err = await self._resolve_goal_index(context.args[0])
         if path is None:
             await update.message.reply_text(err)
             return
@@ -3639,7 +3639,7 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /goal_note <N> <text>")
             return
 
-        path, err = self._resolve_goal_index(context.args[0])
+        path, err = await self._resolve_goal_index(context.args[0])
         if path is None:
             await update.message.reply_text(err)
             return
@@ -3661,7 +3661,7 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /goal_due <N> <YYYY-MM-DD|none>")
             return
 
-        path, err = self._resolve_goal_index(context.args[0])
+        path, err = await self._resolve_goal_index(context.args[0])
         if path is None:
             await update.message.reply_text(err)
             return
@@ -3729,7 +3729,7 @@ class TelegramChatHandler:
         linked_goal = None
         if "goal" in parsed:
             goal_idx = parsed["goal"]
-            goal_path, goal_err = self._resolve_goal_index(goal_idx)
+            goal_path, goal_err = await self._resolve_goal_index(goal_idx)
             if goal_path:
                 linked_goal = goal_path.name
             else:
@@ -3758,7 +3758,7 @@ class TelegramChatHandler:
         # "code" maps to code-repo memory files with hostname grouping, not GoalManager
         if category == "code":
             return await self._list_code_text(limit=limit)
-        projects = self._goal_manager.list_projects(category=category, status="active")
+        projects = await self._goal_manager.list_projects_async(category=category, status="active")
         self._last_project_set = projects
         self._active_list = self._last_project_set
 
@@ -3817,7 +3817,7 @@ class TelegramChatHandler:
         try:
             if status != "active":
                 # Non-active status requests: list directly without _list_projects_text
-                projects = self._goal_manager.list_projects(category=category, status=status)
+                projects = await self._goal_manager.list_projects_async(category=category, status=status)
                 self._last_project_set = projects
                 self._active_list = self._last_project_set
                 if not projects:
@@ -3877,7 +3877,7 @@ class TelegramChatHandler:
                     return await handler(update, context)
             # Fall through to resolver (which renders dynamic help for non-integer)
 
-        path, err = self._resolve_project_index(context.args[0])
+        path, err = await self._resolve_project_index(context.args[0])
         if path is None:
             await update.message.reply_text(err)
             return
@@ -3924,7 +3924,7 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /completeproject N")
             return
 
-        path, err = self._resolve_project_index(context.args[0])
+        path, err = await self._resolve_project_index(context.args[0])
         if path is None:
             await update.message.reply_text(err)
             return
@@ -3947,7 +3947,7 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /abandonproject N")
             return
 
-        path, err = self._resolve_project_index(context.args[0])
+        path, err = await self._resolve_project_index(context.args[0])
         if path is None:
             await update.message.reply_text(err)
             return
@@ -3970,7 +3970,7 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /holdproject N")
             return
 
-        path, err = self._resolve_project_index(context.args[0])
+        path, err = await self._resolve_project_index(context.args[0])
         if path is None:
             await update.message.reply_text(err)
             return
@@ -3993,7 +3993,7 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /project_note <N> <text>")
             return
 
-        path, err = self._resolve_project_index(context.args[0])
+        path, err = await self._resolve_project_index(context.args[0])
         if path is None:
             await update.message.reply_text(err)
             return
@@ -4015,7 +4015,7 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /project_due <N> <YYYY-MM-DD|none>")
             return
 
-        path, err = self._resolve_project_index(context.args[0])
+        path, err = await self._resolve_project_index(context.args[0])
         if path is None:
             await update.message.reply_text(err)
             return
@@ -4041,7 +4041,7 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /addmilestone N text")
             return
 
-        path, err = self._resolve_project_index(context.args[0])
+        path, err = await self._resolve_project_index(context.args[0])
         if path is None:
             await update.message.reply_text(err)
             return
@@ -4065,7 +4065,7 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /milestone N M")
             return
 
-        path, err = self._resolve_project_index(context.args[0])
+        path, err = await self._resolve_project_index(context.args[0])
         if path is None:
             await update.message.reply_text(err)
             return
@@ -4100,12 +4100,12 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /linkgoal <project_N> <goal_M>")
             return
 
-        project_path, proj_err = self._resolve_project_index(context.args[0])
+        project_path, proj_err = await self._resolve_project_index(context.args[0])
         if project_path is None:
             await update.message.reply_text(proj_err)
             return
 
-        goal_path, goal_err = self._resolve_goal_index(context.args[1])
+        goal_path, goal_err = await self._resolve_goal_index(context.args[1])
         if goal_path is None:
             await update.message.reply_text(goal_err)
             return
@@ -4131,7 +4131,7 @@ class TelegramChatHandler:
             await update.message.reply_text("Usage: /unlinkgoal N")
             return
 
-        path, err = self._resolve_project_index(context.args[0])
+        path, err = await self._resolve_project_index(context.args[0])
         if path is None:
             await update.message.reply_text(err)
             return
@@ -4624,7 +4624,7 @@ class TelegramChatHandler:
             # Confirm via GoalManager
             try:
                 from goals_tracker import GoalManager
-                manager = GoalManager(BRAIN_DIR / "memories", config)
+                manager = GoalManager(BRAIN_DIR / "memories", config, cache=self._cache)
                 created_path = manager.confirm_candidate(path, category_override=category)
                 await self._cache.invalidate(path.name)
                 if created_path is not None:
