@@ -589,6 +589,7 @@ DAEMON_FILES=(
     llm_chat_importer.py
     circle_ruleset.py
     circle_sync_scanner.py
+    circle_bot.py
     memory_cache.py
     quota_scanner.py
     quota_scrapers.py
