@@ -894,6 +894,21 @@ git tag v1.3.0 && git push --tags
 
 The installer is idempotent — it skips unchanged files and only copies what has changed. The daemon is reloaded automatically at the end.
 
+The installer also installs the pre-commit hook (see below).
+
+### Pre-commit hook
+
+`install.sh` installs a git pre-commit hook that runs the full test suite before every commit. If any test fails, the commit is aborted.
+
+To install manually on a fresh clone (before running `install.sh`):
+
+```bash
+cp hooks/pre-commit .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+```
+
+The hook uses `~/secondbrain/venv/bin/pytest` if the venv exists, and falls back to any system `pytest`. If neither is available, it logs a warning and allows the commit (so a fresh clone before `install.sh` is never blocked).
+
 ### Versioning
 
 This project uses [Semantic Versioning](https://semver.org/). The current version is in the `VERSION` file at the repo root. The daemon reports it at startup (`Starting second-brain daemon v1.3.0`) and via the `/version` Telegram command. `CHANGELOG.md` tracks what changed in each release.

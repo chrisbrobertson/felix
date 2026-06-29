@@ -6,6 +6,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Pre-commit hook** (`hooks/pre-commit`): running `install.sh` now installs a git pre-commit hook that gates every commit behind the full pytest suite. The hook uses the deploy venv when available, falls back to system pytest, and skips gracefully on a fresh clone before venv exists. Addresses gap #3 (P1) from the test coverage assessment (#111).
+
+### Fixed
+- `skill_creator.py`: `TEMPLATE_SKILL` was pre-computed from `SKILLS_DIR` at module load time, so patching `SKILLS_DIR` in tests left `TEMPLATE_SKILL` pointing at the real iCloud path — 2 unit tests failed. Replaced the module-level constant with an inline `SKILLS_DIR / "summarize-webpage.md"` reference.
+- `code_scanner.py`: `_generate_summary_and_tags` created a dead `SkillExecutor` instance that was never actually used (the method calls `litellm.acompletion` directly). Removed the dead code; 2 unit tests and 2 integration tests now pass.
+- `tests/integration/test_pipeline.py`: Email scanner and code scanner integration tests used `patch("X.acompletion", create=True)` which had no effect because `acompletion` was imported lazily inside the function body — patching `litellm.acompletion` is the correct approach for lazy imports. Also fixed hardcoded April 2026 message timestamps (now >30 days old) to use relative `datetime.now() - timedelta(days=N)` values. Fixed `_copy_db` mock to create actual temp-file copies so the scanner does not delete the test DB between the two scan passes. Fixed missing `SkillExecutor` mock in `test_skip_command_persists_and_watcher_ignores_domain` (BrowserWatcher init creates an executor).
+
 ## [1.16.0] — 2026-05-10
 
 ### Added

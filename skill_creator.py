@@ -33,7 +33,6 @@ BRAIN_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/second-b
 DEPLOY_DIR = Path(os.environ.get("SECOND_BRAIN_DIR", str(Path.home() / "secondbrain")))
 SKILLS_DIR = BRAIN_DIR / "skills"
 DRAFTS_DIR = BRAIN_DIR / "skill-drafts"
-TEMPLATE_SKILL = SKILLS_DIR / "summarize-webpage.md"
 
 
 def _get_registry_file():
@@ -173,12 +172,13 @@ class SkillCreator:
         example_content: str
     ) -> Optional[str]:
         """Generate a new skill file from the template."""
-        if not TEMPLATE_SKILL.exists():
-            log.error(f"Template skill not found: {TEMPLATE_SKILL}")
+        template_path = SKILLS_DIR / "summarize-webpage.md"
+        if not template_path.exists():
+            log.error(f"Template skill not found: {template_path}")
             return None
 
         try:
-            template_text = TEMPLATE_SKILL.read_text()
+            template_text = template_path.read_text()
         except Exception as e:
             log.error(f"Failed to read template: {e}")
             return None
