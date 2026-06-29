@@ -212,7 +212,10 @@ class ContactTracker:
                 existing_fm = json.loads(fm_raw) if isinstance(fm_raw, str) else (fm_raw or {})
             except Exception:
                 existing_fm = {}
-            existing_body = existing_row.get("body") or ""
+            # cache "body" is the full file text — extract the markdown body after frontmatter
+            full_text = existing_row.get("body") or ""
+            parts = full_text.split("---", 2)
+            existing_body = parts[2] if len(parts) >= 3 else ""
 
         # Initialize contact state
         contact_state = state.setdefault("contacts", {}).setdefault(slug, {})

@@ -778,3 +778,56 @@ def test_contact_tracker_skips_marketing_emails(tmp_path):
     fm = _parse_frontmatter(contact_files[0].read_text())
     assert "alice@acme.com" in fm.get("emails", [])
     assert "newsletter@company.com" not in fm.get("emails", [])
+
+
+def test_contact_rescan_does_not_embed_full_file_as_body(tmp_path):
+    """Second scan must not corrupt the contact file by prepending the old frontmatter to the body.
+
+    MemoryCache.body contains the full file text. If contact_tracker uses it
+    verbatim as the new body, the written file becomes:
+        ---
+        <new frontmatter>
+        ---
+        ---
+        <old frontmatter>
+        ---
+        <old body>
+
+    This test ensures the body is extracted from the markdown portion only
+    (everything after the second '---'), not the entire cached text.
+    """
+    memories_dir = tmp_path / "memories"
+    memories_dir.mkdir()
+    state_file = tmp_path / "contact-state.json"
+
+    make_email_memory(memories_dir, "email-1.md", ["alice@acme.com"], "2026-04-10T10:00:00")
+
+    import asyncio
+
+    with patch.object(ct, "MEMORIES_DIR", memories_dir), \
+         patch.object(ct, "STATE_FILE", state_file), \
+         patch.object(ct, "CONFIG_PATH", tmp_path / "config.yaml"):
+        (tmp_path / "config.yaml").write_text("contact_tracker:\n  interval_seconds: 300\n")
+        tracker = ContactTracker(cache=_make_cache(memories_dir))
+
+        async def run():
+            await tracker._run_scan()
+
+        asyncio.run(run())
+
+        contact_files = list(memories_dir.glob("contact-*.md"))
+        assert len(contact_files) == 1
+
+        # Second scan — the cache now returns the first file's full text as "body"
+        make_email_memory(memories_dir, "email-2.md", ["alice@acme.com"], "2026-04-11T10:00:00")
+        asyncio.run(run())
+
+        content2 = contact_files[0].read_text()
+
+    # The file must have exactly ONE frontmatter block — count "---" separator lines.
+    # Corrupt files have ---<new fm>------<old fm>--- which gives ≥4 "---" lines.
+    separators = [line.strip() for line in content2.splitlines() if line.strip() == "---"]
+    assert len(separators) == 2, (
+        f"Expected exactly 2 '---' separators, got {len(separators)}. "
+        "File may have embedded old frontmatter as body."
+    )
