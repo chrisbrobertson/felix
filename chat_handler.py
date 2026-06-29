@@ -239,6 +239,7 @@ class TelegramChatHandler:
         self.app.add_handler(CommandHandler("circle", self.cmd_circle))
         self.app.add_handler(CommandHandler("circle_status", self.cmd_circle_status))
         self.app.add_handler(CommandHandler("circle_rule", self.cmd_circle_rule))
+        self.app.add_handler(CommandHandler("circle_invite", self.cmd_circle_invite))
         self.app.add_error_handler(self._on_telegram_error)
         # Cache: path -> (mtime, header_text). Invalidated when mtime changes.
         # Avoids reading every file on every chat message.
@@ -8046,6 +8047,75 @@ class TelegramChatHandler:
             await update.message.reply_text(
                 f"Unknown subcommand '{subcommand}'. Use 'add' or 'remove'.\n\n{USAGE}"
             )
+
+    async def cmd_circle_invite(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        /circle_invite <N> — Generate a one-time invite code for circle N.
+
+        Stores an 8-char hex code in DEPLOY_DIR/circle-invites.json with a
+        24-hour TTL.  Uses a separate file from circle-sync-state.json so the
+        scanner never overwrites pending invites.  Circle members redeem the
+        code via /join <code> on the circle's member bot.
+        """
+        if not self._check_auth(update):
+            return
+
+        args = context.args or []
+        if not args or not args[0].isdigit():
+            await update.message.reply_text(
+                "Usage: /circle_invite <N>  (run /circles first to get N)"
+            )
+            return
+
+        n = int(args[0])
+        if not self._last_circle_set or n < 1 or n > len(self._last_circle_set):
+            await update.message.reply_text("Invalid index. Run /circles first.")
+            return
+
+        path = self._last_circle_set[n - 1]
+        if path is None:
+            await update.message.reply_text("That circle has a malformed ruleset.")
+            return
+
+        try:
+            from circle_ruleset import load_ruleset
+            ruleset = load_ruleset(path)
+        except (ValueError, Exception) as e:
+            await update.message.reply_text(f"Failed to load circle: {e}")
+            return
+
+        code = os.urandom(4).hex()  # 8-char hex, cryptographically random
+
+        invites_file = DEPLOY_DIR / "circle-invites.json"
+        invites_state: dict = {}
+        if invites_file.exists():
+            try:
+                invites_state = json.loads(invites_file.read_text())
+            except Exception:
+                pass
+
+        circle_invites = invites_state.setdefault(ruleset.slug, {})
+        circle_invites[code] = {
+            "expires_at": time.time() + 86400,  # 24-hour TTL
+            "created_by": update.effective_user.id,
+        }
+
+        tmp_path = invites_file.with_suffix(".tmp")
+        try:
+            tmp_path.write_text(json.dumps(invites_state, indent=2))
+            os.rename(str(tmp_path), str(invites_file))
+        except Exception as e:
+            log.warning("circle_invite: failed to save invites: %s", e)
+            await update.message.reply_text("Failed to generate invite code. Try again.")
+            return
+
+        display = ruleset.display_name or ruleset.slug
+        await update.message.reply_text(
+            f"Invite link for {display}:\n"
+            f"Ask them to message the circle bot and send:\n"
+            f"  /join {code}\n"
+            f"(expires in 24 hours)"
+        )
 
     # ── CommandRouter bridge ──────────────────────────────────────────────────
 

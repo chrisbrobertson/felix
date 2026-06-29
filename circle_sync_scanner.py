@@ -18,6 +18,7 @@ from typing import Optional
 
 import yaml
 
+from circle_bot import CircleBotHandler  # noqa: F401 — imported for install.sh manifest
 from circle_ruleset import CircleRuleset, load_ruleset, should_sync
 from heartbeat import record_beat
 

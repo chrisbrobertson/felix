@@ -7,15 +7,20 @@ It NEVER reads from MEMORIES_DIR — all file access is strictly scoped to the
 injected circle_path.
 
 Daemon wiring (per-circle Application startup) is deferred to a later iteration.
-The /ask LLM command and invite flow (FR-6) are also deferred.
+The /ask LLM command is deferred; the FR-6 invite flow (/join) is implemented here.
 """
+import json
 import logging
+import os
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import yaml
+
+from circle_ruleset import write_ruleset_yaml
 
 log = logging.getLogger("circle-bot")
 
@@ -81,7 +86,15 @@ class CircleBotHandler:
         "  /help — this message"
     )
 
-    def __init__(self, circle_path: Path, display_name: str, members: list[dict]):
+    def __init__(
+        self,
+        circle_path: Path,
+        display_name: str,
+        members: list[dict],
+        ruleset_path: Optional[Path] = None,
+        invites_file: Optional[Path] = None,
+        slug: str = "",
+    ):
         """
         Args:
             circle_path: Absolute path to the circle's shared iCloud folder.
@@ -89,6 +102,12 @@ class CircleBotHandler:
             display_name: Human-readable circle name shown in /help.
             members: List of {'telegram_user_id': int, 'name': str} dicts.
                      Empty list → allow any user (obscurity mode).
+            ruleset_path: Path to the circle's YAML ruleset file. Required for
+                          /join to append new members.
+            invites_file: Path to the circle-invites.json state file. Required
+                          for /join to validate invite codes.
+            slug: Circle slug (matches ruleset filename stem). Required for /join
+                  to look up codes in the correct section of invites_file.
         """
         self._circle_path = circle_path
         self._display_name = display_name
@@ -97,6 +116,9 @@ class CircleBotHandler:
             for m in members
             if isinstance(m.get("telegram_user_id"), (int, float))
         }
+        self._ruleset_path = ruleset_path
+        self._invites_file = invites_file
+        self._slug = slug
         # Last list populated by /memories or /events (for N-based detail)
         self._last_memory_list: list[dict] = []
         self._last_event_list: list[dict] = []
@@ -331,3 +353,103 @@ class CircleBotHandler:
         if len(commitments) > MAX_LIST:
             lines.append(f"... and {len(commitments) - MAX_LIST} more.")
         await update.message.reply_text("\n".join(lines)[:4096])
+
+    # ── /join invite flow (FR-6) ──────────────────────────────────────────────
+
+    async def cmd_join(self, update, context):
+        """
+        /join <code> — Redeem a one-time invite code to join this circle.
+
+        Intentionally skips _check_member: invitees are not members yet.
+        Validates the code against invites_file, appends the user to the
+        ruleset YAML, and consumes the code (single-use).
+        """
+        if not context.args:
+            await update.message.reply_text("Usage: /join <invite-code>")
+            return
+
+        code = context.args[0].strip().lower()
+
+        if not self._invites_file or not self._ruleset_path:
+            await update.message.reply_text(
+                "Circle configuration error — cannot process invite."
+            )
+            return
+
+        # Load invites state
+        invites_state: dict = {}
+        if self._invites_file.exists():
+            try:
+                invites_state = json.loads(self._invites_file.read_text())
+            except Exception:
+                pass
+
+        circle_invites: dict = invites_state.get(self._slug, {})
+        invite_data = circle_invites.get(code)
+
+        if not invite_data:
+            await update.message.reply_text("Invalid or expired invite code.")
+            return
+
+        if invite_data.get("expires_at", 0) < time.time():
+            del circle_invites[code]
+            invites_state[self._slug] = circle_invites
+            self._save_invites(invites_state)
+            await update.message.reply_text("Invalid or expired invite code.")
+            return
+
+        user_id = update.effective_user.id
+        first_name = (update.effective_user.first_name or "Member").strip()
+
+        # Load ruleset and append new member (idempotent)
+        try:
+            ruleset_data = yaml.safe_load(
+                self._ruleset_path.read_text(encoding="utf-8")
+            ) or {}
+        except Exception as e:
+            log.error("circle-bot: failed to read ruleset for /join: %s", e)
+            await update.message.reply_text(
+                "Circle configuration error — please try again later."
+            )
+            return
+
+        members = ruleset_data.get("members") or []
+        if not any(m.get("telegram_user_id") == user_id for m in members):
+            members.append({"telegram_user_id": user_id, "name": first_name})
+        ruleset_data["members"] = members
+
+        try:
+            write_ruleset_yaml(self._ruleset_path, ruleset_data)
+        except Exception as e:
+            log.error("circle-bot: failed to save ruleset after /join: %s", e)
+            await update.message.reply_text(
+                "Failed to add you to the circle. Please try again."
+            )
+            return
+
+        # Consume the invite code (one-time use)
+        del circle_invites[code]
+        invites_state[self._slug] = circle_invites
+        self._save_invites(invites_state)
+
+        # Update in-memory member set so new member can use commands immediately
+        self._member_ids.add(user_id)
+
+        await update.message.reply_text(
+            f"Welcome to the {self._display_name} circle!"
+        )
+
+    def _save_invites(self, invites_state: dict) -> None:
+        """Atomically save invites state to invites_file."""
+        if not self._invites_file:
+            return
+        tmp_path = self._invites_file.with_suffix(".tmp")
+        try:
+            tmp_path.write_text(json.dumps(invites_state, indent=2))
+            os.rename(str(tmp_path), str(self._invites_file))
+        except Exception as e:
+            log.error("circle-bot: failed to save invites state: %s", e)
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass

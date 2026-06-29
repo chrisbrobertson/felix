@@ -1,4 +1,7 @@
 """Unit tests for circle_bot.py — CircleBotHandler."""
+import json
+import time
+
 import pytest
 import yaml
 from pathlib import Path
@@ -410,3 +413,204 @@ async def test_commands_handle_missing_circle_path(tmp_path):
     await handler.cmd_events(update, _make_context())
     text = update.message.reply_text.call_args.args[0]
     assert "No calendar events" in text
+
+
+# ── /join invite flow (FR-6) ──────────────────────────────────────────────────
+
+
+def _make_invites_file(tmp_path: Path, slug: str, code: str, expires_delta: float = 3600) -> Path:
+    """Write a circle-invites.json with one valid code."""
+    invites_file = tmp_path / "circle-invites.json"
+    state = {
+        slug: {
+            code: {"expires_at": time.time() + expires_delta, "created_by": 12345}
+        }
+    }
+    invites_file.write_text(json.dumps(state))
+    return invites_file
+
+
+def _make_ruleset_file(tmp_path: Path, slug: str, members=None) -> Path:
+    """Write a minimal circle YAML ruleset file."""
+    members = members or []
+    data = {
+        "circle": slug,
+        "display_name": slug.title(),
+        "members": members,
+        "bot_token": "",
+        "icloud_folder": f"second-brain-circles/{slug}/memories",
+        "rules": {"include": [{"type": "calendar_event"}], "exclude": []},
+    }
+    p = tmp_path / f"{slug}.yaml"
+    p.write_text(yaml.dump(data))
+    return p
+
+
+def _make_join_handler(
+    circle_dir: Path,
+    slug: str,
+    members=None,
+    ruleset_path=None,
+    invites_file=None,
+) -> CircleBotHandler:
+    return CircleBotHandler(
+        circle_path=circle_dir,
+        display_name=f"{slug.title()} Circle",
+        members=members or [],
+        ruleset_path=ruleset_path,
+        invites_file=invites_file,
+        slug=slug,
+    )
+
+
+@pytest.mark.asyncio
+async def test_join_no_args_shows_usage(tmp_path):
+    handler = _make_join_handler(tmp_path, "family")
+    update = _make_update()
+    await handler.cmd_join(update, _make_context(args=[]))
+    text = update.message.reply_text.call_args.args[0]
+    assert "Usage" in text
+
+
+@pytest.mark.asyncio
+async def test_join_no_invites_file_rejects(tmp_path):
+    """Without invites_file configured, /join returns a config error."""
+    handler = _make_join_handler(tmp_path, "family")  # no invites_file
+    update = _make_update()
+    await handler.cmd_join(update, _make_context(args=["a1b2c3d4"]))
+    text = update.message.reply_text.call_args.args[0]
+    assert "configuration error" in text.lower()
+
+
+@pytest.mark.asyncio
+async def test_join_invalid_code_rejected(tmp_path):
+    """A code not in the invites file is rejected."""
+    code = "validcode"
+    invites_file = tmp_path / "circle-invites.json"
+    invites_file.write_text(json.dumps(
+        {"family": {code: {"expires_at": time.time() + 3600, "created_by": 1}}}
+    ))
+    ruleset_path = _make_ruleset_file(tmp_path, "family")
+    circle_dir = tmp_path / "circle"
+    circle_dir.mkdir()
+    handler = _make_join_handler(circle_dir, "family", ruleset_path=ruleset_path, invites_file=invites_file)
+    update = _make_update(user_id=42)
+    await handler.cmd_join(update, _make_context(args=["wrongcode"]))
+    text = update.message.reply_text.call_args.args[0]
+    assert "Invalid or expired" in text
+
+
+@pytest.mark.asyncio
+async def test_join_expired_code_rejected(tmp_path):
+    """An expired code is rejected and cleaned up from the invites file."""
+    code = "a1b2c3d4"
+    invites_file = tmp_path / "circle-invites.json"
+    invites_file.write_text(json.dumps(
+        {"family": {code: {"expires_at": time.time() - 1, "created_by": 1}}}
+    ))
+    ruleset_path = _make_ruleset_file(tmp_path, "family")
+    circle_dir = tmp_path / "circle"
+    circle_dir.mkdir()
+    handler = _make_join_handler(circle_dir, "family", ruleset_path=ruleset_path, invites_file=invites_file)
+    update = _make_update(user_id=42)
+    await handler.cmd_join(update, _make_context(args=[code]))
+    text = update.message.reply_text.call_args.args[0]
+    assert "Invalid or expired" in text
+    # Expired code must be removed from the invites file
+    state = json.loads(invites_file.read_text())
+    assert code not in state.get("family", {})
+
+
+@pytest.mark.asyncio
+async def test_join_valid_code_adds_member(tmp_path):
+    """Valid code → user appended to ruleset, welcome message sent."""
+    code = "a1b2c3d4"
+    invites_file = _make_invites_file(tmp_path, "family", code)
+    ruleset_path = _make_ruleset_file(tmp_path, "family")
+    circle_dir = tmp_path / "circle"
+    circle_dir.mkdir()
+    handler = _make_join_handler(circle_dir, "family", ruleset_path=ruleset_path, invites_file=invites_file)
+    update = _make_update(user_id=42)
+    update.effective_user.first_name = "Alice"
+    await handler.cmd_join(update, _make_context(args=[code]))
+    text = update.message.reply_text.call_args.args[0]
+    assert "Welcome" in text
+    # Member added to ruleset file
+    data = yaml.safe_load(ruleset_path.read_text())
+    members = data.get("members", [])
+    assert any(m.get("telegram_user_id") == 42 for m in members)
+    assert any(m.get("name") == "Alice" for m in members)
+
+
+@pytest.mark.asyncio
+async def test_join_code_consumed_after_use(tmp_path):
+    """Code is deleted from invites file after successful /join (one-time use)."""
+    code = "a1b2c3d4"
+    invites_file = _make_invites_file(tmp_path, "family", code)
+    ruleset_path = _make_ruleset_file(tmp_path, "family")
+    circle_dir = tmp_path / "circle"
+    circle_dir.mkdir()
+    handler = _make_join_handler(circle_dir, "family", ruleset_path=ruleset_path, invites_file=invites_file)
+    update = _make_update(user_id=42)
+    update.effective_user.first_name = "Alice"
+    await handler.cmd_join(update, _make_context(args=[code]))
+    state = json.loads(invites_file.read_text())
+    assert code not in state.get("family", {})
+
+
+@pytest.mark.asyncio
+async def test_join_nonmember_with_valid_code_succeeds(tmp_path):
+    """Non-member with a valid code joins successfully — member check is skipped."""
+    code = "a1b2c3d4"
+    invites_file = _make_invites_file(tmp_path, "family", code)
+    ruleset_path = _make_ruleset_file(tmp_path, "family")
+    circle_dir = tmp_path / "circle"
+    circle_dir.mkdir()
+    # Enforced members list that does NOT include user 42
+    handler = _make_join_handler(
+        circle_dir, "family",
+        members=[{"telegram_user_id": 99, "name": "Existing"}],
+        ruleset_path=ruleset_path,
+        invites_file=invites_file,
+    )
+    update = _make_update(user_id=42)
+    update.effective_user.first_name = "Alice"
+    await handler.cmd_join(update, _make_context(args=[code]))
+    text = update.message.reply_text.call_args.args[0]
+    assert "not a member" not in text.lower()
+    assert "Welcome" in text
+
+
+@pytest.mark.asyncio
+async def test_join_idempotent_already_member(tmp_path):
+    """If user is already in members, /join adds no duplicate entry."""
+    code = "a1b2c3d4"
+    invites_file = _make_invites_file(tmp_path, "family", code)
+    ruleset_path = _make_ruleset_file(
+        tmp_path, "family",
+        members=[{"telegram_user_id": 42, "name": "Alice"}],
+    )
+    circle_dir = tmp_path / "circle"
+    circle_dir.mkdir()
+    handler = _make_join_handler(circle_dir, "family", ruleset_path=ruleset_path, invites_file=invites_file)
+    update = _make_update(user_id=42)
+    update.effective_user.first_name = "Alice"
+    await handler.cmd_join(update, _make_context(args=[code]))
+    data = yaml.safe_load(ruleset_path.read_text())
+    members_with_id = [m for m in data.get("members", []) if m.get("telegram_user_id") == 42]
+    assert len(members_with_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_join_grants_immediate_access(tmp_path):
+    """After /join, new member's ID is in the handler's in-memory set immediately."""
+    code = "a1b2c3d4"
+    invites_file = _make_invites_file(tmp_path, "family", code)
+    ruleset_path = _make_ruleset_file(tmp_path, "family")
+    circle_dir = tmp_path / "circle"
+    circle_dir.mkdir()
+    handler = _make_join_handler(circle_dir, "family", ruleset_path=ruleset_path, invites_file=invites_file)
+    update = _make_update(user_id=42)
+    update.effective_user.first_name = "Alice"
+    await handler.cmd_join(update, _make_context(args=[code]))
+    assert 42 in handler._member_ids

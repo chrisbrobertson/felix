@@ -6159,6 +6159,75 @@ class TestCircleCommands:
         await h.cmd_circle_rule(update, context)
         update.message.reply_text.assert_not_called()
 
+    # ── /circle_invite tests ─────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_circle_invite_generates_code(self, handler, tmp_path):
+        """Valid /circle_invite <N> writes a code to circle-invites.json and replies with /join instructions."""
+        h, tmp = handler
+        circles_dir = tmp / "circles"
+        circles_dir.mkdir(exist_ok=True)
+        self._make_yaml(circles_dir, "family", members=[{"name": "Alice", "telegram_user_id": 1}])
+        # Populate last circle set
+        update, context = self._make_update()
+        await h.cmd_circles(update, context)
+        # Now generate an invite
+        update2, context2 = self._make_update(args=["1"])
+        await h.cmd_circle_invite(update2, context2)
+        text = update2.message.reply_text.call_args[0][0]
+        assert "/join" in text
+        assert "expires in 24 hours" in text.lower()
+        # Code must be stored in circle-invites.json (not circle-sync-state.json)
+        invites_file = tmp / "circle-invites.json"
+        assert invites_file.exists()
+        state = json.loads(invites_file.read_text())
+        assert "family" in state
+        assert len(state["family"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_circle_invite_no_list_error(self, handler, tmp_path):
+        """Without a prior /circles call, returns 'Invalid index. Run /circles first.'"""
+        h, tmp = handler
+        update, context = self._make_update(args=["1"])
+        await h.cmd_circle_invite(update, context)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Invalid index" in text
+
+    @pytest.mark.asyncio
+    async def test_circle_invite_no_args_shows_usage(self, handler, tmp_path):
+        """No N argument -> usage message."""
+        h, tmp = handler
+        update, context = self._make_update(args=[])
+        await h.cmd_circle_invite(update, context)
+        text = update.message.reply_text.call_args[0][0]
+        assert "Usage" in text
+
+    @pytest.mark.asyncio
+    async def test_circle_invite_unauth(self, handler, tmp_path):
+        """Unauthorized user -> no reply."""
+        h, tmp = handler
+        update, context = self._make_update(user_id=99999, args=["1"])
+        await h.cmd_circle_invite(update, context)
+        update.message.reply_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_circle_invite_does_not_touch_sync_state(self, handler, tmp_path):
+        """Invite codes go to circle-invites.json, not circle-sync-state.json."""
+        h, tmp = handler
+        circles_dir = tmp / "circles"
+        circles_dir.mkdir(exist_ok=True)
+        self._make_yaml(circles_dir, "work-team")
+        # Seed a sync state file with existing scanner data
+        sync_state = tmp / "circle-sync-state.json"
+        sync_state.write_text(json.dumps({"work-team": {"synced_files": {"a.md": 1.0}, "last_run": "2026-06-01T00:00:00"}}))
+        update, context = self._make_update()
+        await h.cmd_circles(update, context)
+        update2, context2 = self._make_update(args=["1"])
+        await h.cmd_circle_invite(update2, context2)
+        # Scanner state must be untouched
+        state = json.loads(sync_state.read_text())
+        assert state["work-team"]["synced_files"] == {"a.md": 1.0}
+
 
 # ── LLM Chat Tests ────────────────────────────────────────────────────────────
 
