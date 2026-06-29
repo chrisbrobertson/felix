@@ -12,6 +12,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `report_scheduler.py`: `body_snippet` used to include YAML frontmatter because `MemoryCache.body` is the full file text. Fixed by splitting on `---` to extract only the post-frontmatter markdown before slicing (same root cause as #145). Closes #151.
 - `notes_scanner.py`: `_TODO_BODY_RE` matched any generic bullet line (`- item`, `* item`, `• item`), causing ordinary bulleted notes to be incorrectly flagged `has_todos: true`. Narrowed to checkbox-only patterns (`[ ]`, `[x]`, `☐`, `☑`). Added "action items", "checklist", and "checklists" to `_TODO_FOLDER_NAMES`, and "action items" to `_TODO_TITLE_RE`. Closes #153.
 - `notes_scanner.py`: renaming or moving a note left a stale orphaned memory file alongside the new one. State now stores `{modified, path}` per note ID (old flat-string state migrated on load). When the computed path changes, the old file is deleted before writing the new one. Closes #154.
+- `README.md`: loop and role counts were stale (showed 12 full-node loops / 5 watcher loops). Updated to 16 / 6; corrected "Project Scanner" label to "Code Scanner" in both mermaid diagrams; added Project Inference Scanner, Goal/Project Agent, and Quota Scanner to the full-node subgraph. Closes #156.
+- `tests/unit/test_memory_cache_migration.py`: `_is_memories_dir_expr()` did not catch inline path construction `(MEMORIES_DIR / expr).read_text()`. Extended to recurse into BinOp left nodes. Added 8 unit tests for the AST helper functions. Closes #150.
 
 ## [1.17.0] — 2026-06-29
 

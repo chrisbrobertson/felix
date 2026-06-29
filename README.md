@@ -79,13 +79,13 @@ Two kinds of machines, one shared filesystem.
 ```mermaid
 graph LR
     subgraph WATCHER["💻 Watcher Node (optional)"]
-        WB[5 capture loops]
+        WB[6 capture loops]
     end
     subgraph CLOUD["☁️ iCloud Drive"]
         BUS["memories · skills · index · config"]
     end
     subgraph FULL["🖥️ Full Node (always-on)"]
-        LOOPS["12 async loops"]
+        LOOPS["16 async loops"]
     end
     WATCHER -- "writes memories" --> CLOUD
     FULL -- "reads + writes" --> CLOUD
@@ -93,30 +93,33 @@ graph LR
 
 ### Full node loops
 
-The full node runs 12 async loops, grouped by purpose.
+The full node runs 16 async loops, grouped by purpose.
 
 ```mermaid
 graph TB
-    subgraph CAPTURE["📥 Capture loops"]
+    subgraph CAPTURE["📥 Capture loops (7)"]
         BW[Browser Watcher]
         ES[Email Scanner]
         ZS[Zoom Scanner]
         CS[Calendar Scanner]
         SS[Slack Scanner]
-        PS[Project Scanner]
+        CDS[Code Scanner]
         NS[Notes Scanner]
     end
-    subgraph DERIVE["🔄 Derivative loops"]
+    subgraph DERIVE["🔄 Derivative loops (5)"]
         CT[Commitment Tracker]
         CON[Contact Tracker]
         IB[Index Builder]
+        PI[Project Inference]
+        GA[Goal/Project Agent]
     end
-    subgraph INTERACT["💬 Interaction loops"]
+    subgraph INTERACT["💬 Interaction loops (2)"]
         TG[Telegram Bot]
         NM[Notification Manager]
     end
-    subgraph MAINTAIN["🛠 Maintenance"]
+    subgraph MAINTAIN["🛠 Maintenance (2)"]
         SO[Skill Optimizer]
+        QS[Quota Scanner]
     end
 ```
 
@@ -132,12 +135,12 @@ flowchart LR
     BW -->|summarize| GEM[Gemini]
     GEM --> BW
     BW -->|write memory file| CLOUD[(iCloud Drive)]
-    GIT[git repos] --> PS[Project Scanner]
+    GIT[git repos] --> CDS[Code Scanner]
     MAIL[Apple Mail] --> ES[Email Scanner]
     CAL[Apple Calendar] --> CS[Calendar Scanner]
     SLACK[Slack API] --> SS[Slack Scanner]
     NOTES[Apple Notes] --> NS[Notes Scanner]
-    PS --> CLOUD
+    CDS --> CLOUD
     ES --> CLOUD
     CS --> CLOUD
     SS --> CLOUD
@@ -950,8 +953,8 @@ The system supports two roles. Set `SECOND_BRAIN_ROLE` in each machine's launchd
 
 | Role | What runs | API keys needed |
 |------|-----------|-----------------|
-| `full` | All twelve loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
-| `watcher` | Browser watcher + project/email/calendar/slack/notes scanners | `GEMINI_API_KEY` only |
+| `full` | All sixteen loops | `GEMINI_API_KEY` + `ANTHROPIC_API_KEY` |
+| `watcher` | Browser watcher + code/email/calendar/notes/slack scanners (6 loops) | `GEMINI_API_KEY` only |
 
 ```mermaid
 graph LR
