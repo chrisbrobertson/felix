@@ -241,3 +241,84 @@ def test_run_scan_disabled():
         with patch.object(scanner, "_scanner_config", return_value={"enabled": False}):
             scanner._run_scan()
         mock_meta.assert_not_called()
+
+
+# ── Bug-fix regression tests ──────────────────────────────────────────────────
+
+def test_read_note_metadata_parses_datetime_format():
+    """#146 — metadata parser handles the new YYYY-MM-DDTHH:MM:SS modified field."""
+    fake_output = (
+        "=====NOTE=====\n"
+        "Personal|||My Note|||x/Notes/1|||2026-06-29T14:35:22\n"
+    )
+    with patch("notes_scanner._run_osascript", return_value=fake_output):
+        notes = _read_note_metadata()
+    assert len(notes) == 1
+    assert notes[0]["modified"] == "2026-06-29T14:35:22"
+
+
+def test_run_scan_detects_intraday_changes(tmp_path, monkeypatch):
+    """#146 — two notes with same date but different times are treated as distinct."""
+    state_file = tmp_path / "state.json"
+    # State recorded after morning scan
+    state_file.write_text(json.dumps({"x/Notes/1": "2026-06-29T09:00:00"}))
+    monkeypatch.setattr(ns, "STATE_FILE", state_file, raising=False)
+
+    # Afternoon modification — same date, different time
+    fake_notes = [{"folder": "Work", "title": "Plan", "id": "x/Notes/1", "modified": "2026-06-29T15:30:00"}]
+    with patch("notes_scanner._read_note_metadata", return_value=fake_notes), \
+         patch("notes_scanner._read_note_body", return_value="updated body") as mock_body:
+        scanner = NotesScanner(role="full")
+        with patch.object(scanner, "_scanner_config", return_value={"enabled": True}):
+            scanner._run_scan()
+        mock_body.assert_called_once_with("x/Notes/1")
+
+
+def test_write_memory_returns_true_on_success():
+    """#147 — _write_memory returns True when the file is written successfully."""
+    note = {"folder": "Work", "title": "Success", "id": "x/Notes/10", "modified": "2026-06-29T10:00:00"}
+    result = _write_memory(note, "body text")
+    assert result is True
+
+
+def test_write_memory_returns_false_on_failure(tmp_path, monkeypatch):
+    """#147 — _write_memory returns False when the atomic rename fails."""
+    monkeypatch.setattr(ns, "MEMORIES_DIR", tmp_path / "memories", raising=False)
+    note = {"folder": "Work", "title": "Fail", "id": "x/Notes/11", "modified": "2026-06-29T10:00:00"}
+    with patch("os.rename", side_effect=OSError("disk full")):
+        result = _write_memory(note, "body text")
+    assert result is False
+
+
+def test_run_scan_does_not_update_state_when_write_fails(tmp_path, monkeypatch):
+    """#147 — state must not be updated when _write_memory returns False."""
+    state_file = tmp_path / "state.json"
+    state_file.write_text("{}")
+    monkeypatch.setattr(ns, "STATE_FILE", state_file, raising=False)
+
+    fake_notes = [{"folder": "Work", "title": "Plan", "id": "x/Notes/1", "modified": "2026-05-05T10:00:00"}]
+    with patch("notes_scanner._read_note_metadata", return_value=fake_notes), \
+         patch("notes_scanner._read_note_body", return_value="body"), \
+         patch("notes_scanner._write_memory", return_value=False):
+        scanner = NotesScanner(role="full")
+        with patch.object(scanner, "_scanner_config", return_value={"enabled": True}):
+            scanner._run_scan()
+
+    state = json.loads(state_file.read_text())
+    assert "x/Notes/1" not in state, "State must not record a note whose file write failed"
+
+
+def test_run_scan_skip_folders_substring_match(tmp_path, monkeypatch):
+    """#148 — skip_folders uses substring matching, not exact-match."""
+    state_file = tmp_path / "state.json"
+    state_file.write_text("{}")
+    monkeypatch.setattr(ns, "STATE_FILE", state_file, raising=False)
+
+    # "Work Archive" should be skipped by skip_folders: ["Archive"]
+    fake_notes = [{"folder": "Work Archive", "title": "Old Note", "id": "x/Notes/99", "modified": "2024-01-01T00:00:00"}]
+    with patch("notes_scanner._read_note_metadata", return_value=fake_notes), \
+         patch("notes_scanner._read_note_body") as mock_body:
+        scanner = NotesScanner(role="full")
+        with patch.object(scanner, "_scanner_config", return_value={"enabled": True, "skip_folders": ["Archive"]}):
+            scanner._run_scan()
+        mock_body.assert_not_called()

@@ -118,7 +118,19 @@ tell application "Notes"
                 if (day of modDate as integer) < 10 then
                     set modStr to modStr & "0"
                 end if
-                set modStr to modStr & (day of modDate as integer as string)
+                set modStr to modStr & (day of modDate as integer as string) & "T"
+                if (hours of modDate as integer) < 10 then
+                    set modStr to modStr & "0"
+                end if
+                set modStr to modStr & (hours of modDate as integer as string) & ":"
+                if (minutes of modDate as integer) < 10 then
+                    set modStr to modStr & "0"
+                end if
+                set modStr to modStr & (minutes of modDate as integer as string) & ":"
+                if (seconds of modDate as integer) < 10 then
+                    set modStr to modStr & "0"
+                end if
+                set modStr to modStr & (seconds of modDate as integer as string)
                 set output to output & recordSep & return
                 set output to output & fName & sep & nTitle & sep & nId & sep & modStr & return
             end try
@@ -173,7 +185,7 @@ def _read_note_metadata() -> list[dict]:
         lines = [l.strip() for l in record.splitlines() if l.strip()]
         if not lines:
             continue
-        # Last non-empty line should be: folder|||title|||id|||YYYY-MM-DD
+        # Last non-empty line should be: folder|||title|||id|||YYYY-MM-DDTHH:MM:SS
         data_line = lines[-1]
         parts = data_line.split("|||")
         if len(parts) < 4:
@@ -218,8 +230,8 @@ def _save_state(state: dict) -> None:
 
 # ── Memory writer ─────────────────────────────────────────────────────────────
 
-def _write_memory(note: dict, body: str) -> None:
-    """Atomically write a memory file for the given note."""
+def _write_memory(note: dict, body: str) -> bool:
+    """Atomically write a memory file for the given note. Returns True on success."""
     path = _memory_path(note["folder"], note["title"], note["id"])
     now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     has_todos = _has_todos(note["folder"], note["title"], body)
@@ -245,12 +257,14 @@ def _write_memory(note: dict, body: str) -> None:
         tmp_path.write_text(content, encoding="utf-8")
         os.rename(str(tmp_path), str(path))
         log.debug("Wrote %s", path.name)
+        return True
     except Exception:
         log.exception("Failed to write %s", path)
         try:
             tmp_path.unlink()
         except Exception:
             pass
+        return False
 
 
 # ── Scanner class ─────────────────────────────────────────────────────────────
@@ -269,7 +283,7 @@ class NotesScanner:
             log.debug("Notes scanner disabled in config")
             return
 
-        skip_folders = {f.lower() for f in sc.get("skip_folders", [])}
+        skip_folders = [f.lower() for f in sc.get("skip_folders", [])]
 
         notes = _read_note_metadata()
         if not notes:
@@ -280,7 +294,8 @@ class NotesScanner:
         to_process = []
 
         for note in notes:
-            if note["folder"].lower() in skip_folders:
+            folder_lower = note["folder"].lower()
+            if any(s in folder_lower for s in skip_folders):
                 continue
             last_mod = state.get(note["id"])
             if last_mod == note["modified"]:
@@ -298,8 +313,8 @@ class NotesScanner:
         for note in batch:
             try:
                 body = _read_note_body(note["id"])
-                _write_memory(note, body)
-                state[note["id"]] = note["modified"]
+                if _write_memory(note, body):
+                    state[note["id"]] = note["modified"]
             except Exception:
                 log.exception("Failed to process note %r", note.get("title", "?"))
 
