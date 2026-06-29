@@ -7,8 +7,7 @@ It NEVER reads from MEMORIES_DIR — all file access is strictly scoped to the
 injected circle_path.
 
 CircleBotRunner wraps a python-telegram-bot Application and is used by daemon.py
-to start one Telegram bot per circle. The /ask LLM command is deferred to a
-future iteration.
+to start one Telegram bot per circle.
 """
 import asyncio
 import json
@@ -82,6 +81,7 @@ class CircleBotHandler:
 
     HELP_TEXT = (
         "Circle commands:\n"
+        "  /ask <question> — ask a question about shared memories\n"
         "  /memories [N] — browse recent memories (N for detail)\n"
         "  /search <query> — keyword search\n"
         "  /events [N] — calendar events (N for detail)\n"
@@ -357,6 +357,66 @@ class CircleBotHandler:
             lines.append(f"... and {len(commitments) - MAX_LIST} more.")
         await update.message.reply_text("\n".join(lines)[:4096])
 
+    # ── /ask LLM query ────────────────────────────────────────────────────────
+
+    async def cmd_ask(self, update, context):
+        """Ask an LLM question about shared memories in this circle."""
+        if not self._check_member(update):
+            await self._deny(update)
+            return
+
+        if not context.args:
+            await update.message.reply_text("Usage: /ask <your question>")
+            return
+
+        query = " ".join(context.args)
+        files = self._load_files()
+
+        # Score by keyword relevance; fall back to most-recent files if no matches
+        query_words = set(query.lower().split())
+        scored = sorted(
+            [
+                (f, _score_keyword(query_words, f["frontmatter"], f["body"]))
+                for f in files
+            ],
+            key=lambda x: x[1],
+            reverse=True,
+        )
+        relevant = [f for f, s in scored[:10] if s > 0] or [f for f, _ in scored[:5]]
+
+        context_parts = []
+        for entry in relevant:
+            fm = entry["frontmatter"]
+            title = fm.get("source_title") or entry["filename"]
+            mem_type = fm.get("type") or ""
+            context_parts.append(f"## {title} [{mem_type}]\n{entry['body'][:1500]}")
+        memory_context = "\n\n---\n\n".join(context_parts) if context_parts else "(no memories)"
+
+        system_prompt = (
+            f"You are an assistant for the '{self._display_name}' circle. "
+            "Answer questions using only the shared memory files shown below. "
+            "If the answer isn't available in the shared memories, say so clearly.\n\n"
+            f"{memory_context}"
+        )
+
+        try:
+            from litellm import acompletion
+            from llm_routes import resolve
+            resp = await acompletion(
+                model=resolve("chat"),
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": query},
+                ],
+            )
+            answer = resp.choices[0].message.content or "(no response)"
+        except Exception as e:
+            log.error("circle-bot: /ask LLM error: %s", e)
+            answer = "Sorry, I couldn't process your question right now."
+
+        for i in range(0, len(answer), 4096):
+            await update.message.reply_text(answer[i : i + 4096])
+
     # ── /join invite flow (FR-6) ──────────────────────────────────────────────
 
     async def cmd_join(self, update, context):
@@ -500,6 +560,7 @@ class CircleBotRunner:
         )
 
         self.app = ApplicationBuilder().token(ruleset.bot_token).build()
+        self.app.add_handler(CommandHandler("ask", handler.cmd_ask))
         self.app.add_handler(CommandHandler("memories", handler.cmd_memories))
         self.app.add_handler(CommandHandler("search", handler.cmd_search))
         self.app.add_handler(CommandHandler("events", handler.cmd_events))

@@ -5,7 +5,7 @@ id: feat-circles-sharing
 version: 1.1.0
 created: 2026-04-16
 updated: 2026-06-29
-status: partial
+status: implemented
 phases_done: [A, B, C, D]
 phases_pending: []
 complexity: high

@@ -395,6 +395,11 @@ async def test_handler_never_reads_memories_dir(tmp_path, monkeypatch):
     await handler.cmd_events(update, ctx)
     await handler.cmd_commitments(update, ctx)
 
+    mock_resp = MagicMock()
+    mock_resp.choices[0].message.content = "answer"
+    with patch("litellm.acompletion", new=AsyncMock(return_value=mock_resp)):
+        await handler.cmd_ask(update, _make_context(args=["what", "events?"]))
+
     # If we got here without the sentinel firing, the invariant holds.
 
 
@@ -638,6 +643,112 @@ def _make_ruleset(
     )
 
 
+# ── /ask LLM query ───────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_ask_no_args_shows_usage(tmp_path):
+    """/ask with no arguments returns the usage hint."""
+    handler = _make_handler(tmp_path)
+    update = _make_update()
+    await handler.cmd_ask(update, _make_context(args=[]))
+    update.message.reply_text.assert_called_once()
+    assert "Usage" in update.message.reply_text.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_ask_non_member_rejected(tmp_path):
+    """/ask rejects users not in the members list."""
+    handler = _make_handler(tmp_path, members=[{"telegram_user_id": 99, "name": "Bob"}])
+    update = _make_update(user_id=42)
+    await handler.cmd_ask(update, _make_context(args=["hello"]))
+    update.message.reply_text.assert_called_once()
+    assert "not a member" in update.message.reply_text.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_ask_calls_llm_and_returns_answer(tmp_path):
+    """/ask calls acompletion with circle-scoped context and relays the answer."""
+    circle_dir = tmp_path / "circle"
+    circle_dir.mkdir()
+    _write_memory(circle_dir, "2026-06-01-school-play-abc.md", {
+        "type": "calendar_event",
+        "source_title": "School Play",
+        "tags": ["kids"],
+    }, "The school play is on Friday.")
+
+    handler = _make_handler(circle_dir, display_name="Family")
+    update = _make_update()
+
+    mock_resp = MagicMock()
+    mock_resp.choices[0].message.content = "The school play is on Friday."
+
+    with patch("litellm.acompletion", new=AsyncMock(return_value=mock_resp)):
+        await handler.cmd_ask(update, _make_context(args=["When", "is", "the", "play?"]))
+
+    update.message.reply_text.assert_called_once()
+    assert "Friday" in update.message.reply_text.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_ask_handles_llm_error_gracefully(tmp_path):
+    """/ask returns an error message when acompletion raises."""
+    handler = _make_handler(tmp_path)
+    update = _make_update()
+
+    with patch("litellm.acompletion", new=AsyncMock(side_effect=Exception("API down"))):
+        await handler.cmd_ask(update, _make_context(args=["anything?"]))
+
+    update.message.reply_text.assert_called_once()
+    assert "couldn't process" in update.message.reply_text.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_ask_chunks_long_response(tmp_path):
+    """/ask chunks responses longer than 4096 characters."""
+    handler = _make_handler(tmp_path)
+    update = _make_update()
+
+    long_answer = "x" * 5000
+    mock_resp = MagicMock()
+    mock_resp.choices[0].message.content = long_answer
+
+    with patch("litellm.acompletion", new=AsyncMock(return_value=mock_resp)):
+        await handler.cmd_ask(update, _make_context(args=["question?"]))
+
+    assert update.message.reply_text.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_ask_uses_circle_path_not_memories_dir(tmp_path):
+    """/ask reads only from circle_path (MEMORIES_DIR isolation invariant)."""
+    circle_dir = tmp_path / "circle"
+    circle_dir.mkdir()
+    _write_memory(circle_dir, "2026-06-01-note-abc.md", {
+        "source_title": "Shared Note",
+        "tags": ["family"],
+    }, "Shared content here.")
+
+    handler = _make_handler(circle_dir)
+    update = _make_update()
+
+    mock_resp = MagicMock()
+    mock_resp.choices[0].message.content = "answer"
+
+    captured_messages = []
+
+    async def fake_acompletion(**kwargs):
+        captured_messages.extend(kwargs.get("messages", []))
+        return mock_resp
+
+    with patch("litellm.acompletion", new=fake_acompletion):
+        await handler.cmd_ask(update, _make_context(args=["note?"]))
+
+    system_content = next(m["content"] for m in captured_messages if m["role"] == "system")
+    assert "Shared content" in system_content
+
+
+# ── CircleBotRunner ───────────────────────────────────────────────────────────
+
 @patch("circle_bot.ApplicationBuilder")
 def test_runner_builds_application_with_token(mock_builder, tmp_path):
     """CircleBotRunner calls ApplicationBuilder().token(bot_token).build()."""
@@ -652,13 +763,13 @@ def test_runner_builds_application_with_token(mock_builder, tmp_path):
 
 @patch("circle_bot.ApplicationBuilder")
 def test_runner_registers_all_commands(mock_builder, tmp_path):
-    """CircleBotRunner registers exactly 6 CommandHandlers on the application."""
+    """CircleBotRunner registers exactly 7 CommandHandlers on the application."""
     ruleset = _make_ruleset()
     ruleset_path = tmp_path / "family.yaml"
     ruleset_path.touch()
     mock_app = mock_builder.return_value.token.return_value.build.return_value
     runner = CircleBotRunner(ruleset, ruleset_path, tmp_path, tmp_path / "circle-invites.json")
-    assert mock_app.add_handler.call_count == 6
+    assert mock_app.add_handler.call_count == 7
 
 
 @patch("circle_bot.ApplicationBuilder")
