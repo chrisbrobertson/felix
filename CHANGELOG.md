@@ -6,6 +6,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.18.0] — 2026-06-29
+
 ### Fixed
 - `chat_handler.py` (`cmd_run`, `cmd_drop`, `cmd_defer`): after mutating an action file, each command now calls `self._cache.invalidate(path.name)` and clears `self._last_action_set`. Previously the stale pending entries remained visible in the next `/actions` call until the periodic sweep refreshed the cache. Closes #155.
 - `chat_handler.py` (`cmd_notes`): multi-word folder names (e.g. `/notes Action Items`) were silently truncated to the last word only. Fixed by joining all non-`todos` args before passing to `_list_notes_text`. Closes #152.
