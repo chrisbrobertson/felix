@@ -19,7 +19,8 @@ MEMORIES_DIR = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/secon
 MUTATING_TOOLS: frozenset[str] = frozenset(
     {"add_goal", "add_project", "add_bug", "add_feature", "close_issue", "close_commitment",
      "close_goal", "close_project", "deliver_pending_replies", "add_todo", "update_feature",
-     "update_issue_priority", "run_action", "drop_action", "defer_action"}
+     "update_issue_priority", "run_action", "drop_action", "defer_action",
+     "report_quota", "reset_quota"}
 )
 
 TOOLS: list[dict] = [
@@ -971,6 +972,80 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_quota",
+            "description": (
+                "Show the current Claude.ai Pro and ChatGPT Plus message quota status "
+                "(messages used, cap, and time until reset). "
+                "Call this when Chris asks about his LLM quota, remaining messages, "
+                "or how many Claude/ChatGPT messages he has left."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "report_quota",
+            "description": (
+                "Self-report the current quota usage for Claude.ai Pro or ChatGPT Plus. "
+                "Call this when Chris says things like 'I've used 23 of my 40 Claude messages', "
+                "'I'm at 30/40 on ChatGPT', or 'my quota resets in 2 hours'. "
+                "platform must be 'claude' or 'chatgpt'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "platform": {
+                        "type": "string",
+                        "description": "Which LLM platform: 'claude' or 'chatgpt'",
+                        "enum": ["claude", "chatgpt"],
+                    },
+                    "used": {
+                        "type": "integer",
+                        "description": "Number of messages used so far in the current window",
+                    },
+                    "cap": {
+                        "type": "integer",
+                        "description": "Total message cap for the window",
+                    },
+                    "reset_minutes": {
+                        "type": "integer",
+                        "description": "Minutes until the quota window resets (default: 300 = 5 hours)",
+                    },
+                },
+                "required": ["platform", "used", "cap"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "reset_quota",
+            "description": (
+                "Clear the stored quota state for Claude.ai Pro or ChatGPT Plus "
+                "(e.g. when the window has rolled over and the old data is stale). "
+                "Call this when Chris says 'my Claude quota reset' or 'clear the ChatGPT quota'. "
+                "platform must be 'claude' or 'chatgpt'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "platform": {
+                        "type": "string",
+                        "description": "Which LLM platform to clear: 'claude' or 'chatgpt'",
+                        "enum": ["claude", "chatgpt"],
+                    },
+                },
+                "required": ["platform"],
+            },
+        },
+    },
 ]
 
 
@@ -1209,6 +1284,17 @@ async def _call(name: str, arguments: dict, handler):
         )
     if name == "get_aichat":
         return await handler._get_aichat_text(int(arguments["index"]))
+    if name == "get_quota":
+        return handler._quota_status_text()
+    if name == "report_quota":
+        return handler._report_quota_text(
+            platform=arguments["platform"],
+            used=int(arguments["used"]),
+            cap=int(arguments["cap"]),
+            reset_minutes=int(arguments["reset_minutes"]) if "reset_minutes" in arguments else None,
+        )
+    if name == "reset_quota":
+        return handler._reset_quota_text(platform=arguments["platform"])
     if name in ("add_feature", "add_bug"):
         import hashlib, os, re, yaml
         from datetime import datetime

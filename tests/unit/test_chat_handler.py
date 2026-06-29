@@ -7507,3 +7507,72 @@ async def test_list_notes_empty_corpus_clears_index(handler, brain_dir):
     # get_note must now return the guard, not the stale previous note
     detail = await handler._get_note_text(1)
     assert "No notes listed" in detail
+
+
+# --- quota tool helpers ---
+
+def test_quota_status_text_no_scanner(handler):
+    """_quota_status_text returns a graceful message when quota_scanner is absent."""
+    handler.scanners = {}
+    result = handler._quota_status_text()
+    assert "not available" in result
+
+
+def test_quota_status_text_with_scanner(handler):
+    """_quota_status_text delegates to quota_scanner.render_status()."""
+    mock_scanner = MagicMock()
+    mock_scanner.render_status.return_value = "claude: 10/40 (resets in 4h)\nchatgpt: (no data yet)"
+    handler.scanners = {"quota_scanner": mock_scanner}
+
+    result = handler._quota_status_text()
+
+    assert "claude" in result
+    assert "10/40" in result
+    mock_scanner.render_status.assert_called_once()
+
+
+def test_report_quota_text_no_scanner(handler):
+    """_report_quota_text returns graceful message when quota_scanner is absent."""
+    handler.scanners = {}
+    result = handler._report_quota_text("claude", 23, 40)
+    assert "not available" in result
+
+
+def test_report_quota_text_delegates_to_scanner(handler):
+    """_report_quota_text calls quota_scanner.report() and returns confirmation."""
+    mock_scanner = MagicMock()
+    handler.scanners = {"quota_scanner": mock_scanner}
+
+    result = handler._report_quota_text("claude", 23, 40, reset_minutes=120)
+
+    mock_scanner.report.assert_called_once_with("claude", 23, 40, 120)
+    assert "23/40" in result
+    assert "claude" in result
+
+
+def test_report_quota_text_default_reset_minutes(handler):
+    """_report_quota_text passes reset_minutes=None when not supplied."""
+    mock_scanner = MagicMock()
+    handler.scanners = {"quota_scanner": mock_scanner}
+
+    handler._report_quota_text("chatgpt", 10, 50)
+
+    mock_scanner.report.assert_called_once_with("chatgpt", 10, 50, None)
+
+
+def test_reset_quota_text_no_scanner(handler):
+    """_reset_quota_text returns graceful message when quota_scanner is absent."""
+    handler.scanners = {}
+    result = handler._reset_quota_text("claude")
+    assert "not available" in result
+
+
+def test_reset_quota_text_delegates_to_scanner(handler):
+    """_reset_quota_text calls quota_scanner.clear() and returns confirmation."""
+    mock_scanner = MagicMock()
+    handler.scanners = {"quota_scanner": mock_scanner}
+
+    result = handler._reset_quota_text("chatgpt")
+
+    mock_scanner.clear.assert_called_once_with("chatgpt")
+    assert "chatgpt" in result

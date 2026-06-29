@@ -3125,6 +3125,29 @@ class TelegramChatHandler:
             "Usage: /quota | /quota report <platform> <used>/<cap> [reset <min>] | /quota reset <platform>"
         )
 
+    def _quota_status_text(self) -> str:
+        """Return current quota status for both platforms. Used by get_quota tool."""
+        quota_scanner = self.scanners.get("quota_scanner")
+        if quota_scanner is None:
+            return "Quota scanner not available (requires role=full)."
+        return quota_scanner.render_status()
+
+    def _report_quota_text(self, platform: str, used: int, cap: int, reset_minutes=None) -> str:
+        """Self-report quota and return confirmation. Used by report_quota tool."""
+        quota_scanner = self.scanners.get("quota_scanner")
+        if quota_scanner is None:
+            return "Quota scanner not available (requires role=full)."
+        quota_scanner.report(platform, used, cap, reset_minutes)
+        return f"Recorded {platform} at {used}/{cap}."
+
+    def _reset_quota_text(self, platform: str) -> str:
+        """Clear quota state for a platform. Used by reset_quota tool."""
+        quota_scanner = self.scanners.get("quota_scanner")
+        if quota_scanner is None:
+            return "Quota scanner not available (requires role=full)."
+        quota_scanner.clear(platform)
+        return f"Cleared {platform} quota state."
+
     # ── Agent actions commands ────────────────────────────────────────────────
 
     async def _list_actions_text(self, filter_status: Optional[str] = None) -> str:

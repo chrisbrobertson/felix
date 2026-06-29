@@ -38,6 +38,9 @@ def mock_handler():
     h._defer_action_text = AsyncMock(return_value="Action 1 snoozed for 24h.")
     h._update_feature_text = AsyncMock(return_value="feature updated")
     h._update_issue_priority_text = AsyncMock(return_value="priority updated")
+    h._quota_status_text = MagicMock(return_value="claude: 23/40 (resets in 2h30m)\nchatgpt: (no data yet)")
+    h._report_quota_text = MagicMock(return_value="Recorded claude at 23/40.")
+    h._reset_quota_text = MagicMock(return_value="Cleared claude quota state.")
     return h
 
 
@@ -393,6 +396,7 @@ def test_all_tool_names_in_dispatcher():
         "run_action", "drop_action", "defer_action",
         "update_issue_priority",
         "list_notes", "get_note", "list_insights", "list_aichat", "get_aichat",
+        "get_quota", "report_quota", "reset_quota",
         # Handled in handle_message's tool_dispatch closure (needs chat_id in scope)
         "get_recent_commands",
     }
@@ -929,3 +933,93 @@ async def test_get_feature_dispatch_by_short_id(mock_handler):
 
     assert "Some bug" in result
     mock_handler._get_feature_text.assert_called_once_with("ab12cd")
+
+
+# --- quota tool tests ---
+
+def test_get_quota_in_tools_list():
+    """get_quota is present in TOOLS."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "get_quota" in names
+
+
+def test_report_quota_in_tools_list():
+    """report_quota is present in TOOLS with required fields."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "report_quota" in names
+
+    tool = next(t for t in chat_tools.TOOLS if t["function"]["name"] == "report_quota")
+    props = tool["function"]["parameters"]["properties"]
+    required = tool["function"]["parameters"].get("required", [])
+    assert "platform" in props
+    assert "used" in props
+    assert "cap" in props
+    assert "platform" in required
+    assert "used" in required
+    assert "cap" in required
+
+
+def test_reset_quota_in_tools_list():
+    """reset_quota is present in TOOLS with required platform field."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "reset_quota" in names
+
+    tool = next(t for t in chat_tools.TOOLS if t["function"]["name"] == "reset_quota")
+    props = tool["function"]["parameters"]["properties"]
+    required = tool["function"]["parameters"].get("required", [])
+    assert "platform" in props
+    assert "platform" in required
+
+
+def test_report_quota_and_reset_quota_are_mutating():
+    """report_quota and reset_quota are listed in MUTATING_TOOLS."""
+    assert "report_quota" in chat_tools.MUTATING_TOOLS
+    assert "reset_quota" in chat_tools.MUTATING_TOOLS
+
+
+def test_get_quota_not_mutating():
+    """get_quota is read-only and NOT in MUTATING_TOOLS."""
+    assert "get_quota" not in chat_tools.MUTATING_TOOLS
+
+
+@pytest.mark.asyncio
+async def test_get_quota_dispatch(mock_handler):
+    """get_quota dispatches to _quota_status_text and returns the status string."""
+    result = await chat_tools.dispatch("get_quota", {}, mock_handler)
+
+    assert "claude" in result
+    mock_handler._quota_status_text.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_report_quota_dispatch(mock_handler):
+    """report_quota dispatches to _report_quota_text with parsed args."""
+    result = await chat_tools.dispatch(
+        "report_quota", {"platform": "claude", "used": 23, "cap": 40}, mock_handler
+    )
+
+    assert "23/40" in result
+    mock_handler._report_quota_text.assert_called_once_with(
+        platform="claude", used=23, cap=40, reset_minutes=None
+    )
+
+
+@pytest.mark.asyncio
+async def test_report_quota_dispatch_with_reset(mock_handler):
+    """report_quota passes reset_minutes when provided."""
+    mock_handler._report_quota_text = MagicMock(return_value="Recorded chatgpt at 10/50.")
+    await chat_tools.dispatch(
+        "report_quota", {"platform": "chatgpt", "used": 10, "cap": 50, "reset_minutes": 120}, mock_handler
+    )
+    mock_handler._report_quota_text.assert_called_once_with(
+        platform="chatgpt", used=10, cap=50, reset_minutes=120
+    )
+
+
+@pytest.mark.asyncio
+async def test_reset_quota_dispatch(mock_handler):
+    """reset_quota dispatches to _reset_quota_text with the platform."""
+    result = await chat_tools.dispatch("reset_quota", {"platform": "claude"}, mock_handler)
+
+    assert "claude" in result
+    mock_handler._reset_quota_text.assert_called_once_with(platform="claude")
