@@ -1972,6 +1972,8 @@ class TelegramChatHandler:
 
     def _close_goal_text(self, title: str, status: str = "completed") -> str:
         """Complete or abandon a goal by title substring. Used by close_goal tool."""
+        if not title or not title.strip():
+            return "Please specify a goal title to close."
         valid = {"completed", "abandoned"}
         if status not in valid:
             return f"Invalid status '{status}'. Use: completed, abandoned"
@@ -1991,6 +1993,10 @@ class TelegramChatHandler:
         path = hits[0]
         fm = self._parse_frontmatter(path)
         goal_title = fm.get("source_title", path.stem)
+        current_status = fm.get("status")
+        if current_status == status:
+            verb = "completed" if status == "completed" else "abandoned"
+            return f"Goal was already {verb}: \"{goal_title}\""
         try:
             self._goal_manager.update_goal_status(path, status)
             verb = "completed" if status == "completed" else "abandoned"
@@ -2000,6 +2006,8 @@ class TelegramChatHandler:
 
     def _close_project_text(self, title: str, status: str = "completed") -> str:
         """Complete, abandon, or put a project on hold by title substring. Used by close_project tool."""
+        if not title or not title.strip():
+            return "Please specify a project title to close."
         status = {"on_hold": "on-hold"}.get(status, status)
         valid = {"completed", "abandoned", "on-hold"}
         if status not in valid:
@@ -2020,6 +2028,10 @@ class TelegramChatHandler:
         path = hits[0]
         fm = self._parse_frontmatter(path)
         project_title = fm.get("source_title", path.stem)
+        current_status = fm.get("status")
+        if current_status == status:
+            verb = {"completed": "completed", "abandoned": "abandoned", "on-hold": "put on hold"}[status]
+            return f"Project was already {verb}: \"{project_title}\""
         try:
             self._goal_manager.update_project_status(path, status)
             verb = {"completed": "completed", "abandoned": "abandoned", "on-hold": "put on hold"}[status]

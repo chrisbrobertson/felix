@@ -5707,6 +5707,38 @@ def test_close_project_ambiguous_returns_disambiguation(handler, brain_dir):
     assert "Multiple projects match" in result
 
 
+def test_close_goal_empty_title_returns_error(handler, brain_dir):
+    """_close_goal_text rejects empty title to prevent matching all goals."""
+    result = handler._close_goal_text("")
+    assert "specify" in result.lower()
+
+
+def test_close_goal_already_completed_is_no_op(handler, brain_dir):
+    """_close_goal_text reports 'already completed' rather than silently re-completing."""
+    memories_dir = brain_dir / "memories"
+    memories_dir.mkdir(exist_ok=True)
+    _make_goal(memories_dir, "goal-run-aaa111.md", "Run a 5K", status="completed")
+    result = handler._close_goal_text("5K")
+    assert "already" in result
+    assert "completed" in result
+
+
+def test_close_project_empty_title_returns_error(handler, brain_dir):
+    """_close_project_text rejects empty title to prevent matching all projects."""
+    result = handler._close_project_text("")
+    assert "specify" in result.lower()
+
+
+def test_close_project_already_on_hold_is_no_op(handler, brain_dir):
+    """_close_project_text reports 'already put on hold' rather than silently re-applying."""
+    memories_dir = brain_dir / "memories"
+    memories_dir.mkdir(exist_ok=True)
+    _make_project(memories_dir, "project-web-eee111.md", "Website redesign", status="on-hold")
+    result = handler._close_project_text("Website", status="on_hold")
+    assert "already" in result
+    assert "hold" in result
+
+
 # ── Document upload tests ─────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
