@@ -6,6 +6,8 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.20.0] — 2026-06-29
+
 ### Added
 - **`run_action`, `drop_action`, `defer_action` LLM tool calls** (closes #129 partial): the chat skill can now approve/execute, reject, or snooze pending agent-proposed actions via natural language ("run action 2", "drop that action", "snooze it for 48 hours"). Tool dispatch routes to new `_run_action_text`, `_drop_action_text`, `_defer_action_text` helpers in `chat_handler.py`. All three added to `MUTATING_TOOLS`. 11 new tests in `test_e2e_actions.py` and `test_chat_tools.py`.
 
