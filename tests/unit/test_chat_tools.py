@@ -215,7 +215,7 @@ def test_all_tool_names_in_dispatcher():
         "list_contacts", "list_comms", "list_readings", "search_memories", "get_memory",
         "list_commands", "deliver_pending_replies", "discard_pending_replies",
         "add_goal", "add_project", "add_feature", "add_bug", "close_issue",
-        "close_commitment",
+        "close_commitment", "close_goal", "close_project",
         # Handled in handle_message's tool_dispatch closure (needs chat_id in scope)
         "get_recent_commands",
     }

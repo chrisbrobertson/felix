@@ -8,6 +8,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 - **Pre-commit hook** (`hooks/pre-commit`): running `install.sh` now installs a git pre-commit hook that gates every commit behind the full pytest suite. The hook uses the deploy venv when available, falls back to system pytest, and skips gracefully on a fresh clone before venv exists. Addresses gap #3 (P1) from the test coverage assessment (#111).
+- `close_goal` and `close_project` LLM tool calls so the chat skill can complete, abandon, or put on hold a goal/project via natural language (e.g. "I achieved my 5K goal", "put the website project on hold"). Title-substring matching with disambiguation when multiple items match. Closes #124; incremental progress on #128, #129.
 
 ### Fixed
 - `skill_creator.py`: `TEMPLATE_SKILL` was pre-computed from `SKILLS_DIR` at module load time, so patching `SKILLS_DIR` in tests left `TEMPLATE_SKILL` pointing at the real iCloud path — 2 unit tests failed. Replaced the module-level constant with an inline `SKILLS_DIR / "summarize-webpage.md"` reference.

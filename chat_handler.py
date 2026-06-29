@@ -1900,6 +1900,63 @@ class TelegramChatHandler:
         except Exception as e:
             return f"Error updating issue: {e}"
 
+    def _close_goal_text(self, title: str, status: str = "completed") -> str:
+        """Complete or abandon a goal by title substring. Used by close_goal tool."""
+        valid = {"completed", "abandoned"}
+        if status not in valid:
+            return f"Invalid status '{status}'. Use: completed, abandoned"
+        goals = self._goal_manager.list_goals(status=None)
+        hits = [
+            p for p in goals
+            if title.lower() in (self._parse_frontmatter(p).get("source_title") or "").lower()
+        ]
+        if not hits:
+            return f"No goal found matching '{title}'."
+        if len(hits) > 1:
+            lines = ["Multiple goals match — be more specific:"]
+            for h in hits[:5]:
+                fm = self._parse_frontmatter(h)
+                lines.append(f"• [{fm.get('status','?')}] {fm.get('source_title','?')[:60]}")
+            return "\n".join(lines)
+        path = hits[0]
+        fm = self._parse_frontmatter(path)
+        goal_title = fm.get("source_title", path.stem)
+        try:
+            self._goal_manager.update_goal_status(path, status)
+            verb = "completed" if status == "completed" else "abandoned"
+            return f"Goal {verb}: \"{goal_title}\""
+        except ValueError as e:
+            return f"Error: {e}"
+
+    def _close_project_text(self, title: str, status: str = "completed") -> str:
+        """Complete, abandon, or put a project on hold by title substring. Used by close_project tool."""
+        status = {"on_hold": "on-hold"}.get(status, status)
+        valid = {"completed", "abandoned", "on-hold"}
+        if status not in valid:
+            return f"Invalid status '{status}'. Use: completed, abandoned, on_hold"
+        projects = self._goal_manager.list_projects(status=None)
+        hits = [
+            p for p in projects
+            if title.lower() in (self._parse_frontmatter(p).get("source_title") or "").lower()
+        ]
+        if not hits:
+            return f"No project found matching '{title}'."
+        if len(hits) > 1:
+            lines = ["Multiple projects match — be more specific:"]
+            for h in hits[:5]:
+                fm = self._parse_frontmatter(h)
+                lines.append(f"• [{fm.get('status','?')}] {fm.get('source_title','?')[:60]}")
+            return "\n".join(lines)
+        path = hits[0]
+        fm = self._parse_frontmatter(path)
+        project_title = fm.get("source_title", path.stem)
+        try:
+            self._goal_manager.update_project_status(path, status)
+            verb = {"completed": "completed", "abandoned": "abandoned", "on-hold": "put on hold"}[status]
+            return f"Project {verb}: \"{project_title}\""
+        except ValueError as e:
+            return f"Error: {e}"
+
     async def cmd_commitments(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
             return
