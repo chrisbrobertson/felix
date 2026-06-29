@@ -5328,25 +5328,31 @@ class TelegramChatHandler:
         version = version_file.read_text().strip() if version_file.exists() else "unknown"
         await update.message.reply_text(f"second-brain v{version}")
 
+    def _usage_text(self, days: int = 7, daily: bool = False) -> str:
+        """Return formatted LLM token usage summary text (called by cmd_usage and tool dispatch)."""
+        from usage_tracker import render_usage, render_daily_breakdown
+        if daily:
+            return render_daily_breakdown()
+        return render_usage(max(1, min(days, 90)))
+
     async def cmd_usage(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show LLM token usage summary. /usage [days] or /usage daily."""
         if not self._check_auth(update):
             return
-        from usage_tracker import render_usage, render_daily_breakdown
         args = context.args or []
         if args and args[0] == "daily":
-            text = render_daily_breakdown()
+            text = self._usage_text(daily=True)
         else:
             days = 7
             if args:
                 try:
-                    days = max(1, min(int(args[0]), 90))
+                    days = int(args[0])
                 except ValueError:
                     await update.message.reply_text(
                         "Usage: /usage [days] or /usage daily"
                     )
                     return
-            text = render_usage(days)
+            text = self._usage_text(days=days)
         await self._send_reply(update, text)
 
     async def cmd_rebuild_cache(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -5366,19 +5372,15 @@ class TelegramChatHandler:
             log.exception("Cache rebuild failed")
             await update.message.reply_text(f"Cache rebuild failed: {_safe_error(e)}")
 
-    async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show last heartbeat time and loop status for all connected instances."""
-        if not self._check_auth(update):
-            return
-
+    def _status_text(self) -> str:
+        """Return formatted daemon heartbeat/loop status text (called by cmd_status and tool dispatch)."""
         instances = hb.read_all(BRAIN_DIR)
         if not instances:
-            await update.message.reply_text(
+            return (
                 "No heartbeat data found.\n"
                 "Instances write heartbeat-{hostname}.json to the brain dir "
                 "after each scan iteration — data will appear once the first iteration completes."
             )
-            return
 
         now = datetime.now(timezone.utc)
         lines = []
@@ -5410,7 +5412,7 @@ class TelegramChatHandler:
             loops = inst.get("loops", {})
             if loops:
                 for loop_name, info in sorted(loops.items()):
-                    status = info.get("status", "?")
+                    loop_status = info.get("status", "?")
                     last_run = info.get("last_run", "")
                     error = info.get("error")
                     try:
@@ -5425,9 +5427,9 @@ class TelegramChatHandler:
                     except Exception:
                         run_str = "unknown"
 
-                    flag = "OK " if status == "ok" else "ERR"
+                    flag = "OK " if loop_status == "ok" else "ERR"
                     line = f"  {flag}  {loop_name:<32} {run_str}"
-                    if status != "ok" and error:
+                    if loop_status != "ok" and error:
                         scrubbed = re.sub(r'/\S+/\S+', '[path]', error)[:80]
                         line += f"\n       {scrubbed}"
                     lines.append(line)
@@ -5436,7 +5438,13 @@ class TelegramChatHandler:
 
             lines.append("")
 
-        await self._send_reply(update, "\n".join(lines).rstrip())
+        return "\n".join(lines).rstrip()
+
+    async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show last heartbeat time and loop status for all connected instances."""
+        if not self._check_auth(update):
+            return
+        await self._send_reply(update, self._status_text())
 
     # ── /code command ─────────────────────────────────────────────────────────
 
@@ -7343,23 +7351,37 @@ class TelegramChatHandler:
 
     # ── Skill Management commands ─────────────────────────────────────────────
 
-    async def cmd_skill_drafts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self._check_auth(update):
-            return
+    def _list_skill_drafts_text(self) -> str:
+        """Return formatted skill drafts list text (called by cmd_skill_drafts and tool dispatch)."""
         if self.skill_creator is None:
-            await self._send_reply(update, "Skill creator not available.")
-            return
+            return "Skill creator not available."
         drafts = self.skill_creator.list_pending_drafts()
         if not drafts:
-            await self._send_reply(update, "No pending skill drafts.")
-            return
+            return "No pending skill drafts."
         self._last_skill_draft_set = drafts
         lines = ["Pending skill drafts:"]
         for i, d in enumerate(drafts, 1):
             types = ", ".join(d.get("content_types", []))
             created = d.get("created", "")[:10]
             lines.append(f"{i}. {d['skill_name']} — type: {types} ({created})")
-        await self._send_reply(update, "\n".join(lines))
+        return "\n".join(lines)
+
+    def _get_skill_draft_text(self, index: int) -> str:
+        """Return skill draft content for position N (called by cmd_skill_draft and tool dispatch)."""
+        try:
+            draft = self._last_skill_draft_set[index - 1]
+        except (IndexError, AttributeError):
+            return "No draft at that position. Call list_skill_drafts first."
+        path = Path(draft.get("draft_path", ""))
+        if not path.exists():
+            return f"Draft file not found: {path}"
+        content = path.read_text()
+        return f"```\n{content[:3800]}\n```"
+
+    async def cmd_skill_drafts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._check_auth(update):
+            return
+        await self._send_reply(update, self._list_skill_drafts_text())
 
     async def cmd_skill_draft(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):
@@ -7383,16 +7405,14 @@ class TelegramChatHandler:
 
         try:
             n = int(context.args[0])
-            draft = self._last_skill_draft_set[n - 1]
         except (ValueError, IndexError):
             await self._send_reply(update, self._format_group_help("Skill Management"))
             return
-        path = Path(draft.get("draft_path", ""))
-        if not path.exists():
-            await self._send_reply(update, f"Draft file not found: {path}")
+        result = self._get_skill_draft_text(n)
+        if result.startswith("No draft at that position"):
+            await self._send_reply(update, self._format_group_help("Skill Management"))
             return
-        content = path.read_text()
-        await self._send_reply(update, f"```\n{content[:3800]}\n```")
+        await self._send_reply(update, result)
 
     async def cmd_approve_skill(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._check_auth(update):

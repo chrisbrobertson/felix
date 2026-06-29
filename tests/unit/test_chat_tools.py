@@ -38,6 +38,10 @@ def mock_handler():
     h._defer_action_text = AsyncMock(return_value="Action 1 snoozed for 24h.")
     h._update_feature_text = AsyncMock(return_value="feature updated")
     h._update_issue_priority_text = AsyncMock(return_value="priority updated")
+    h._status_text = MagicMock(return_value="[mac-studio] full v1.19.0  (last seen 2m ago)\n  OK   browser_watcher  5m ago")
+    h._usage_text = MagicMock(return_value="Token usage (7d): 1,234,567 tokens / $1.23")
+    h._list_skill_drafts_text = MagicMock(return_value="Pending skill drafts:\n1. summarize — type: webpage (2026-06-01)")
+    h._get_skill_draft_text = MagicMock(return_value="```\n## Instructions\nSummarise the page.\n```")
     return h
 
 
@@ -393,6 +397,7 @@ def test_all_tool_names_in_dispatcher():
         "run_action", "drop_action", "defer_action",
         "update_issue_priority",
         "list_notes", "get_note", "list_insights", "list_aichat", "get_aichat",
+        "get_status", "get_usage", "list_skill_drafts", "get_skill_draft",
         # Handled in handle_message's tool_dispatch closure (needs chat_id in scope)
         "get_recent_commands",
     }
@@ -929,3 +934,103 @@ async def test_get_feature_dispatch_by_short_id(mock_handler):
 
     assert "Some bug" in result
     mock_handler._get_feature_text.assert_called_once_with("ab12cd")
+
+
+# --- get_status tool tests ---
+
+def test_get_status_tool_in_tools_list():
+    """get_status is present in TOOLS with no required fields."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "get_status" in names
+
+    tool = next(t for t in chat_tools.TOOLS if t["function"]["name"] == "get_status")
+    assert "daemon" in tool["function"]["description"].lower()
+
+
+@pytest.mark.asyncio
+async def test_get_status_dispatch(mock_handler):
+    """get_status dispatches to _status_text with no arguments."""
+    result = await chat_tools.dispatch("get_status", {}, mock_handler)
+
+    assert "mac-studio" in result
+    mock_handler._status_text.assert_called_once_with()
+
+
+# --- get_usage tool tests ---
+
+def test_get_usage_tool_in_tools_list():
+    """get_usage is present in TOOLS with days and daily parameters."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "get_usage" in names
+
+    tool = next(t for t in chat_tools.TOOLS if t["function"]["name"] == "get_usage")
+    params = tool["function"]["parameters"]
+    assert "days" in params["properties"]
+    assert "daily" in params["properties"]
+
+
+@pytest.mark.asyncio
+async def test_get_usage_dispatch_default(mock_handler):
+    """get_usage dispatches to _usage_text with default days=7 and daily=False."""
+    result = await chat_tools.dispatch("get_usage", {}, mock_handler)
+
+    assert "Token usage" in result
+    mock_handler._usage_text.assert_called_once_with(days=7, daily=False)
+
+
+@pytest.mark.asyncio
+async def test_get_usage_dispatch_with_days(mock_handler):
+    """get_usage passes explicit days parameter to _usage_text."""
+    await chat_tools.dispatch("get_usage", {"days": 30}, mock_handler)
+
+    mock_handler._usage_text.assert_called_once_with(days=30, daily=False)
+
+
+@pytest.mark.asyncio
+async def test_get_usage_dispatch_daily_mode(mock_handler):
+    """get_usage passes daily=True when requested."""
+    await chat_tools.dispatch("get_usage", {"daily": True}, mock_handler)
+
+    mock_handler._usage_text.assert_called_once_with(days=7, daily=True)
+
+
+# --- list_skill_drafts tool tests ---
+
+def test_list_skill_drafts_tool_in_tools_list():
+    """list_skill_drafts is present in TOOLS."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "list_skill_drafts" in names
+
+    tool = next(t for t in chat_tools.TOOLS if t["function"]["name"] == "list_skill_drafts")
+    assert "skill" in tool["function"]["description"].lower()
+
+
+@pytest.mark.asyncio
+async def test_list_skill_drafts_dispatch(mock_handler):
+    """list_skill_drafts dispatches to _list_skill_drafts_text with no arguments."""
+    result = await chat_tools.dispatch("list_skill_drafts", {}, mock_handler)
+
+    assert "Pending skill drafts" in result
+    mock_handler._list_skill_drafts_text.assert_called_once_with()
+
+
+# --- get_skill_draft tool tests ---
+
+def test_get_skill_draft_tool_in_tools_list():
+    """get_skill_draft is present in TOOLS with required index field."""
+    names = [t["function"]["name"] for t in chat_tools.TOOLS]
+    assert "get_skill_draft" in names
+
+    tool = next(t for t in chat_tools.TOOLS if t["function"]["name"] == "get_skill_draft")
+    params = tool["function"]["parameters"]
+    assert "index" in params["properties"]
+    assert "index" in params.get("required", [])
+
+
+@pytest.mark.asyncio
+async def test_get_skill_draft_dispatch(mock_handler):
+    """get_skill_draft dispatches to _get_skill_draft_text with the index."""
+    result = await chat_tools.dispatch("get_skill_draft", {"index": 1}, mock_handler)
+
+    assert "Instructions" in result
+    mock_handler._get_skill_draft_text.assert_called_once_with(1)

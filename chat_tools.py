@@ -971,6 +971,76 @@ TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_status",
+            "description": (
+                "Get the daemon heartbeat and loop status for all connected instances. "
+                "Shows hostname, role, version, last heartbeat age, and per-loop OK/ERR status. "
+                "Call this when the user asks if the daemon is running, which loops are healthy, "
+                "or whether any instance is stale or erroring."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_usage",
+            "description": (
+                "Get LLM token usage summary. Shows cost, token counts, and call counts "
+                "broken down by model over a rolling window. Call this when the user asks "
+                "about API spend, token usage, or how much the system has consumed."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "days": {
+                        "type": "integer",
+                        "description": "Number of days to summarise (default 7, max 90)",
+                    },
+                    "daily": {
+                        "type": "boolean",
+                        "description": "If true, show day-by-day breakdown instead of rolling summary",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_skill_drafts",
+            "description": (
+                "List pending skill optimizer drafts awaiting approval. "
+                "Call this when the user asks about skill drafts, skill improvements waiting for review, "
+                "or what the skill optimizer has proposed. Use get_skill_draft to see a specific draft."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_skill_draft",
+            "description": (
+                "Get the full content of a specific skill draft by its list index. "
+                "Call list_skill_drafts first to get the numbered list, then use this "
+                "to read the proposed skill instructions for a specific draft."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "index": {
+                        "type": "integer",
+                        "description": "1-based position from the last list_skill_drafts result",
+                    },
+                },
+                "required": ["index"],
+            },
+        },
+    },
 ]
 
 
@@ -1191,6 +1261,16 @@ async def _call(name: str, arguments: dict, handler):
             int(arguments["index"]),
             hours=int(arguments.get("hours", 24)),
         )
+    if name == "get_status":
+        return handler._status_text()
+    if name == "get_usage":
+        days = max(1, min(int(arguments.get("days", 7)), 90))
+        daily = bool(arguments.get("daily", False))
+        return handler._usage_text(days=days, daily=daily)
+    if name == "list_skill_drafts":
+        return handler._list_skill_drafts_text()
+    if name == "get_skill_draft":
+        return handler._get_skill_draft_text(int(arguments["index"]))
     if name == "list_notes":
         return await handler._list_notes_text(
             limit=max(1, min(int(arguments.get("limit", 20)), 100)),
