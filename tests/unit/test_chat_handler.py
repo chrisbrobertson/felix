@@ -7315,3 +7315,184 @@ async def test_cmd_notes_todos_flag_not_treated_as_folder(handler, brain_dir):
 
     assert captured.get("todos_only") is True
     assert captured.get("folder_filter") is None
+
+
+# ── goal/project field mutation helpers (LLM tools) ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_update_goal_note_text_adds_note(brain_dir, handler):
+    """_update_goal_note_text appends a note to the goal file."""
+    mem_dir = brain_dir / "memories"
+    goal_path = mem_dir / "goal-run-abc123.md"
+    goal_path.write_text(GOAL_FILE_TEXT)
+    handler._last_goal_set = [goal_path]
+
+    result = await handler._update_goal_note_text(index=1, note="Ran 3km today")
+
+    assert "Note added" in result
+    assert "Run a 5K" in result
+
+
+@pytest.mark.asyncio
+async def test_update_goal_note_text_out_of_range(brain_dir, handler):
+    """_update_goal_note_text returns an error for an out-of-range index."""
+    mem_dir = brain_dir / "memories"
+    goal_path = mem_dir / "goal-run-abc123.md"
+    goal_path.write_text(GOAL_FILE_TEXT)
+    handler._last_goal_set = [goal_path]
+
+    result = await handler._update_goal_note_text(index=5, note="note")
+
+    assert "out of range" in result.lower() or "error" in result.lower() or "Index" in result
+
+
+@pytest.mark.asyncio
+async def test_update_goal_due_text_sets_date(brain_dir, handler):
+    """_update_goal_due_text sets a due date on the goal."""
+    mem_dir = brain_dir / "memories"
+    goal_path = mem_dir / "goal-run-abc123.md"
+    goal_path.write_text(GOAL_FILE_TEXT)
+    handler._last_goal_set = [goal_path]
+
+    result = await handler._update_goal_due_text(index=1, due_date="2026-12-31")
+
+    assert "2026-12-31" in result
+    assert "Run a 5K" in result
+
+
+@pytest.mark.asyncio
+async def test_update_goal_due_text_clears_date(brain_dir, handler):
+    """_update_goal_due_text with 'none' clears the due date."""
+    mem_dir = brain_dir / "memories"
+    goal_path = mem_dir / "goal-run-abc123.md"
+    goal_path.write_text(GOAL_FILE_TEXT)
+    handler._last_goal_set = [goal_path]
+
+    result = await handler._update_goal_due_text(index=1, due_date="none")
+
+    assert "cleared" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_update_project_note_text_adds_note(brain_dir, handler):
+    """_update_project_note_text appends a note to the project file."""
+    mem_dir = brain_dir / "memories"
+    proj_path = mem_dir / "project-q2-def456.md"
+    proj_path.write_text(PROJECT_FILE_TEXT)
+    handler._last_project_set = [proj_path]
+
+    result = await handler._update_project_note_text(index=1, note="Finished mockups")
+
+    assert "Note added" in result
+    assert "Q2 Rollout" in result
+
+
+@pytest.mark.asyncio
+async def test_update_project_due_text_sets_date(brain_dir, handler):
+    """_update_project_due_text sets a due date on the project."""
+    mem_dir = brain_dir / "memories"
+    proj_path = mem_dir / "project-q2-def456.md"
+    proj_path.write_text(PROJECT_FILE_TEXT)
+    handler._last_project_set = [proj_path]
+
+    result = await handler._update_project_due_text(index=1, due_date="2026-09-01")
+
+    assert "2026-09-01" in result
+    assert "Q2 Rollout" in result
+
+
+@pytest.mark.asyncio
+async def test_add_milestone_text_adds_milestone(brain_dir, handler):
+    """_add_milestone_text adds a milestone to the project."""
+    mem_dir = brain_dir / "memories"
+    proj_path = mem_dir / "project-q2-def456.md"
+    proj_path.write_text(PROJECT_FILE_TEXT)
+    handler._last_project_set = [proj_path]
+
+    result = await handler._add_milestone_text(project_index=1, text="Launch beta")
+
+    assert "Milestone added" in result
+    assert "Launch beta" in result
+
+
+@pytest.mark.asyncio
+async def test_toggle_milestone_text_marks_done(brain_dir, handler):
+    """_toggle_milestone_text toggles a milestone to done."""
+    mem_dir = brain_dir / "memories"
+    # Write a project with one milestone
+    proj_text = (
+        "---\n"
+        "type: project\n"
+        "category: work\n"
+        "source_title: Q2 Rollout\n"
+        "summary: ''\n"
+        "tags: []\n"
+        "created: '2026-04-15T09:00:00'\n"
+        "due_date: null\n"
+        "status: active\n"
+        "priority: medium\n"
+        "linked_goal: null\n"
+        "milestones:\n"
+        "  - text: Launch beta\n"
+        "    done: false\n"
+        "inferred_from: []\n"
+        "notes: ''\n"
+        "---\n\n## Notes\n"
+    )
+    proj_path = mem_dir / "project-q2-def456.md"
+    proj_path.write_text(proj_text)
+    handler._last_project_set = [proj_path]
+
+    result = await handler._toggle_milestone_text(project_index=1, milestone_index=1)
+
+    assert "done" in result.lower() or "undone" in result.lower() or "toggled" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_link_goal_text_links_project_to_goal(brain_dir, handler):
+    """_link_goal_text links a project to a goal."""
+    mem_dir = brain_dir / "memories"
+    goal_path = mem_dir / "goal-run-abc123.md"
+    goal_path.write_text(GOAL_FILE_TEXT)
+    proj_path = mem_dir / "project-q2-def456.md"
+    proj_path.write_text(PROJECT_FILE_TEXT)
+    handler._last_project_set = [proj_path]
+    handler._last_goal_set = [goal_path]
+
+    result = await handler._link_goal_text(project_index=1, goal_index=1)
+
+    assert "Q2 Rollout" in result or "Linked" in result
+    assert "Run a 5K" in result or "Linked" in result
+
+
+@pytest.mark.asyncio
+async def test_unlink_goal_text_unlinks_project(brain_dir, handler):
+    """_unlink_goal_text removes the goal link from a project."""
+    mem_dir = brain_dir / "memories"
+    # Write a project already linked to a goal
+    proj_text = (
+        "---\n"
+        "type: project\n"
+        "category: work\n"
+        "source_title: Q2 Rollout\n"
+        "summary: ''\n"
+        "tags: []\n"
+        "created: '2026-04-15T09:00:00'\n"
+        "due_date: null\n"
+        "status: active\n"
+        "priority: medium\n"
+        "linked_goal: goal-run-abc123.md\n"
+        "milestones: []\n"
+        "inferred_from: []\n"
+        "notes: ''\n"
+        "---\n\n## Notes\n"
+    )
+    proj_path = mem_dir / "project-q2-def456.md"
+    proj_path.write_text(proj_text)
+    handler._last_project_set = [proj_path]
+
+    result = await handler._unlink_goal_text(project_index=1)
+
+    assert "Unlinked" in result
+    assert "Q2 Rollout" in result

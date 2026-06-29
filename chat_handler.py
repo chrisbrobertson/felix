@@ -2113,6 +2113,136 @@ class TelegramChatHandler:
             lines.append(f"\n{notes_match.group(1).strip()[:500]}")
         return "\n".join(lines)
 
+    async def _update_goal_note_text(self, index: int, note: str) -> str:
+        """Append a timestamped note to a goal by list index. Used by update_goal_note tool."""
+        path, err = await self._resolve_goal_index(str(index))
+        if path is None:
+            return err
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title", path.stem)
+        try:
+            self._goal_manager.append_goal_note(path, note)
+            return f"Note added to \"{title}\"."
+        except Exception as e:
+            return f"Error adding note: {_safe_error(e)}"
+
+    async def _update_goal_due_text(self, index: int, due_date: str) -> str:
+        """Update or clear due date on a goal by list index. Used by update_goal_due tool."""
+        path, err = await self._resolve_goal_index(str(index))
+        if path is None:
+            return err
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title", path.stem)
+        try:
+            self._goal_manager.update_goal_due(path, due_date)
+            cleared = due_date.lower() == "none"
+            return (
+                f"Due date cleared for \"{title}\"."
+                if cleared
+                else f"Due date set to {due_date} for \"{title}\"."
+            )
+        except ValueError as e:
+            return f"Error: {_safe_error(e)}"
+        except Exception as e:
+            return f"Error updating due date: {_safe_error(e)}"
+
+    async def _update_project_note_text(self, index: int, note: str) -> str:
+        """Append a timestamped note to a project by list index. Used by update_project_note tool."""
+        path, err = await self._resolve_project_index(str(index))
+        if path is None:
+            return err
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title", path.stem)
+        try:
+            self._goal_manager.append_project_note(path, note)
+            return f"Note added to \"{title}\"."
+        except Exception as e:
+            return f"Error adding note: {_safe_error(e)}"
+
+    async def _update_project_due_text(self, index: int, due_date: str) -> str:
+        """Update or clear due date on a project by list index. Used by update_project_due tool."""
+        path, err = await self._resolve_project_index(str(index))
+        if path is None:
+            return err
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title", path.stem)
+        try:
+            self._goal_manager.update_project_due(path, due_date)
+            cleared = due_date.lower() == "none"
+            return (
+                f"Due date cleared for \"{title}\"."
+                if cleared
+                else f"Due date set to {due_date} for \"{title}\"."
+            )
+        except ValueError as e:
+            return f"Error: {_safe_error(e)}"
+        except Exception as e:
+            return f"Error updating due date: {_safe_error(e)}"
+
+    async def _add_milestone_text(self, project_index: int, text: str) -> str:
+        """Add a milestone to a project by list index. Used by add_milestone tool."""
+        path, err = await self._resolve_project_index(str(project_index))
+        if path is None:
+            return err
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title", path.stem)
+        try:
+            self._goal_manager.add_milestone(path, text)
+            return f"Milestone added to \"{title}\": {text}"
+        except Exception as e:
+            return f"Error adding milestone: {_safe_error(e)}"
+
+    async def _toggle_milestone_text(self, project_index: int, milestone_index: int) -> str:
+        """Toggle a project milestone done/undone. Used by toggle_milestone tool."""
+        path, err = await self._resolve_project_index(str(project_index))
+        if path is None:
+            return err
+        try:
+            self._goal_manager.toggle_milestone(path, milestone_index)
+            fm = self._parse_frontmatter(path)
+            milestones = fm.get("milestones", [])
+            if 1 <= milestone_index <= len(milestones):
+                done = milestones[milestone_index - 1].get("done")
+                return "✓ Milestone marked done." if done else "○ Milestone marked undone."
+            return "Milestone toggled."
+        except ValueError as e:
+            return f"Error: {_safe_error(e)}"
+        except Exception as e:
+            return f"Error toggling milestone: {_safe_error(e)}"
+
+    async def _link_goal_text(self, project_index: int, goal_index: int) -> str:
+        """Link a project to a goal by list indices. Used by link_goal tool."""
+        project_path, proj_err = await self._resolve_project_index(str(project_index))
+        if project_path is None:
+            return proj_err
+        goal_path, goal_err = await self._resolve_goal_index(str(goal_index))
+        if goal_path is None:
+            return goal_err
+        try:
+            project_fm = self._parse_frontmatter(project_path)
+            goal_fm = self._parse_frontmatter(goal_path)
+            project_title = project_fm.get("source_title", project_path.stem)
+            goal_title = goal_fm.get("source_title", goal_path.stem)
+            self._goal_manager.link_goal_to_project(project_path, goal_path)
+            return f"Linked \"{project_title}\" to goal \"{goal_title}\"."
+        except ValueError as e:
+            return f"Error: {_safe_error(e)}"
+        except Exception as e:
+            return f"Error linking goal: {_safe_error(e)}"
+
+    async def _unlink_goal_text(self, project_index: int) -> str:
+        """Unlink a project from its goal by list index. Used by unlink_goal tool."""
+        path, err = await self._resolve_project_index(str(project_index))
+        if path is None:
+            return err
+        fm = self._parse_frontmatter(path)
+        title = fm.get("source_title", path.stem)
+        try:
+            self._goal_manager.unlink_goal_from_project(path)
+            return f"Unlinked \"{title}\" from its goal."
+        except Exception as e:
+            return f"Error unlinking goal: {_safe_error(e)}"
+
     async def _get_feature_text(self, index_or_id: str) -> str:
         """Get full detail for a feature/bug by index, short_id, or GH issue number. Used by get_feature tool."""
         # Try to parse as integer index first

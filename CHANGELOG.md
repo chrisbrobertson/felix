@@ -7,6 +7,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Goal/project field mutation LLM tools** (closes #129 partial): eight new tool calls expose fine-grained goal and project management to the chat skill — `update_goal_note`, `update_goal_due`, `update_project_note`, `update_project_due`, `add_milestone`, `toggle_milestone`, `link_goal`, `unlink_goal`. Previously users had to type slash commands directly; now natural language requests like "add a note to my fitness goal" or "set the deadline on project 2" work via LLM tool calling. All eight added to `MUTATING_TOOLS`. New helper methods in `chat_handler.py` and 20 tests in `test_chat_tools.py` / `test_chat_handler.py`.
 - **`run_action`, `drop_action`, `defer_action` LLM tool calls** (closes #129 partial): the chat skill can now approve/execute, reject, or snooze pending agent-proposed actions via natural language ("run action 2", "drop that action", "snooze it for 48 hours"). Tool dispatch routes to new `_run_action_text`, `_drop_action_text`, `_defer_action_text` helpers in `chat_handler.py`. All three added to `MUTATING_TOOLS`. 11 new tests in `test_e2e_actions.py` and `test_chat_tools.py`.
 
 ### Fixed
