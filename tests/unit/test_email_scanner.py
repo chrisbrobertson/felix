@@ -971,11 +971,15 @@ def test_reclassification_writes_classifier_version(tmp_path):
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
 
+    # Use a recent date to avoid archive cutoff (within last 30 days)
+    from datetime import datetime, timedelta
+    recent_date = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%S")
+
     thread = make_thread(
         subject="Fw: REMINDER: OCI",
         conv_id=54321,
         message_count=1,
-        last_message="2026-04-27T16:21:46",
+        last_message=recent_date,
         participants=[{"name": "Kurt Binder", "email": "kbinder@arlo.com"}],
     )
 
@@ -995,7 +999,7 @@ def test_reclassification_writes_classifier_version(tmp_path):
         "summary: Old summary.\n"
         "classification: transactional\n"
         "message_count: 1\n"
-        "last_message: '2026-04-27T16:21:46'\n"
+        f"last_message: '{recent_date}'\n"
         "---\n\nOld content.\n"
     )
 
@@ -1040,6 +1044,7 @@ def test_reclassification_incremental_path(tmp_path):
     set — leaving misclassified files untouched indefinitely.
     """
     import asyncio as _asyncio
+    from datetime import datetime, timedelta
 
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -1050,6 +1055,9 @@ def test_reclassification_incremental_path(tmp_path):
 
     scanner = EmailScanner()
 
+    # Use a recent date to avoid archive cutoff
+    recent_date = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%S")
+
     # A stale memory file with no classifier_version (pre-PR-#98 format)
     stale_path = memories_dir / "email-thread-fw-reminder-oci-54321.md"
     stale_path.write_text(
@@ -1058,8 +1066,8 @@ def test_reclassification_incremental_path(tmp_path):
         "summary: Old summary from OCI reminder.\n"
         "classification: transactional\n"
         "message_count: 1\n"
-        "last_message: '2026-04-27T16:21:46'\n"
-        "first_message: '2026-04-27T16:21:46'\n"
+        f"last_message: '{recent_date}'\n"
+        f"first_message: '{recent_date}'\n"
         "conversation_id: 54321\n"
         "participants:\n"
         "  - {name: Kurt Binder, email: kbinder@arlo.com}\n"
@@ -1148,6 +1156,7 @@ def test_reclassification_preserves_messages_section(tmp_path):
     a single summary string and losing the full message history.
     """
     import asyncio as _asyncio
+    from datetime import datetime, timedelta
 
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -1157,9 +1166,13 @@ def test_reclassification_preserves_messages_section(tmp_path):
 
     scanner = EmailScanner()
 
+    # Use recent dates to avoid archive cutoff
+    recent_date1 = (datetime.now() - timedelta(days=11)).strftime("%Y-%m-%dT%H:%M:%S")
+    recent_date2 = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%S")
+
     original_messages = [
-        "2026-04-01 Alice Sender: Please review the attached proposal.",
-        "2026-04-02 Bob Reply: Looks good, I approve.",
+        f"{recent_date1[:10]} Alice Sender: Please review the attached proposal.",
+        f"{recent_date2[:10]} Bob Reply: Looks good, I approve.",
     ]
     msg_block = "\n".join(f"- {m}" for m in original_messages)
 
@@ -1170,8 +1183,8 @@ def test_reclassification_preserves_messages_section(tmp_path):
         "summary: Old summary about proposal.\n"
         "classification: transactional\n"
         "message_count: 2\n"
-        "last_message: '2026-04-02T10:00:00'\n"
-        "first_message: '2026-04-01T09:00:00'\n"
+        f"last_message: '{recent_date2}'\n"
+        f"first_message: '{recent_date1}'\n"
         "conversation_id: 77777\n"
         "participants:\n"
         "  - {name: Alice Sender, email: alice@example.com}\n"
@@ -1205,8 +1218,8 @@ def test_reclassification_preserves_messages_section(tmp_path):
 
     rewritten = stale_path.read_text()
     # Both original message lines must survive in the ## Messages section
-    assert "2026-04-01 Alice Sender: Please review the attached proposal." in rewritten
-    assert "2026-04-02 Bob Reply: Looks good, I approve." in rewritten
+    assert original_messages[0] in rewritten
+    assert original_messages[1] in rewritten
 
     # Classification must be updated
     fm = _parse_frontmatter(rewritten)
@@ -1220,6 +1233,11 @@ def test_stale_queue_populated_on_first_cycle(tmp_path):
     """First call with no reclassify_classifier_version in state must do a glob
     scan and store the discovered paths in state["stale_queue"]."""
     import asyncio as _asyncio
+    from datetime import datetime, timedelta
+
+    # Recent enough to be inside the 90-day archive window, so the file is
+    # actually reclassified rather than skipped as archived.
+    recent = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%S")
 
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -1233,10 +1251,10 @@ def test_stale_queue_populated_on_first_cycle(tmp_path):
         "summary: Old summary.\n"
         "classification: unknown\n"
         "message_count: 1\n"
-        "last_message: '2026-04-10T10:00:00'\n"
-        "first_message: '2026-04-10T10:00:00'\n"
+        f"last_message: '{recent}'\n"
+        f"first_message: '{recent}'\n"
         "conversation_id: 11111\n"
-        "---\n\n## Messages\n- 2026-04-10 Alice: Hello\n\n## Context\nOld summary.\n"
+        f"---\n\n## Messages\n- {recent[:10]} Alice: Hello\n\n## Context\nOld summary.\n"
     )
 
     scanner = EmailScanner()
@@ -1266,6 +1284,12 @@ def test_stale_queue_populated_on_first_cycle(tmp_path):
     assert saved.get("reclassify_classifier_version") == CLASSIFIER_VERSION
     assert saved.get("stale_queue") == []
 
+    # ...and the file really was processed, not skipped as archived
+    mock_llm.assert_called_once()
+    fm = _parse_frontmatter(stale_path.read_text())
+    assert fm.get("classification") == "human"
+    assert fm.get("classifier_version") == CLASSIFIER_VERSION
+
 
 def test_stale_queue_drained_across_cycles(tmp_path):
     """When state already has reclassify_classifier_version == CLASSIFIER_VERSION
@@ -1274,9 +1298,13 @@ def test_stale_queue_drained_across_cycles(tmp_path):
     queue is empty afterwards, even though the file's classifier_version does
     not match so a glob-rescan would have found it)."""
     import asyncio as _asyncio
+    from datetime import datetime, timedelta
 
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
+
+    # Use recent date to avoid archive cutoff
+    recent_date = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%S")
 
     stale_path = memories_dir / "email-thread-queued-22222.md"
     stale_path.write_text(
@@ -1285,10 +1313,10 @@ def test_stale_queue_drained_across_cycles(tmp_path):
         "summary: Summary.\n"
         "classification: unknown\n"
         "message_count: 1\n"
-        "last_message: '2026-04-10T10:00:00'\n"
-        "first_message: '2026-04-10T10:00:00'\n"
+        f"last_message: '{recent_date}'\n"
+        f"first_message: '{recent_date}'\n"
         "conversation_id: 22222\n"
-        "---\n\n## Messages\n- 2026-04-10 Bob: Test\n\n## Context\nSummary.\n"
+        f"---\n\n## Messages\n- {recent_date[:10]} Bob: Test\n\n## Context\nSummary.\n"
     )
 
     # State from the previous cycle: version matches but queue still has one entry.
@@ -1334,9 +1362,28 @@ def test_stale_queue_drained_across_cycles(tmp_path):
 def test_stale_queue_no_glob_when_version_current_and_queue_empty(tmp_path):
     """When reclassify_classifier_version matches and queue is empty, no work is done."""
     import asyncio as _asyncio
+    from datetime import datetime, timedelta
 
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
+
+    # A recent file whose classifier_version is stale: a glob rescan WOULD find
+    # and reclassify it, so leaving it untouched proves no re-glob happened
+    # (and it is inside the archive window, so archiving cannot explain it).
+    recent = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%S")
+    stale_path = memories_dir / "email-thread-unqueued-33333.md"
+    stale_text = (
+        "---\n"
+        "source_title: 'Unqueued Stale Thread'\n"
+        "summary: Old summary.\n"
+        "classification: unknown\n"
+        "message_count: 1\n"
+        f"last_message: '{recent}'\n"
+        f"first_message: '{recent}'\n"
+        "conversation_id: 33333\n"
+        f"---\n\n## Messages\n- {recent[:10]} Alice: Hello\n\n## Context\nOld summary.\n"
+    )
+    stale_path.write_text(stale_text)
 
     state_file = tmp_path / "state.json"
     state_file.write_text(json.dumps({
@@ -1361,5 +1408,7 @@ def test_stale_queue_no_glob_when_version_current_and_queue_empty(tmp_path):
         )
         _asyncio.run(scanner._run_scan())
 
-    # No LLM calls: queue was empty and version was current
+    # No LLM calls and the stale file is untouched: queue was empty and version
+    # was current, so the scanner did not re-glob for stale files
     mock_llm.assert_not_called()
+    assert stale_path.read_text() == stale_text

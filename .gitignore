@@ -30,3 +30,6 @@ commitment-accuracy.json
 
 # Claude Code session state
 .claude/
+
+# local pytest transcripts
+test_output.txt

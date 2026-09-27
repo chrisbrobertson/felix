@@ -242,8 +242,13 @@ class ProjectInferenceScanner:
 
     def _load_config(self) -> dict:
         """Load config from BRAIN_DIR/config.yaml."""
-        if CONFIG_PATH.exists():
-            return yaml.safe_load(CONFIG_PATH.read_text()) or {}
+        # exists() is inside the try: on an iCloud-backed BRAIN_DIR, stat() itself
+        # can raise ETIMEDOUT, and Path.exists() only suppresses missing-file errors.
+        try:
+            if CONFIG_PATH.exists():
+                return yaml.safe_load(CONFIG_PATH.read_text()) or {}
+        except OSError as e:
+            log.warning("Failed to load config: %s; using defaults", e)
         return {}
 
     def _inference_config(self) -> dict:
