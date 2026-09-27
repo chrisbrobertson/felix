@@ -142,9 +142,12 @@ def test_no_send_when_chat_id_null(tmp_path):
     memories_dir.mkdir()
     state_file = tmp_path / "notification-state.json"
     state_file.write_text(json.dumps({"chat_id": None}))
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text("")  # Empty config to avoid override
 
     bot_mock = AsyncMock()
-    with patch.object(nm, "STATE_FILE", state_file):
+    with patch.object(nm, "STATE_FILE", state_file), \
+         patch.object(nm, "CONFIG_PATH", config_file):
         mgr = NotificationManager(bot=bot_mock, cache=_make_cache(memories_dir))
         asyncio.run(mgr.send_message("Test"))
 
