@@ -1218,8 +1218,8 @@ def test_reclassification_preserves_messages_section(tmp_path):
 
     rewritten = stale_path.read_text()
     # Both original message lines must survive in the ## Messages section
-    assert "Alice Sender: Please review the attached proposal." in rewritten
-    assert "Bob Reply: Looks good, I approve." in rewritten
+    assert original_messages[0] in rewritten
+    assert original_messages[1] in rewritten
 
     # Classification must be updated
     fm = _parse_frontmatter(rewritten)
