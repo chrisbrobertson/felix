@@ -958,3 +958,35 @@ async def test_cleanup_expires_stale_candidates_cache_mode(tmp_path):
     assert deleted == 1, "stale candidate must be deleted in cache mode"
     assert not stale.exists(), "stale file should be gone"
     assert fresh.exists(), "fresh file should be preserved"
+
+
+# ── Config loading ────────────────────────────────────────────────────────────
+
+def test_load_config_falls_back_to_defaults_on_read_timeout(tmp_path, caplog):
+    """An OSError reading config (e.g. iCloud ETIMEDOUT) logs a warning and returns {}.
+
+    Regression: an uncaught TimeoutError here crashed ProjectInferenceScanner.run_loop
+    at daemon startup when BRAIN_DIR lived on an iCloud path that timed out.
+    """
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({"project_inference": {"enabled": True}}))
+
+    with patch.object(pis, "CONFIG_PATH", config_file), \
+         patch.object(Path, "read_text", side_effect=TimeoutError(60, "Operation timed out")):
+        cache = MemoryCache(None, tmp_path, enabled=False)
+        scanner = ProjectInferenceScanner(role="full", cache=cache)
+        with caplog.at_level("WARNING", logger="project-inference"):
+            assert scanner._load_config() == {}
+
+    assert any("Failed to load config" in r.getMessage() for r in caplog.records)
+
+
+def test_load_config_reads_yaml_when_readable(tmp_path):
+    """The OSError fallback does not change the normal path: readable config is parsed."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({"project_inference": {"enabled": True}}))
+
+    with patch.object(pis, "CONFIG_PATH", config_file):
+        cache = MemoryCache(None, tmp_path, enabled=False)
+        scanner = ProjectInferenceScanner(role="full", cache=cache)
+        assert scanner._load_config() == {"project_inference": {"enabled": True}}

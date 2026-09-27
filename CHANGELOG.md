@@ -6,10 +6,15 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+- **LiteLLM 1.83.14 → 1.84.0** clears three Dependabot alerts: GHSA-4xpc-pv4p-pm3w (critical, authentication bypass via Host header injection), GHSA-7488-6r32-c95q (high, MCP authentication bypass via OAuth2 passthrough fallback) and GHSA-4jcj-7x88-m979 (medium, MCP proxy improper authentication). felix only uses `litellm.acompletion`, not the affected proxy/MCP server, but the pin is updated regardless. `requirements.lock` is regenerated from a clean project virtualenv (the previous lock was a freeze of an unrelated global environment).
+
 ### Added
 - **`run_action`, `drop_action`, `defer_action` LLM tool calls** (closes #129 partial): the chat skill can now approve/execute, reject, or snooze pending agent-proposed actions via natural language ("run action 2", "drop that action", "snooze it for 48 hours"). Tool dispatch routes to new `_run_action_text`, `_drop_action_text`, `_defer_action_text` helpers in `chat_handler.py`. All three added to `MUTATING_TOOLS`. 11 new tests in `test_e2e_actions.py` and `test_chat_tools.py`.
 
 ### Fixed
+- **`ProjectInferenceScanner._load_config` crashed daemon startup** when reading `config.yaml` raised an `OSError` (seen as `TimeoutError` / ETIMEDOUT on an iCloud-backed `BRAIN_DIR`); it now logs a warning and falls back to defaults like the other scanners. Regression tests `test_load_config_falls_back_to_defaults_on_read_timeout` and `test_load_config_reads_yaml_when_readable`.
+- **Five tests that had silently gone stale**: four email-scanner reclassification tests used fixed April dates that aged past the 90-day archive cutoff (so the reclassification path was skipped), and `test_no_send_when_chat_id_null` picked up a `telegram_chat_id` override leaked from other tests' config. Dates are now relative and the config path is isolated.
 - **`_get_action_text` used `_last_actions_set`** (never initialized, always empty) instead of `_last_action_set` — `get_action` LLM tool always returned "No actions listed" even after `list_actions`. Fixed variable name and added tuple unpacking (`path, _ = ...`) since `_last_action_set` stores `(path, fm)` pairs. Added regression test `test_get_action_tool_returns_detail`.
 - **`seed.action()` in integration tests** used `type: action` instead of `type: agent_action`, causing `_load_action_set`'s type filter to silently exclude every seeded action — all action smoke tests passed vacuously. Fixed type and added missing `target` field; upgraded smoke tests to assert reply content.
 
