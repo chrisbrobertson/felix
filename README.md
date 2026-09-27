@@ -829,8 +829,8 @@ mkdir -p ~/secondbrain/logs
 # Full node
 ~/secondbrain/venv/bin/pip install -r requirements.txt
 
-# Watcher node (leaner — no Telegram)
-~/secondbrain/venv/bin/pip install litellm httpx beautifulsoup4 lxml pyyaml
+# Watcher node (leaner — no Telegram; pinned to match requirements.txt)
+~/secondbrain/venv/bin/pip install -r requirements-watcher.txt
 ```
 
 ### 8. Set API keys
@@ -977,9 +977,9 @@ Run `full` on your always-on machine (Mac Studio / Mac Mini). Run `watcher` on y
 
 On the watcher machine, install only the watcher dependencies:
 ```bash
-pip install litellm httpx beautifulsoup4 lxml pyyaml pyobjc-framework-EventKit
+pip install -r requirements-watcher.txt
 ```
-(`python-telegram-bot` is not needed and will not be imported.)
+(`python-telegram-bot` is not needed and will not be imported. `requirements-watcher.txt` is the same pinned set `install.sh --role watcher` uses.)
 
 **Watcher setup notes:**
 - `./install.sh` prompts for `SLACK_USER_TOKEN` on both roles (not full-only)
