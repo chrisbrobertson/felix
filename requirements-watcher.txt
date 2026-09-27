@@ -1,4 +1,4 @@
-# Watcher-role dependencies (install.sh installs this file on --role watcher).
+# Watcher-role dependencies (install.sh installs this file when the node's role is watcher).
 # Pins must match requirements.txt exactly — tests/unit/test_watcher_role_packages.py
 # enforces it, so a security bump there cannot skip watcher nodes.
 litellm==1.84.0

@@ -979,7 +979,7 @@ On the watcher machine, install only the watcher dependencies:
 ```bash
 pip install -r requirements-watcher.txt
 ```
-(`python-telegram-bot` is not needed and will not be imported. `requirements-watcher.txt` is the same pinned set `install.sh --role watcher` uses.)
+(`python-telegram-bot` is not needed and will not be imported. `requirements-watcher.txt` is the same pinned set `install.sh` installs on a watcher-role node.)
 
 **Watcher setup notes:**
 - `./install.sh` prompts for `SLACK_USER_TOKEN` on both roles (not full-only)

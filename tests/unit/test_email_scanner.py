@@ -1233,6 +1233,11 @@ def test_stale_queue_populated_on_first_cycle(tmp_path):
     """First call with no reclassify_classifier_version in state must do a glob
     scan and store the discovered paths in state["stale_queue"]."""
     import asyncio as _asyncio
+    from datetime import datetime, timedelta
+
+    # Recent enough to be inside the 90-day archive window, so the file is
+    # actually reclassified rather than skipped as archived.
+    recent = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%S")
 
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
@@ -1246,10 +1251,10 @@ def test_stale_queue_populated_on_first_cycle(tmp_path):
         "summary: Old summary.\n"
         "classification: unknown\n"
         "message_count: 1\n"
-        "last_message: '2026-04-10T10:00:00'\n"
-        "first_message: '2026-04-10T10:00:00'\n"
+        f"last_message: '{recent}'\n"
+        f"first_message: '{recent}'\n"
         "conversation_id: 11111\n"
-        "---\n\n## Messages\n- 2026-04-10 Alice: Hello\n\n## Context\nOld summary.\n"
+        f"---\n\n## Messages\n- {recent[:10]} Alice: Hello\n\n## Context\nOld summary.\n"
     )
 
     scanner = EmailScanner()
@@ -1278,6 +1283,12 @@ def test_stale_queue_populated_on_first_cycle(tmp_path):
     # Queue should be exhausted (file was processed) but version should be recorded
     assert saved.get("reclassify_classifier_version") == CLASSIFIER_VERSION
     assert saved.get("stale_queue") == []
+
+    # ...and the file really was processed, not skipped as archived
+    mock_llm.assert_called_once()
+    fm = _parse_frontmatter(stale_path.read_text())
+    assert fm.get("classification") == "human"
+    assert fm.get("classifier_version") == CLASSIFIER_VERSION
 
 
 def test_stale_queue_drained_across_cycles(tmp_path):
@@ -1351,9 +1362,28 @@ def test_stale_queue_drained_across_cycles(tmp_path):
 def test_stale_queue_no_glob_when_version_current_and_queue_empty(tmp_path):
     """When reclassify_classifier_version matches and queue is empty, no work is done."""
     import asyncio as _asyncio
+    from datetime import datetime, timedelta
 
     memories_dir = tmp_path / "memories"
     memories_dir.mkdir()
+
+    # A recent file whose classifier_version is stale: a glob rescan WOULD find
+    # and reclassify it, so leaving it untouched proves no re-glob happened
+    # (and it is inside the archive window, so archiving cannot explain it).
+    recent = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%S")
+    stale_path = memories_dir / "email-thread-unqueued-33333.md"
+    stale_text = (
+        "---\n"
+        "source_title: 'Unqueued Stale Thread'\n"
+        "summary: Old summary.\n"
+        "classification: unknown\n"
+        "message_count: 1\n"
+        f"last_message: '{recent}'\n"
+        f"first_message: '{recent}'\n"
+        "conversation_id: 33333\n"
+        f"---\n\n## Messages\n- {recent[:10]} Alice: Hello\n\n## Context\nOld summary.\n"
+    )
+    stale_path.write_text(stale_text)
 
     state_file = tmp_path / "state.json"
     state_file.write_text(json.dumps({
@@ -1378,5 +1408,7 @@ def test_stale_queue_no_glob_when_version_current_and_queue_empty(tmp_path):
         )
         _asyncio.run(scanner._run_scan())
 
-    # No LLM calls: queue was empty and version was current
+    # No LLM calls and the stale file is untouched: queue was empty and version
+    # was current, so the scanner did not re-glob for stale files
     mock_llm.assert_not_called()
+    assert stale_path.read_text() == stale_text
