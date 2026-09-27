@@ -8,6 +8,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Security
 - **LiteLLM 1.83.14 → 1.84.0** clears three Dependabot alerts: GHSA-4xpc-pv4p-pm3w (critical, authentication bypass via Host header injection), GHSA-7488-6r32-c95q (high, MCP authentication bypass via OAuth2 passthrough fallback) and GHSA-4jcj-7x88-m979 (medium, MCP proxy improper authentication). felix only uses `litellm.acompletion`, not the affected proxy/MCP server, but the pin is updated regardless. `requirements.lock` is regenerated from a clean project virtualenv (the previous lock was a freeze of an unrelated global environment).
+- **Watcher-role installs now get security bumps**: `install.sh --role watcher` used to pip-install an unpinned, hard-coded package list and hash the package *names*, so version bumps never reinstalled watcher nodes (they would have kept LiteLLM 1.83.14). The watcher set now lives in pinned `requirements-watcher.txt`, which install.sh installs and hashes; `test_watcher_pins_match_requirements` fails if any pin drifts from `requirements.txt`.
 
 ### Added
 - **`run_action`, `drop_action`, `defer_action` LLM tool calls** (closes #129 partial): the chat skill can now approve/execute, reject, or snooze pending agent-proposed actions via natural language ("run action 2", "drop that action", "snooze it for 48 hours"). Tool dispatch routes to new `_run_action_text`, `_drop_action_text`, `_defer_action_text` helpers in `chat_handler.py`. All three added to `MUTATING_TOOLS`. 11 new tests in `test_e2e_actions.py` and `test_chat_tools.py`.

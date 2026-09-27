@@ -525,8 +525,8 @@ echo "Checking Python dependencies..."
 
 REQS_HASH_FILE="$DEPLOY_DIR/.requirements-hash"
 if [ "$ROLE" = "watcher" ]; then
-    # Fixed set for watcher — hash the package names directly
-    REQS_HASH="$(echo 'litellm httpx beautifulsoup4 lxml pyyaml pyobjc-framework-EventKit pdfminer.six' | shasum -a 256 | cut -d' ' -f1)"
+    # Pinned watcher subset — hashing the file means a version bump reinstalls
+    REQS_HASH="$(shasum -a 256 "$REPO_DIR/requirements-watcher.txt" | cut -d' ' -f1)"
 else
     REQS_HASH="$(shasum -a 256 "$REPO_DIR/requirements.txt" | cut -d' ' -f1)"
 fi
@@ -537,7 +537,7 @@ else
     info "Installing dependencies..."
     "$VENV/bin/pip" install -q --upgrade pip
     if [ "$ROLE" = "watcher" ]; then
-        "$VENV/bin/pip" install -q litellm httpx beautifulsoup4 lxml pyyaml pyobjc-framework-EventKit pdfminer.six
+        "$VENV/bin/pip" install -q -r "$REPO_DIR/requirements-watcher.txt"
     else
         "$VENV/bin/pip" install -q -r "$REPO_DIR/requirements.txt"
     fi

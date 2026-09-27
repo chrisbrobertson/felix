@@ -1,0 +1,10 @@
+# Watcher-role dependencies (install.sh installs this file on --role watcher).
+# Pins must match requirements.txt exactly — tests/unit/test_watcher_role_packages.py
+# enforces it, so a security bump there cannot skip watcher nodes.
+litellm==1.84.0
+httpx==0.28.1
+beautifulsoup4==4.13.4
+lxml==6.1.0
+pyyaml==6.0.2
+pyobjc-framework-EventKit==12.1
+pdfminer.six==20260107
