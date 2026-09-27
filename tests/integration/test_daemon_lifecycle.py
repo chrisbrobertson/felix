@@ -242,10 +242,10 @@ async def test_all_loops_exit_cleanly_on_stop_event(daemon_dirs, monkeypatch):
         timeout=10.0,
     )
 
-    errors = [r for r in results if isinstance(r, Exception)]
+    errors = [(i, r) for i, r in enumerate(results) if isinstance(r, Exception)]
     assert not errors, (
         f"{len(errors)} task loop(s) raised exceptions on startup:\n"
-        + "\n".join(f"  {type(e).__name__}: {e}" for e in errors)
+        + "\n".join(f"  Task {i} ({tasks[i].__qualname__ if hasattr(tasks[i], '__qualname__') else tasks[i].__name__}): {type(e).__name__}: {e}" for i, e in errors)
     )
 
     cache.close()
